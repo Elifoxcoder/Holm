@@ -35,14 +35,16 @@ public class UnixIdentityPlatform : IIdentityPlatform
     [DllImport("libc", EntryPoint = "fchmod", SetLastError = true)] static extern int FChmod(int fd, uint mode);
     [DllImport("libc", EntryPoint = "geteuid", SetLastError = true)] static extern uint GetEffectiveUserId();
 
-    // Linux x64's struct stat. The handle, not the path, is checked.
-    [StructLayout(LayoutKind.Sequential)]
+    // Linux x64's struct stat, all 144 bytes: the times are struct timespec (seconds and nanoseconds each). A shorter
+    // buffer let fstat write past it onto the stack. The handle, not the path, is checked.
+    [StructLayout(LayoutKind.Sequential, Size = 144)]
     struct StatBuffer
     {
         public ulong Device, Inode, Links;
         public uint Mode, UserId, GroupId, Pad0;
-        public ulong DeviceId, Size, BlockSize, Blocks;
-        public ulong AccessTime, ModificationTime, StatusChangeTime;
+        public ulong DeviceId;
+        public long Size, BlockSize, Blocks;
+        public long AccessSeconds, AccessNanoseconds, ModificationSeconds, ModificationNanoseconds, ChangeSeconds, ChangeNanoseconds;
         public long Reserved0, Reserved1, Reserved2;
     }
 
