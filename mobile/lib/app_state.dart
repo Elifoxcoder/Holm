@@ -338,6 +338,7 @@ class AppState extends ChangeNotifier {
     if (front) unawaited(refreshAccount()); // the PC may have changed the account's identity meanwhile
     final t = transfer;
     if (!front && t != null && !t.done) _toNotch(t);
+    if (front) _clearNotchTransfer();
   }
 
   /// The notch's overview shows which of Holm's devices are there.
@@ -387,14 +388,27 @@ class AppState extends ChangeNotifier {
     await sendFiles(target, [path]);
   }
 
-  void _toNotch(TransferStatus t) => NotchLink.send({
-        'type': 'holm.transfer',
-        'title': t.title,
-        'detail': t.detail,
-        'progress': t.progress,
-        'done': t.done,
-        'failed': t.failed,
-      });
+  /// The notch shows a running transfer (it went there while the app was in the background).
+  bool _transferInNotch = false;
+
+  void _toNotch(TransferStatus t) {
+    _transferInNotch = !t.done;
+    NotchLink.send({
+      'type': 'holm.transfer',
+      'title': t.title,
+      'detail': t.detail,
+      'progress': t.progress,
+      'done': t.done,
+      'failed': t.failed,
+    });
+  }
+
+  /// The app shows the transfer again: the notch's "Sending…" goes, or it would stay there after the end.
+  void _clearNotchTransfer() {
+    if (!_transferInNotch) return;
+    _transferInNotch = false;
+    NotchLink.send({'type': 'holm.transfer', 'clear': true});
+  }
 
   void setClipboardSync(bool on, [SendTarget? target]) {
     if (on && target?.device == null) {
@@ -537,7 +551,11 @@ class AppState extends ChangeNotifier {
       _lastProgress = now;
     }
     transfer = s;
-    if (!foreground) _toNotch(s);
+    if (!foreground) {
+      _toNotch(s);
+    } else {
+      _clearNotchTransfer();
+    }
     _clearStatus?.cancel();
     if (s.done) {
       _clearStatus = Timer(const Duration(seconds: 6), () {
