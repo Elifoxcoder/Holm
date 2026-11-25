@@ -26,7 +26,7 @@ internal static class UpdateInstaller
                 return "Automatic updates are available for the Windows x64 version.";
             if (Assembly.GetExecutingAssembly().Location.Length != 0 || Environment.ProcessPath is not { } path
                 || !path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-                return "Run the published Holm executable to install updates automatically.";
+                return "Run the published HolyNotch executable to install updates automatically.";
             if (!File.Exists(PowerShellPath))
                 return "Windows PowerShell is unavailable. Download the update from the release page.";
             return null;
@@ -102,7 +102,7 @@ internal static class UpdateInstaller
         }
         catch (UnauthorizedAccessException ex)
         {
-            throw new IOException("Holm cannot update this folder. Move the app to a folder you can write to, then try again.", ex);
+            throw new IOException("HolyNotch cannot update this folder. Move the app to a folder you can write to, then try again.", ex);
         }
         finally { if (File.Exists(probe)) File.Delete(probe); }
 
@@ -151,10 +151,10 @@ internal static class UpdateInstaller
             cancellationToken.ThrowIfCancellationRequested();
             if (File.Exists(plan.ErrorPath)) throw new IOException(await File.ReadAllTextAsync(plan.ErrorPath, cancellationToken).ConfigureAwait(false));
             if (File.Exists(plan.ReadyPath)) return;
-            if (helper.HasExited) throw new IOException("The update helper stopped before it was ready. Holm is still running.");
+            if (helper.HasExited) throw new IOException("The update helper stopped before it was ready. HolyNotch is still running.");
             await Task.Delay(100, cancellationToken).ConfigureAwait(false);
         }
-        throw new IOException("The update helper did not become ready in time. Holm is still running.");
+        throw new IOException("The update helper did not become ready in time. HolyNotch is still running.");
     }
 
     internal static Version ExecutableVersion(string path)
@@ -169,7 +169,7 @@ internal static class UpdateInstaller
     {
         var directory = new FileInfo(Path.GetFullPath(source)).Directory;
         var root = directory?.Parent;
-        if (!string.Equals(Path.GetFileName(source), "Holm.exe", StringComparison.OrdinalIgnoreCase)
+        if (!string.Equals(Path.GetFileName(source), "HolyNotch.exe", StringComparison.OrdinalIgnoreCase)
             || directory == null || !Guid.TryParseExact(directory.Name, "N", out _)
             || root == null || !root.Name.StartsWith("Holm-update-", StringComparison.Ordinal)
             || !Guid.TryParseExact(root.Name.Substring("Holm-update-".Length), "N", out _)
@@ -347,7 +347,7 @@ internal static class UpdateInstaller
                         [IO.Path]::GetDirectoryName($cleanupRoot) -eq $tempRoot -and
                         [IO.Path]::GetFileName($cleanupRoot) -cmatch '^Holm-update-[0-9a-f]{32}$' -and
                         [IO.Path]::GetFileName($sourceDirectory) -cmatch '^[0-9a-f]{32}$' -and
-                        [IO.Path]::GetFileName($plan.SourcePath) -eq 'Holm.exe') {
+                        [IO.Path]::GetFileName($plan.SourcePath) -eq 'HolyNotch.exe') {
                         Assert-FileHash $plan.SourcePath $plan.SourceHash
                         [IO.File]::Delete($plan.SourcePath)
                         try { [IO.Directory]::Delete($sourceDirectory, $false) } catch { }

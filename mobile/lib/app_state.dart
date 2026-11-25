@@ -136,7 +136,7 @@ class AppState extends ChangeNotifier {
   late Identity me;
   late final NearbyService nearby;
 
-  String deviceName = 'Holm phone';
+  String deviceName = 'HolyNotch phone';
   /// This phone among the account's devices: made once, so its own notes are skipped when they come back.
   String deviceId = newGuidN();
   AccountInfo? account;
@@ -358,7 +358,7 @@ class AppState extends ChangeNotifier {
   Future<void> _beamFromNotch(String uri) async {
     final target = _targetNamed(lastTarget) ?? (targets.isEmpty ? null : targets.first);
     if (target == null) {
-      _status(TransferStatus('No PC to send to', 'Open Holm on your PC, or sign in to your Holm account', failed: true, done: true));
+      _status(TransferStatus('No PC to send to', 'Open HolyNotch on your PC, or sign in to your HolyNotch account', failed: true, done: true));
       return;
     }
     final path = await NotchLink.copyUri(uri);
@@ -457,7 +457,7 @@ class AppState extends ChangeNotifier {
       final device = target.device;
       if (device != null && e is TimeoutException) {
         _devices.remove(device.id); // it's gone, whatever it said a minute ago
-        _status(TransferStatus("$peerName isn't available", "Holm isn't open there right now", failed: true, done: true));
+        _status(TransferStatus("$peerName isn't available", "HolyNotch isn't open there right now", failed: true, done: true));
       } else {
         _status(TransferStatus("Couldn't send", _why(e), failed: true, done: true));
       }
@@ -633,11 +633,11 @@ class AppState extends ChangeNotifier {
       final keys = await AccountKeys.derive(email, password);
       final session = await Firebase.signIn(AccountKeys.normalizeEmail(email), keys.signInSecret);
       final wrapped = await Firebase.field('users/${session.uid}', 'vault', session.idToken);
-      if (wrapped == null) return 'This account has no data yet. Sign in to it in Holm on your PC first.';
+      if (wrapped == null) return 'This account has no data yet. Sign in to it in HolyNotch on your PC first.';
       final dataKey = AccountVault.unwrapDataKey(keys, session.uid, wrapped);
       final data = await AccountData.fetch(session.uid, session.idToken, dataKey);
       if (!data.hasIdentity) {
-        return "Holm on your PC hasn't put your friends key into the account yet. Open Holm there, check that you're signed in, and try again.";
+        return "HolyNotch on your PC hasn't put your friends key into the account yet. Open HolyNotch there, check that you're signed in, and try again.";
       }
       account = AccountInfo(AccountKeys.normalizeEmail(email), session.uid, session.refreshToken, dataKey);
       _apply(data);
@@ -740,7 +740,7 @@ class AppState extends ChangeNotifier {
   void _handleOwn(Note note, int age) {
     final id = note.fields['D'];
     if (account == null || !OwnDevice.isId(id) || id == deviceId) return; // ours, back from the inbox
-    final from = note.from.isEmpty ? 'Holm' : note.from;
+    final from = note.from.isEmpty ? 'HolyNotch' : note.from;
     switch (note.kind) {
       // A PC closed one of our notifications in its phone tool: gone here too.
       case 'phone' when note.fields['Y'] == 'dismiss' && note.fields['N'] == deviceId && note.fields['I'] is String:
@@ -828,7 +828,7 @@ class AppState extends ChangeNotifier {
     } else {
       card = parseFriendCode(text);
     }
-    if (card == null) return 'Paste a Holm friend code (WNF1.…) or an invite code (HOLM-XXXXX-XXXXX)';
+    if (card == null) return 'Paste a HolyNotch friend code (WNF1.…) or an invite code (HOLM-XXXXX-XXXXX)';
     if (card.key == me.publicKey) return "That's your own code";
     if (friendByKey(card.key) != null) return '${card.name} is already your friend';
     final requestId = newGuidN();
@@ -840,7 +840,7 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       return "Couldn't send the request: $e";
     }
-    return proof != null ? 'Request sent. ${card.name} is added as soon as their Holm sees it' : 'Request sent to ${card.name}';
+    return proof != null ? 'Request sent. ${card.name} is added as soon as their HolyNotch sees it' : 'Request sent to ${card.name}';
   }
 
   Future<void> answerRequest(FriendRequest request, bool accept) async {
@@ -959,7 +959,7 @@ class AppState extends ChangeNotifier {
     if (list.length > keepMessages) list.removeRange(0, list.length - keepMessages);
     if (unreadToo) {
       unread[key] = (unread[key] ?? 0) + 1;
-      if (!foreground) NotchLink.send({'type': 'holm.chat', 'name': friendByKey(key)?.name ?? 'Holm', 'text': message.text});
+      if (!foreground) NotchLink.send({'type': 'holm.chat', 'name': friendByKey(key)?.name ?? 'HolyNotch', 'text': message.text});
     }
     _changed();
   }
@@ -1085,7 +1085,7 @@ class AppState extends ChangeNotifier {
         } else if (!incoming.any((r) => r.requestId == id)) {
           incoming.add(FriendRequest(id, card, unixNow() - age));
           toast?.call('${card.name} would like to be friends');
-          if (!foreground) NotchLink.send({'type': 'holm.chat', 'name': card.name, 'text': 'Would like to be friends · open Holm to answer'});
+          if (!foreground) NotchLink.send({'type': 'holm.chat', 'name': card.name, 'text': 'Would like to be friends · open HolyNotch to answer'});
         }
       case 'response':
         final match = outgoing.where((r) => r.requestId == note.requestId && r.card.key == sender).toList();

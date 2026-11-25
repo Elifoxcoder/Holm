@@ -46,9 +46,9 @@ internal sealed class AchievementBook
         new("color-10", "Color nerd", "Pick 10 colors from the screen", "", Teal, Colors, 10),
         new("songs-100", "Soundtrack", "Play 100 songs", "", Purple, Songs, 100),
         new("profile", "That's me", "Give yourself a profile picture", "", Purple, ProfilePicture, 1),
-        new("night-owl", "Night owl", "Use Holm between 2 and 4 at night", "", Purple, Night, 1),
-        new("streak-7", "Regular", "Use Holm 7 days in a row", "", Gold, Streak, 7),
-        new("streak-30", "Part of the furniture", "Use Holm 30 days in a row", "", Gold, Streak, 30),
+        new("night-owl", "Night owl", "Use HolyNotch between 2 and 4 at night", "", Purple, Night, 1),
+        new("streak-7", "Regular", "Use HolyNotch 7 days in a row", "", Gold, Streak, 7),
+        new("streak-30", "Part of the furniture", "Use HolyNotch 30 days in a row", "", Gold, Streak, 30),
         new("verity", "Verity", "Invite Verity into your notch on Settings › General", "", Gold, Verity, 1),
     };
 

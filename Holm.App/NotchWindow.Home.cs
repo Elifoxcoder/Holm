@@ -49,7 +49,7 @@ public sealed partial class NotchWindow
         new(HomeLayout.Ai, "AI usage", AiUsageIcon, () => _settings.AiUsage, DisabledHint: "Turn on AI usage below to use this tool."),
         new(HomeLayout.ColorPicker, "Color picker", (brush, size) => ToolIcon(EyedropperGlyph, brush, size), () => _settings.ColorPicker, () => _settings.ColorPicker = true),
         new(HomeLayout.Phone, "Your phone", (brush, size) => ToolIcon(CellPhoneGlyph, brush, size), () => _settings.Beam, () => SetBeam(true),
-            DisabledHint: "Sign in to your Holm account here and in the phone app: the phone shows up by itself."),
+            DisabledHint: "Sign in to your HolyNotch account here and in the phone app: the phone shows up by itself."),
         new(HomeLayout.Beam, "Beam", (brush, size) => ToolIcon("", brush, size), () => _settings.Beam, () => SetBeam(true)),
     }, StartPageSwitches());
 

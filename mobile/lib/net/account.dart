@@ -323,7 +323,7 @@ class Firebase {
       res = await req.close().timeout(const Duration(seconds: 30));
       text = await utf8.decodeStream(res).timeout(const Duration(seconds: 30));
     } catch (_) {
-      throw const AccountException("Couldn't reach the Holm account service. Check the internet connection.");
+      throw const AccountException("Couldn't reach the HolyNotch account service. Check the internet connection.");
     }
     Map<String, dynamic> j = {};
     try {
@@ -351,11 +351,11 @@ class Firebase {
   static String _describe(String code) => switch (code) {
         'INVALID_LOGIN_CREDENTIALS' || 'EMAIL_NOT_FOUND' || 'INVALID_PASSWORD' => 'The email or the password is wrong.',
         'INVALID_EMAIL' => "That isn't an email address.",
-        'USER_DISABLED' => 'This Holm account has been switched off.',
+        'USER_DISABLED' => 'This HolyNotch account has been switched off.',
         'TOO_MANY_ATTEMPTS_TRY_LATER' => 'Too many tries. Wait a few minutes and try again.',
         'TOKEN_EXPIRED' || 'INVALID_REFRESH_TOKEN' || 'INVALID_ID_TOKEN' || 'USER_NOT_FOUND' => 'You were signed out. Sign in again.',
-        'PERMISSION_DENIED' || 'UNAUTHENTICATED' => 'The Holm account service refused this. Sign in again.',
-        _ => 'The Holm account service answered with an error ($code).',
+        'PERMISSION_DENIED' || 'UNAUTHENTICATED' => 'The HolyNotch account service refused this. Sign in again.',
+        _ => 'The HolyNotch account service answered with an error ($code).',
       };
 }
 

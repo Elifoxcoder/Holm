@@ -167,7 +167,7 @@ class Updater extends ChangeNotifier {
       await _remember(info);
       final answer = await NotchLink.installUpdate(file.path);
       if (answer == 'permission') {
-        error = 'Allow Holm to install apps, then tap Update again';
+        error = 'Allow HolyNotch to install apps, then tap Update again';
         installing = false;
       } else if (answer != 'started') {
         throw 'Android didn’t take the update';

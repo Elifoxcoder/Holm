@@ -241,7 +241,7 @@ internal static class ChatExtras
 
         void AskForKey()
         {
-            Note("To search GIFs, Holm needs a free GIPHY API key: make one at developers.giphy.com (an “API” app), then paste it here. It stays on this PC.");
+            Note("To search GIFs, HolyNotch needs a free GIPHY API key: make one at developers.giphy.com (an “API” app), then paste it here. It stays on this PC.");
             var key = HubTheme.Field("GIPHY API key");
             key.Width = 260;
             key.Margin = new Thickness(4, 0, 6, 8);

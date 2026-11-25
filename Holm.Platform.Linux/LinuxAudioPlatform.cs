@@ -244,7 +244,7 @@ public sealed class LinuxAudioPlatform : IAudioPlatform
 
     void Connect()
     {
-        _context = pa_context_new(pa_threaded_mainloop_get_api(_loop), "Holm");
+        _context = pa_context_new(pa_threaded_mainloop_get_api(_loop), "HolyNotch");
         if (_context == IntPtr.Zero) return;
         pa_context_set_state_callback(_context, _onState, IntPtr.Zero);
         if (pa_context_connect(_context, null, ContextNoFail, IntPtr.Zero) < 0) Reconnect(_context);

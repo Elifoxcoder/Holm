@@ -117,7 +117,7 @@ public class UpdateInstallerTests
         string downloadRoot = Path.Combine(Path.GetTempPath(), "Holm-update-" + Guid.NewGuid().ToString("N"));
         string downloadDirectory = Path.Combine(downloadRoot, Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(downloadDirectory);
-        string downloadedExe = Path.Combine(downloadDirectory, "Holm.exe");
+        string downloadedExe = Path.Combine(downloadDirectory, "HolyNotch.exe");
         File.Copy(files.Source, downloadedExe);
         try
         {
@@ -165,7 +165,7 @@ public class UpdateInstallerTests
         string downloadRoot = Path.Combine(Path.GetTempPath(), "Holm-update-" + Guid.NewGuid().ToString("N"));
         string downloadDirectory = Path.Combine(downloadRoot, Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(downloadDirectory);
-        string downloadedExe = Path.Combine(downloadDirectory, "Holm.exe");
+        string downloadedExe = Path.Combine(downloadDirectory, "HolyNotch.exe");
         try
         {
             // Use Microsoft's signed PowerShell host as a hidden, long-running replacement.
@@ -215,8 +215,8 @@ public class UpdateInstallerTests
     {
         using var files = new Fixture();
         Assert.Null(UpdateInstaller.DownloadCleanupRoot(files.Source));
-        Assert.Null(UpdateInstaller.DownloadCleanupRoot(Path.Combine(Path.GetTempPath(), "Holm-update-important", Guid.NewGuid().ToString("N"), "Holm.exe")));
-        Assert.Null(UpdateInstaller.DownloadCleanupRoot(Path.Combine(Path.GetTempPath(), "Holm-update-" + Guid.NewGuid().ToString("N"), "user files", "Holm.exe")));
+        Assert.Null(UpdateInstaller.DownloadCleanupRoot(Path.Combine(Path.GetTempPath(), "Holm-update-important", Guid.NewGuid().ToString("N"), "HolyNotch.exe")));
+        Assert.Null(UpdateInstaller.DownloadCleanupRoot(Path.Combine(Path.GetTempPath(), "Holm-update-" + Guid.NewGuid().ToString("N"), "user files", "HolyNotch.exe")));
     }
 
     // A separate, harmless process simulates the app exiting after it receives readiness.

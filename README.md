@@ -1,6 +1,8 @@
-<img src="docs/icon.png" width="72" align="left" alt="Holm icon">
+<img src="docs/icon.png" width="72" align="left" alt="HolyNotch icon">
 
-# Holm
+# HolyNotch
+
+*HolyNotch is a fork of [Holm](https://github.com/ademerci/Holm) by ademerci (MIT License). It keeps Holm's settings, account and friends, and talks to Holm users as before.*
 
 Probably the best Dynamic Island–style notch for Windows. It sits at the top of your screen, shows what's playing with full controls, tints itself in the colours of the album cover, pops out your messages and downloads, sends files to your friends AirDrop-style and keeps an eye on your laptop and Bluetooth headphone battery – while using almost no resources.
 

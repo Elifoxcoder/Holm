@@ -48,7 +48,7 @@ internal static partial class SpeedTest
     })
     { Timeout = Timeout.InfiniteTimeSpan };
 
-    static SpeedTest() => Http.DefaultRequestHeaders.UserAgent.ParseAdd("Holm (+https://github.com/ademerci/Holm)");
+    static SpeedTest() => Http.DefaultRequestHeaders.UserAgent.ParseAdd("HolyNotch (+https://github.com/Elifoxcoder/Holm)");
 
     /// <summary>Ping, download, upload; <paramref name="progress"/> hears about each value as it changes.</summary>
     public static async Task<SpeedProgress> RunAsync(IProgress<SpeedProgress>? progress, CancellationToken cancel)

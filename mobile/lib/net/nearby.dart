@@ -157,7 +157,7 @@ class NearbyService {
         .map(String.fromCharCode)
         .join()
         .trim();
-    if (peerName.isEmpty) peerName = 'Holm';
+    if (peerName.isEmpty) peerName = 'HolyNotch';
     final isNew = !_peers.containsKey(peerId);
     _peers[peerId] = NearbyPeer(peerId, peerName, datagram.address, port, DateTime.now());
     if (isNew) _changes.add(null);

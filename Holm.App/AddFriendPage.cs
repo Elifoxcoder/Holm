@@ -113,7 +113,7 @@ internal sealed class AddFriendPage : HubView
         var olderRow = new StackPanel { Margin = new Thickness(2, 26, 0, 0) };
         olderRow.Children.Add(new TextBlock
         {
-            Text = "A friend on Holm 1.9.5 or older doesn't know invite codes yet. Send them your long friend code instead; " +
+            Text = "A friend on HolyNotch 1.9.5 or older doesn't know invite codes yet. Send them your long friend code instead; " +
                    "their long code works in the box above too.",
             Foreground = HubTheme.Faint, FontSize = 12.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 10),
         });
@@ -131,7 +131,7 @@ internal sealed class AddFriendPage : HubView
 
     public override void Detach() => _social.Changed -= OnChanged;
 
-    static string Message(string code) => $"Add me as a friend on Holm: {code} (get Holm at github.com/ademerci/Holm)";
+    static string Message(string code) => $"Add me as a friend on HolyNotch: {code} (get HolyNotch at github.com/ademerci/HolyNotch)";
 
     static Border Card(Control content) => new()
     {
@@ -230,7 +230,7 @@ internal sealed class AddFriendPage : HubView
         {
             var withdraw = HubTheme.Action("Withdraw");
             withdraw.Click += (_, _) => _social.Withdraw(pending);
-            string line = pending.ByInvite ? "joins as soon as their Holm is on" : "still has to accept your request";
+            string line = pending.ByInvite ? "joins as soon as their HolyNotch is on" : "still has to accept your request";
             _requests.Children.Add(RequestRow(pending.Card, line, withdraw));
         }
         _requestsCard.IsVisible = _requests.Children.Count > 0;

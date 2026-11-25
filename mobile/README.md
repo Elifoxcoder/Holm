@@ -1,4 +1,6 @@
-# Holm for Android
+# HolyNotch for Android
+
+*Based on Holm for Android by ademerci (MIT License).*
 
 A Flutter app (Android 15+) that works with Holm on your laptop. The iOS project (iOS 18+) is there, but has not been built or tested; the Dynamic Notch is Android only. It uses Holm's dark hub look: panels, cards, the blue accent and the blue-to-violet chat bubbles. It has five pages:
 

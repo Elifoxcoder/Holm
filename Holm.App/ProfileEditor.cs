@@ -202,9 +202,9 @@ internal sealed class ProfileEditor : Border
                 _problem.IsVisible = false;
                 Show();
             }
-            else Problem("Holm can't read this picture. Try a JPEG or PNG.");
+            else Problem("HolyNotch can't read this picture. Try a JPEG or PNG.");
         }
-        catch (Exception ex) when (ex is not OutOfMemoryException) { Problem("Holm can't read this picture. Try a JPEG or PNG."); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { Problem("HolyNotch can't read this picture. Try a JPEG or PNG."); }
     }
 
     void Problem(string text)

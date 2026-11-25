@@ -24,11 +24,11 @@ internal sealed class AccountPage : HubView
 
     /// <summary>Shown before anyone signs up: what the account keeps, where, and who can read it.</summary>
     public const string Privacy =
-        "A Holm account is optional. It keeps your settings, profile, achievements and friends the same on every computer you sign in on.\n\n" +
+        "A HolyNotch account is optional. It keeps your settings, profile, achievements and friends the same on every computer you sign in on.\n\n" +
         "What goes into it: the settings that mean the same everywhere (switches, clock, quiet hours, quick reactions), your profile " +
         "(name, status, color, picture), your achievements, your friends list, and your friends key and inbox, so friends reach you " +
         "with one friend code on every computer.\n\n" +
-        "Encrypted here first: your password never leaves this computer. Holm makes two keys of it; Firebase (Google) gets one to " +
+        "Encrypted here first: your password never leaves this computer. HolyNotch makes two keys of it; Firebase (Google) gets one to " +
         "check your sign-in, the other opens your data and stays on your computers. The account service stores your email address, " +
         "when you sync, and sealed data it can't read. Firebase sees your IP address, as any web service does.\n\n" +
         "Stays on this computer: notes, reminders, the shelf, chats, files, where the notch sits and on which display, the weather " +
@@ -67,7 +67,7 @@ internal sealed class AccountPage : HubView
         var content = new StackPanel { Spacing = 14 };
         if (_account == null)
         {
-            content.Children.Add(Card(Words("The Holm account isn't part of this build.", dim: true)));
+            content.Children.Add(Card(Words("The HolyNotch account isn't part of this build.", dim: true)));
         }
         else if (_account.SignedIn) SignedIn(content, _account);
         // The first-start offer always shows the whole form; its cross is "Not now".
@@ -87,7 +87,7 @@ internal sealed class AccountPage : HubView
     void Hidden(StackPanel content)
     {
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-        var words = Words("Holm account: keep your settings and friends on every computer.", dim: true);
+        var words = Words("HolyNotch account: keep your settings and friends on every computer.", dim: true);
         words.VerticalAlignment = VerticalAlignment.Center;
         row.Children.Add(words);
         var show = HubTheme.Action("Sign in…");
@@ -121,7 +121,7 @@ internal sealed class AccountPage : HubView
     {
         var form = new StackPanel { Spacing = 10 };
         var heading = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-        heading.Children.Add(new TextBlock { Text = "Your Holm, on every computer", FontSize = 17, FontWeight = FontWeight.SemiBold });
+        heading.Children.Add(new TextBlock { Text = "Your HolyNotch, on every computer", FontSize = 17, FontWeight = FontWeight.SemiBold });
         var cross = _notNow is { } notNow ? CloseCross("Not now", notNow) : CloseCross("Close", () => SetHidden(true));
         Grid.SetColumn(cross, 1);
         heading.Children.Add(cross);
@@ -237,7 +237,7 @@ internal sealed class AccountPage : HubView
             ("Cancel", () => { }), ("Sign out", account.SignOut));
         var delete = HubTheme.Action("Delete account…");
         delete.Foreground = HubTheme.Red;
-        delete.Click += (_, _) => Ask("Delete your Holm account?",
+        delete.Click += (_, _) => Ask("Delete your HolyNotch account?",
             "The account and everything in it are deleted for good. Every computer keeps its own settings, friends and achievements.",
             ("Cancel", () => { }), ("Delete", () => _ = DeleteAsync(account)));
         actions.Children.Add(sync);

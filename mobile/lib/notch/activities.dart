@@ -613,13 +613,13 @@ class NotchController extends ChangeNotifier {
           ..picture = e['thumb'] as Uint8List?
           ..title = 'Screenshot'
           ..text = devices.isEmpty ? 'Send it to your PC' : 'Send it to ${devices.first}'
-          ..label = 'Holm');
+          ..label = 'HolyNotch');
       case 'holm.clipboard':
         _persistent.remove('holm'); // "… is sending you something" is over
         _alert(NotchActivity('clip', ActivityKind.clipboard, show: const Duration(seconds: 5))
           ..title = 'Copied from ${e['from'] ?? 'your PC'}'
           ..text = e['text'] as String?
-          ..label = 'Holm');
+          ..label = 'HolyNotch');
       case 'holm.devices':
         devices = [for (final d in (e['devices'] as List? ?? const [])) '$d'];
         notifyListeners();
@@ -650,7 +650,7 @@ class NotchController extends ChangeNotifier {
         _alert(NotchActivity('chat:${e['name']}', ActivityKind.chat, show: const Duration(seconds: 5))
           ..title = e['name'] as String?
           ..text = e['text'] as String?
-          ..label = 'Holm'
+          ..label = 'HolyNotch'
           ..page = 'chat');
       case 'holm.offer':
         final id = e['id'] as String;
@@ -1063,7 +1063,7 @@ class NotchController extends ChangeNotifier {
       ..busy = !done && e['progress'] == null
       ..done = done
       ..failed = e['failed'] == true
-      ..label = 'Holm'
+      ..label = 'HolyNotch'
       ..page = 'devices';
     if (done) {
       _persistent.remove('holm');
@@ -1082,7 +1082,7 @@ class NotchController extends ChangeNotifier {
       _persistent['preview-music'] = NotchActivity('preview-music', ActivityKind.music, persistent: true, priority: 49)
         ..preview = true
         ..title = media?.title ?? 'Preview'
-        ..text = media?.artist ?? 'Holm'
+        ..text = media?.artist ?? 'HolyNotch'
         ..label = 'Music';
       // The earbuds beside it, as they look in your colour (the setting on that page).
       _persistent['preview-buds'] = NotchActivity('preview-buds', ActivityKind.buds, persistent: true, priority: -50)

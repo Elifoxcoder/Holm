@@ -364,7 +364,7 @@ public sealed partial class NotchWindow
             : friends.Count > 0
             ? "Drop it on a friend, on someone nearby, or on Code." + (online switch { 0 => "", 1 => " One friend is online.", _ => $" {online} friends are online." })
             : peers.Count == 0
-                ? "No one with Holm on this network – drop it on Code to send it anywhere."
+                ? "No one with HolyNotch on this network – drop it on Code to send it anywhere."
                 : "Drop it on a person, or on Code to send it anywhere.";
 
         // Same people as shown: keep the chips, so the one under a still mouse stays highlighted.
@@ -388,7 +388,7 @@ public sealed partial class NotchWindow
         foreach (var device in devices)
         {
             var chip = PersonChip(device.Name, new ShareTarget(null, Device: device));
-            ToolTip.SetTip(chip, "Your device, signed in to your Holm account");
+            ToolTip.SetTip(chip, "Your device, signed in to your HolyNotch account");
             _shareTargets.Children.Add(chip);
         }
         foreach (var peer in peers.Take(6)) _shareTargets.Children.Add(PersonChip(peer.Name, new ShareTarget(peer)));
@@ -524,7 +524,7 @@ public sealed partial class NotchWindow
             catch (Exception ex) when (ex is IOException or SocketException || (ex is OperationCanceledException && !cts.IsCancellationRequested))
             {
                 Diag.Log($"Nearby availability check for {peer.Name} failed: {ex.Message}");
-                EndTask("", RedBrush, $"{peer.Name} isn't available", "They're offline or Holm is closed");
+                EndTask("", RedBrush, $"{peer.Name} isn't available", "They're offline or HolyNotch is closed");
                 return;
             }
             await using (channel)
@@ -545,7 +545,7 @@ public sealed partial class NotchWindow
         byte[] secret = ShareCode.NewSecret();
         string code = ShareCode.Format(secret);
         _ownCodes.Add(code);
-        bool copied = await TrySetClipboardAsync($"Holm Beam code: {code}");
+        bool copied = await TrySetClipboardAsync($"HolyNotch Beam code: {code}");
         ShowTask("", ShareBlue, copied ? "Code copied – paste it to your friend" : "Send this code to your friend", code, null, null, ("Cancel", CancelTask));
         try
         {
@@ -602,7 +602,7 @@ public sealed partial class NotchWindow
             else if (device != null)
             {
                 _friends.ForgetDevice(device);
-                EndTask("", RedBrush, $"{friend.Name} isn't available", "Holm isn't open there right now");
+                EndTask("", RedBrush, $"{friend.Name} isn't available", "HolyNotch isn't open there right now");
             }
             else if (_settings.SendLater)
             {
@@ -612,7 +612,7 @@ public sealed partial class NotchWindow
                 _taskHide.Interval = TimeSpan.FromSeconds(8);
                 _taskHide.Start();
             }
-            else EndTask("", RedBrush, $"{friend.Name} isn't available", "They're offline or Holm is closed");
+            else EndTask("", RedBrush, $"{friend.Name} isn't available", "They're offline or HolyNotch is closed");
         }
         catch (Exception ex) { Fail(ex, cts, "Couldn't send"); }
     }
@@ -821,7 +821,7 @@ public sealed partial class NotchWindow
             if (!ShareCode.TryFind(text, out var secret, out var code)) return;
             if (_ownCodes.Contains(code) || code == _lastOfferedCode) return;
             _lastOfferedCode = code;
-            ShowTask("", ShareBlue, "Holm code copied", "Get the file your friend is sending?", null,
+            ShowTask("", ShareBlue, "HolyNotch code copied", "Get the file your friend is sending?", null,
                      ("Receive", () => _ = ReceiveWithCodeAsync(secret)), ("Not now", HideTask));
             _taskHide.Interval = TimeSpan.FromSeconds(20);
             _taskHide.Start();
@@ -963,7 +963,7 @@ public sealed partial class NotchWindow
         string? text = Clipboard is { } clipboard ? await clipboard.TryGetTextAsync() : null;
         if (!ShareCode.TryFind(text, out var secret, out var code))
         {
-            ShowPeek("", "Copy your friend's Holm code first", "", null);
+            ShowPeek("", "Copy your friend's HolyNotch code first", "", null);
             return;
         }
         if (_ownCodes.Contains(code))

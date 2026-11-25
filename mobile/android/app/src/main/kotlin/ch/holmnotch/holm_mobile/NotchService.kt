@@ -120,7 +120,7 @@ class NotchService : AccessibilityService() {
             // clear of the system bars, which put the notch under the status bar on phones with a camera cut-out.
             fitInsetsTypes = 0
             fitInsetsSides = 0
-            title = "Holm notch"
+            title = "HolyNotch notch"
         }
         wm.addView(frame, params)
         touch = touchWindow()
@@ -506,7 +506,7 @@ class NotchService : AccessibilityService() {
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
             fitInsetsTypes = 0
             fitInsetsSides = 0
-            title = "Holm notch touch"
+            title = "HolyNotch notch touch"
         }
         wm.addView(v, touchParams)
         return v

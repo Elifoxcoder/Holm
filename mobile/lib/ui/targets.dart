@@ -19,8 +19,8 @@ Future<SendTarget?> pickTarget(BuildContext context, AppState state, {String tit
   if (targets.isEmpty) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(state.account == null
-            ? 'No device found. Open Holm on your laptop on this Wi-Fi, or sign in to reach it anywhere'
-            : 'No device found. Open Holm on your laptop')));
+            ? 'No device found. Open HolyNotch on your laptop on this Wi-Fi, or sign in to reach it anywhere'
+            : 'No device found. Open HolyNotch on your laptop')));
     return null;
   }
   if (targets.length == 1) return targets.first;
@@ -36,7 +36,7 @@ Future<SendTarget?> pickTarget(BuildContext context, AppState state, {String tit
           ListTile(
             leading: Avatar(t.name, size: 36, icon: Icons.laptop_rounded),
             title: Text(t.name),
-            subtitle: Text(t.peer?.address.address ?? 'Anywhere · Holm account', style: const TextStyle(color: HolmColors.dim)),
+            subtitle: Text(t.peer?.address.address ?? 'Anywhere · HolyNotch account', style: const TextStyle(color: HolmColors.dim)),
             onTap: () => Navigator.pop(context, t),
           ),
         const SizedBox(height: 12),

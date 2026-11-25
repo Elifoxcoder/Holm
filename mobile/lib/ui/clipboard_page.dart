@@ -43,7 +43,7 @@ class ClipboardPage extends StatelessWidget {
                       const SizedBox(height: 2),
                       Text(
                         state.clipboardSync
-                            ? 'With ${state.syncTarget ?? 'a device'}: what you copy goes over when you open Holm, texts that arrive are copied right away'
+                            ? 'With ${state.syncTarget ?? 'a device'}: what you copy goes over when you open HolyNotch, texts that arrive are copied right away'
                             : 'Copy on one, paste on the other',
                         style: const TextStyle(color: HolmColors.dim, fontSize: 13),
                       ),
@@ -72,7 +72,7 @@ class ClipboardPage extends StatelessWidget {
             const SectionLabel('History'),
             if (state.clipboard.isEmpty)
               const EmptyState(Icons.content_paste_rounded, 'Nothing copied yet',
-                  'Texts you copy (seen when you open Holm) and texts beamed from your laptop show up here.'),
+                  'Texts you copy (seen when you open HolyNotch) and texts beamed from your laptop show up here.'),
             for (final item in state.clipboard)
               HolmCard(
                 padding: const EdgeInsets.fromLTRB(18, 8, 4, 8),

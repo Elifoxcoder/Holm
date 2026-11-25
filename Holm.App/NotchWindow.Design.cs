@@ -60,7 +60,7 @@ public sealed partial class NotchWindow
         restartButton.Click += (_, _) => RestartHolm();
         DockPanel.SetDock(restartButton, Dock.Right);
         restartRow.Children.Add(restartButton);
-        restartRow.Children.Add(new TextBlock { Text = "Holm shows the new look after a restart.", VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap });
+        restartRow.Children.Add(new TextBlock { Text = "HolyNotch shows the new look after a restart.", VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap });
         restart.Child = restartRow;
         content.Children.Add(restart);
         void Changed() { _settings.Save(); restart.IsVisible = true; }
@@ -170,8 +170,8 @@ public sealed partial class NotchWindow
             if (TopLevel.GetTopLevel(import)?.StorageProvider is not { } storage) return;
             var files = await storage.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = "Import a Holm design", AllowMultiple = false,
-                FileTypeFilter = new[] { new FilePickerFileType("Holm design") { Patterns = new[] { "*.json" } } },
+                Title = "Import a HolyNotch design", AllowMultiple = false,
+                FileTypeFilter = new[] { new FilePickerFileType("HolyNotch design") { Patterns = new[] { "*.json" } } },
             });
             if (files.Count == 0 || files[0].TryGetLocalPath() is not { } path) return;
             var (design, error) = Designs.Import(path);

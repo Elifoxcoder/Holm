@@ -64,7 +64,7 @@ public sealed class LinuxAppVolumePlatform : IAppVolumePlatform
             pa_threaded_mainloop_lock(_loop);
             try
             {
-                _context = pa_context_new(pa_threaded_mainloop_get_api(_loop), "Holm mixer");
+                _context = pa_context_new(pa_threaded_mainloop_get_api(_loop), "HolyNotch mixer");
                 if (_context == IntPtr.Zero) return;
                 pa_context_set_state_callback(_context, _onState, IntPtr.Zero);
                 if (pa_context_connect(_context, null, 0, IntPtr.Zero) < 0) return;

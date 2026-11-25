@@ -116,10 +116,10 @@ public sealed partial class NotchWindow
             {
                 // Linux: a package or an AppImage, the person picks on the release page.
                 _shell.Open(HandyRelease);
-                EndTask(MicGlyph, ShareBlue, "Handy's release page is open", "Holm hooks in once it's installed");
+                EndTask(MicGlyph, ShareBlue, "Handy's release page is open", "HolyNotch hooks in once it's installed");
                 return;
             }
-            EndTask(MicGlyph, ShareBlue, "Handy's installer is open", "Holm hooks in once it's installed");
+            EndTask(MicGlyph, ShareBlue, "Handy's installer is open", "HolyNotch hooks in once it's installed");
             if (_settings.Dictation && _dictation.FindHandy() != null) StartDictation();
         }
         catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or System.IO.IOException or System.IO.InvalidDataException

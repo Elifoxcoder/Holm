@@ -531,7 +531,7 @@ public sealed class PhoneShare : IDisposable
         var html = new StringBuilder();
         html.Append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">")
             .Append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex\">")
-            .Append("<title>Holm</title><style>")
+            .Append("<title>HolyNotch</title><style>")
             .Append(":root{color-scheme:dark}body{margin:0;padding:28px 16px;background:#000;color:#fff;")
             .Append("font:16px -apple-system,system-ui,'Segoe UI',Roboto,sans-serif}h1{font-size:24px;margin:0 0 4px}")
             .Append("p{color:#a6a6a6;margin:0 0 22px}ul{list-style:none;margin:0;padding:0}")
@@ -539,7 +539,7 @@ public sealed class PhoneShare : IDisposable
             .Append(".n{flex:1;min-width:0;overflow-wrap:anywhere}.s{display:block;color:#a6a6a6;font-size:13px;margin-top:2px}")
             .Append("a{background:#0a84ff;color:#fff;text-decoration:none;border-radius:18px;padding:8px 14px;font-weight:600;font-size:14px;white-space:nowrap}")
             .Append("a.o{background:#3a3a3c}.note{margin:22px 0 0;font-size:13px}")
-            .Append("</style></head><body><h1>Files from Holm</h1><p>")
+            .Append("</style></head><body><h1>Files from HolyNotch</h1><p>")
             .Append(files.Count == 1 ? "1 file" : $"{files.Count} files").Append(" · ").Append(Size(files.Sum(f => f.Length)))
             .Append("</p><ul>");
         for (int i = 0; i < files.Count; i++)
@@ -559,7 +559,7 @@ public sealed class PhoneShare : IDisposable
     internal static string ReceivePage(string token) => new StringBuilder()
         .Append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">")
         .Append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex\">")
-        .Append("<title>Holm</title><style>")
+        .Append("<title>HolyNotch</title><style>")
         .Append(":root{color-scheme:dark}body{margin:0;padding:28px 16px;background:#000;color:#fff;")
         .Append("font:16px -apple-system,system-ui,'Segoe UI',Roboto,sans-serif}h1{font-size:24px;margin:0 0 4px}")
         .Append("p{color:#a6a6a6;margin:0 0 22px}ul{list-style:none;margin:22px 0 0;padding:0}")

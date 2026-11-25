@@ -108,7 +108,7 @@ public sealed class LinuxSensorPlatform : ISensorPlatform
             pa_threaded_mainloop_lock(_loop);
             try
             {
-                _context = pa_context_new(pa_threaded_mainloop_get_api(_loop), "Holm privacy");
+                _context = pa_context_new(pa_threaded_mainloop_get_api(_loop), "HolyNotch privacy");
                 if (_context == IntPtr.Zero) return;
                 pa_context_set_state_callback(_context, _onState, IntPtr.Zero);
                 pa_context_connect(_context, null, 0, IntPtr.Zero);

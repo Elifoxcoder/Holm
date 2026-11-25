@@ -73,7 +73,7 @@ class ChatListPage extends StatelessWidget {
               if (friends.isEmpty && state.incoming.isEmpty && state.outgoing.isEmpty)
                 Column(children: [
                   const EmptyState(Icons.chat_bubble_outline_rounded, 'No friends yet',
-                      'Add your laptop: in Holm, open Friends › Add friend and copy your code, or give Holm your code from here.'),
+                      'Add your laptop: in HolyNotch, open Friends › Add friend and copy your code, or give HolyNotch your code from here.'),
                   Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                     PillButton('Add friend', icon: Icons.person_add_alt_rounded, onPressed: () => showAddFriend(context, state)),
                     const SizedBox(width: 8),
@@ -162,7 +162,7 @@ Future<void> showAddFriend(BuildContext context, AppState state) async {
           child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
             const Text('Add friend', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600)),
             const SizedBox(height: 6),
-            const Text('Paste an invite code (HOLM-XXXXX-XXXXX) or a long friend code from Holm on your laptop.',
+            const Text('Paste an invite code (HOLM-XXXXX-XXXXX) or a long friend code from HolyNotch on your laptop.',
                 style: TextStyle(color: HolmColors.dim)),
             const SizedBox(height: 16),
             TextField(
@@ -195,7 +195,7 @@ Future<void> showMyCode(BuildContext context, AppState state) => showModalBottom
         child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
           const Text('Your friend code', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600)),
           const SizedBox(height: 6),
-          const Text('For friends: they paste it in their Holm (Friends › Add friend), and you see their request here.',
+          const Text('For friends: they paste it in their HolyNotch (Friends › Add friend), and you see their request here.',
               style: TextStyle(color: HolmColors.dim)),
           const SizedBox(height: 12),
           // Your own PC doesn't need it: the account links them.
@@ -213,7 +213,7 @@ Future<void> showMyCode(BuildContext context, AppState state) => showModalBottom
               Expanded(
                 child: Text(
                   state.account == null
-                      ? 'Your own PC needs no code: sign in to your Holm account here and in Holm on the PC, and they link by themselves.'
+                      ? 'Your own PC needs no code: sign in to your HolyNotch account here and in HolyNotch on the PC, and they link by themselves.'
                       : 'Your own PCs need no code: signed in to ${state.account!.email}, they link by themselves.',
                   style: const TextStyle(fontSize: 13.5),
                 ),
@@ -348,7 +348,7 @@ class _ConversationPageState extends State<ConversationPage> {
                 Expanded(
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Text(f.name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-                    Text(online ? 'Active now' : 'Holm',
+                    Text(online ? 'Active now' : 'HolyNotch',
                         style: TextStyle(fontSize: 13, color: online ? HolmColors.green : HolmColors.dim)),
                   ]),
                 ),

@@ -38,7 +38,7 @@ internal static class Weather
 
     static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
 
-    static Weather() => Http.DefaultRequestHeaders.UserAgent.ParseAdd("Holm (+https://github.com/ademerci/Holm)");
+    static Weather() => Http.DefaultRequestHeaders.UserAgent.ParseAdd("HolyNotch (+https://github.com/Elifoxcoder/Holm)");
 
     public static string GeocodeUrl(string name)
         => "https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&format=json&name=" + Uri.EscapeDataString(name.Trim());

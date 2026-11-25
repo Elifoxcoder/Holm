@@ -65,7 +65,7 @@ public sealed partial class NotchWindow
             new("chat", ChatsGlyph, "Chat", "Messages with your friends, sealed so only you two can read them",
                 () => { var page = new ChatPage(social, _hubFriend); _hubFriend = null; return page; },
                 () => social.Chats.UnreadTotal),
-            new("achievements", "\uE734", "Achievements", "What you've done with Holm",
+            new("achievements", "\uE734", "Achievements", "What you've done with HolyNotch",
                 () => new AchievementsPage(_achievements)),
             new("add", FriendGlyph, "Add a friend", "Share your invite code, or type in a friend's",
                 () => new AddFriendPage(social), () => social.Incoming().Count),
@@ -161,7 +161,7 @@ public sealed partial class NotchWindow
                 return result switch
                 {
                     InviteResult.Added => (true, $"You and {card!.Name} are now friends."),
-                    InviteResult.Sent => (true, $"Sent to {card!.Name}. You'll be friends as soon as their Holm is on."),
+                    InviteResult.Sent => (true, $"Sent to {card!.Name}. You'll be friends as soon as their HolyNotch is on."),
                     InviteResult.AlreadyFriends => (true, $"{card!.Name} is already your friend."),
                     InviteResult.OwnCode => (false, "That's your own code: send it to a friend."),
                     _ => (false, "That code doesn't work. It may have run out: ask your friend for a new one."),
@@ -182,7 +182,7 @@ public sealed partial class NotchWindow
             }
         }
         catch (IOException ex) { return (false, ex.Message + ". Check your connection and try again."); }
-        return (false, "That isn't a Holm code. Codes look like HOLM-7KQ2X-9XF4M.");
+        return (false, "That isn't a HolyNotch code. Codes look like HOLM-7KQ2X-9XF4M.");
     }
 
     async Task AnswerFromHubAsync(Friend card, string requestId, bool accept)
@@ -203,7 +203,7 @@ public sealed partial class NotchWindow
         if (FriendInvite.FindInMessage(text) is not { } code) return false;
         if (_friends.Invites.Any(i => i.Code == code) || code == _lastOfferedInvite) return true; // ours, or asked already
         _lastOfferedInvite = code;
-        ShowTask(FriendGlyph, ShareBlue, "Holm invite code copied", "Add the friend who sent it?", null,
+        ShowTask(FriendGlyph, ShareBlue, "HolyNotch invite code copied", "Add the friend who sent it?", null,
                  ("Add", () => _ = AddCopiedInviteAsync(code)), ("Not now", HideTask));
         _taskHide.Interval = TimeSpan.FromSeconds(20);
         _taskHide.Start();

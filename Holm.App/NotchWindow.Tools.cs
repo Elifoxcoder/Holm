@@ -127,7 +127,7 @@ public sealed partial class NotchWindow
         _beamToolBtn = ToolButton("Beam", "", Tool.Beam, "Beam: send and receive files");
         _clipboardToolBtn = ToolButton("Clipboard", ClipboardGlyph, Tool.Clipboard, "Clipboard history");
         _mixerToolBtn = ToolButton("Mixer", MixerGlyph, Tool.Mixer, "Volume per app");
-        _phoneToolBtn = ToolButton("Phone", CellPhoneGlyph, Tool.Phone, "Your phone: linked through your Holm account");
+        _phoneToolBtn = ToolButton("Phone", CellPhoneGlyph, Tool.Phone, "Your phone: linked through your HolyNotch account");
         _aiToolBtn = ToolWord("AI", AiUsageIcon(Look.Aero ? Look.Ink : Dim, 14));
         ToolTip.SetTip(_aiToolBtn, "AI usage");
         _aiToolBtn.Click += () => ToggleTool(Tool.Ai);

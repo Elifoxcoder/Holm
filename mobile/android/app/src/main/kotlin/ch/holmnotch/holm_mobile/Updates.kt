@@ -37,7 +37,7 @@ object Updates {
         if (prefs.getLong("notified", 0) == code) return
         val nm = context.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Updates", NotificationManager.IMPORTANCE_DEFAULT).apply {
-            description = "A new version of Holm is ready"
+            description = "A new version of HolyNotch is ready"
         })
         fun open(request: Int, update: Boolean) = PendingIntent.getActivity(
             context, request,
@@ -48,7 +48,7 @@ object Updates {
         )
         val n = Notification.Builder(context, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
-            .setContentTitle("Holm $name is ready")
+            .setContentTitle("HolyNotch $name is ready")
             .setContentText("Tap Update to install it.")
             .setContentIntent(open(1, false))
             .addAction(Notification.Action.Builder(null, "Update", open(2, true)).build())

@@ -96,7 +96,7 @@ public sealed partial class NotchWindow : Window
         Spring.Bounce = _settings.Bounce ? _settings.BounceLevel : 0;
         Spring.Jelly = _settings.Jelly;
 
-        Title = "Holm";
+        Title = "HolyNotch";
         Width = BaseWidth;
         Height = NeededWindowHeight(30);
         CanResize = false;

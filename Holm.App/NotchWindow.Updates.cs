@@ -86,10 +86,10 @@ public sealed partial class NotchWindow
     HubView UpdatesPage()
     {
         var content = new StackPanel { Margin = new Thickness(20) };
-        content.Children.Add(new TextBlock { Text = $"Holm {RunningVersion.ToString(3)}", FontSize = 17, FontWeight = FontWeight.SemiBold });
-        content.Children.Add(new TextBlock { Text = "Check for a new release and update Holm when you're ready.", Foreground = HubTheme.Dim, Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap });
+        content.Children.Add(new TextBlock { Text = $"HolyNotch {RunningVersion.ToString(3)}", FontSize = 17, FontWeight = FontWeight.SemiBold });
+        content.Children.Add(new TextBlock { Text = "Check for a new release and update HolyNotch when you're ready.", Foreground = HubTheme.Dim, Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap });
         var automatic = new CheckBox { Content = "Check for updates automatically", IsChecked = _settings.CheckForUpdatesAutomatically, Foreground = Look.Ink, Margin = new Thickness(0, 18, 0, 0) };
-        ToolTip.SetTip(automatic, "Checks shortly after Holm starts and every two hours. Updates are installed only when you choose.");
+        ToolTip.SetTip(automatic, "Checks shortly after HolyNotch starts and every two hours. Updates are installed only when you choose.");
         automatic.IsCheckedChanged += (_, _) => SetAutomaticUpdateChecks(automatic.IsChecked == true);
         content.Children.Add(automatic);
         _updatesStatusText = new TextBlock { Margin = new Thickness(0, 22, 0, 16), TextWrapping = TextWrapping.Wrap };
@@ -127,7 +127,7 @@ public sealed partial class NotchWindow
             : _availableUpdate is { } release ? (InstallsItself ? $"Update to {release.Version.ToString(3)} and restart" : $"Get {release.Version.ToString(3)}")
             : "Update and restart";
         _installUpdateButton.IsEnabled = !_checkingUpdates && !_installingUpdate && unavailable == null;
-        ToolTip.SetTip(_installUpdateButton, unavailable ?? (InstallsItself ? "Downloads the update and restarts Holm. Your settings stay." : "Opens the release page to download it."));
+        ToolTip.SetTip(_installUpdateButton, unavailable ?? (InstallsItself ? "Downloads the update and restarts HolyNotch. Your settings stay." : "Opens the release page to download it."));
         if (unavailable != null && _availableUpdate != null) _updatesStatusText.Text += "\n" + unavailable;
     }
 
@@ -174,8 +174,8 @@ public sealed partial class NotchWindow
             || _hiddenForFullscreen || _hovered || _busy || _sharing || _taskVisible
             || _peekActive || _installingUpdate || _updatesClosing) return;
         _messageLogoHost.Child = UpdateNotificationIcon(28);
-        _messageTitle.Text = $"Holm {release.Version.ToString(3)} is available";
-        _messageText.Text = InstallsItself ? "Click to update and restart Holm" : "Click to get it";
+        _messageTitle.Text = $"HolyNotch {release.Version.ToString(3)} is available";
+        _messageText.Text = InstallsItself ? "Click to update and restart HolyNotch" : "Click to get it";
         _messageText.IsVisible = true;
         _updateNotification = true;
         _notifiedUpdateVersion = release.Version;
@@ -247,8 +247,8 @@ public sealed partial class NotchWindow
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
         row.Children.Add(UpdateNotificationIcon(28));
         var text = new StackPanel { Margin = new Thickness(10, 0, 10, 0) };
-        text.Children.Add(new TextBlock { Text = $"Holm {release.Version.ToString(3)} is available", FontSize = 13, FontWeight = FontWeight.SemiBold });
-        _updateRowStatus = new TextBlock { Text = _installingUpdate ? _updateStatus : InstallsItself ? "Click to update and restart Holm" : "Click to get it", FontSize = 12, Foreground = Dim };
+        text.Children.Add(new TextBlock { Text = $"HolyNotch {release.Version.ToString(3)} is available", FontSize = 13, FontWeight = FontWeight.SemiBold });
+        _updateRowStatus = new TextBlock { Text = _installingUpdate ? _updateStatus : InstallsItself ? "Click to update and restart HolyNotch" : "Click to get it", FontSize = 12, Foreground = Dim };
         text.Children.Add(_updateRowStatus);
         Grid.SetColumn(text, 1);
         row.Children.Add(text);
@@ -256,7 +256,7 @@ public sealed partial class NotchWindow
         row.HorizontalAlignment = HorizontalAlignment.Stretch;
         button.Margin = new Thickness(0, 0, 0, 8);
         button.IsEnabled = !_installingUpdate;
-        ToolTip.SetTip(button, "Update and restart Holm");
+        ToolTip.SetTip(button, "Update and restart HolyNotch");
         button.Click += async () =>
         {
             SetExpanded(false);

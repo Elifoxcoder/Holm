@@ -92,7 +92,7 @@ sealed partial class SettingsWindow : Window
         _profile = profile;
         _me = me;
         _social = social ?? Array.Empty<HubPage>();
-        Title = "Holm";
+        Title = "HolyNotch";
         WindowDecorations = WindowDecorations.None;
         // Glass designs blur what's behind where the system can (Windows); elsewhere the panel is see-through.
         var design = Look.Current;
@@ -122,7 +122,7 @@ sealed partial class SettingsWindow : Window
             Child = new Border { Width = 16, Height = 6, CornerRadius = new CornerRadius(3), Background = Look.Ink, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 6, 0, 0) },
         });
         var brandText = new StackPanel { Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-        brandText.Children.Add(new TextBlock { Text = "Holm", FontSize = 16, FontWeight = FontWeight.SemiBold });
+        brandText.Children.Add(new TextBlock { Text = "HolyNotch", FontSize = 16, FontWeight = FontWeight.SemiBold });
         brandText.Children.Add(new TextBlock { Text = versionLabel, FontSize = 11, Foreground = Dim });
         brand.Children.Add(brandText);
         brand.PointerPressed += (_, e) => { if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) BeginMoveDrag(e); };

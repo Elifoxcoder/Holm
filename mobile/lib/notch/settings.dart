@@ -46,8 +46,8 @@ enum ActivityKind {
   timer('Timers', 'Running timers and stopwatches'),
   navigation('Navigation', 'The next turn from Google Maps'),
   download('Downloads', 'Progress until the download is done'),
-  holm('Holm', 'Files and texts from your PC, offers to accept'),
-  chat('Holm chat', 'New messages from friends'),
+  holm('HolyNotch', 'Files and texts from your PC, offers to accept'),
+  chat('HolyNotch chat', 'New messages from friends'),
   clipboard('Clipboard from your PC', 'Text copied on your PC, to copy here with a tap'),
   screenshot('Screenshots to your PC', 'Send a screenshot you just took to your PC'),
   volume('Volume', 'The notch shows the volume instead of Android’s slider'),
@@ -85,8 +85,8 @@ enum NotchGesture {
   torch('Torch on and off'),
   playPause('Play and pause'),
   screenshot('Take a screenshot'),
-  holm('Open Holm'),
-  note('New note in Holm'),
+  holm('Open HolyNotch'),
+  note('New note in HolyNotch'),
   none('Nothing');
 
   final String label;

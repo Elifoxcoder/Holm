@@ -86,7 +86,7 @@ internal sealed class ActivityPage : HubView
         if (active.Count == 0 && online.Count == 0)
             _content.Children.Add(new TextBlock
             {
-                Text = "Friends show up here as soon as their Holm answers. Holm asks every few minutes while this page is open.",
+                Text = "Friends show up here as soon as their HolyNotch answers. HolyNotch asks every few minutes while this page is open.",
                 Foreground = HubTheme.Faint, FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(4, 10, 0, 0),
             });
     }

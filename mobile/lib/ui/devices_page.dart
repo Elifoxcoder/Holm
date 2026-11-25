@@ -78,7 +78,7 @@ class _DevicesPageState extends State<DevicesPage> {
       builder: (context) => AlertDialog(
         title: const Text('Find a device by address'),
         content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('For a network that hides devices from each other: type the IP address of the laptop running Holm.',
+          const Text('For a network that hides devices from each other: type the IP address of the laptop running HolyNotch.',
               style: TextStyle(color: HolmColors.dim)),
           const SizedBox(height: 14),
           TextField(
@@ -134,7 +134,7 @@ class _DevicesPageState extends State<DevicesPage> {
                   _SignInCard(onSignIn: () => showAccount(context, s))
                 else if (devices.isEmpty)
                   EmptyState(Icons.devices_rounded, 'No device of yours is online',
-                      s.accountError ?? 'Open Holm on a PC signed in to ${s.account!.email}. It shows up here, on any network.')
+                      s.accountError ?? 'Open HolyNotch on a PC signed in to ${s.account!.email}. It shows up here, on any network.')
                 else
                   for (final d in devices) card(SendTarget.device(d)),
                 SectionLabel('On this Wi-Fi', trailing: TextButton.icon(
@@ -143,8 +143,8 @@ class _DevicesPageState extends State<DevicesPage> {
                   label: const Text('By address'),
                 )),
                 if (peers.isEmpty)
-                  const EmptyState(Icons.wifi_find_rounded, 'Looking for Holm…',
-                      'Open Holm on your laptop (with Beam on) or this app on another phone, on the same Wi-Fi.'),
+                  const EmptyState(Icons.wifi_find_rounded, 'Looking for HolyNotch…',
+                      'Open HolyNotch on your laptop (with Beam on) or this app on another phone, on the same Wi-Fi.'),
                 for (final peer in peers) card(SendTarget.nearby(peer)),
                 if (s.received.isNotEmpty) ...[
                   const SectionLabel('Received'),
@@ -181,7 +181,7 @@ class _IdentityCard extends StatelessWidget {
               Text(name, style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w600)),
               const SizedBox(height: 3),
               Text(
-                running ? 'Visible to Holm${address != null ? ' · $address' : ''}' : 'Nearby sharing is off',
+                running ? 'Visible to HolyNotch${address != null ? ' · $address' : ''}' : 'Nearby sharing is off',
                 style: TextStyle(color: Colors.white.withValues(alpha: 0.7)),
               ),
             ]),
@@ -248,7 +248,7 @@ class _SignInCard extends StatelessWidget {
             Expanded(child: Text('Reach your laptop from anywhere', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
           ]),
           const SizedBox(height: 6),
-          const Text('Sign in with your Holm account. Your PCs signed in to it show up here on any network, not only on this Wi-Fi.',
+          const Text('Sign in with your HolyNotch account. Your PCs signed in to it show up here on any network, not only on this Wi-Fi.',
               style: TextStyle(color: HolmColors.dim, fontSize: 13.5, height: 1.35)),
           const SizedBox(height: 12),
           PillButton('Sign in', icon: Icons.person_outline_rounded, onPressed: onSignIn),
@@ -267,7 +267,7 @@ class _PeerCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final name = target.name;
     final phone = RegExp('phone|pixel|galaxy|android|iphone', caseSensitive: false).hasMatch(name);
-    final where = target.peer?.address.address ?? 'Anywhere · Holm account';
+    final where = target.peer?.address.address ?? 'Anywhere · HolyNotch account';
     return HolmCard(
       padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

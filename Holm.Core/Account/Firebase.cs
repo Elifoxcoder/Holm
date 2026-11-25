@@ -161,7 +161,7 @@ public sealed class FirebaseClient
             try { response = await _http.SendAsync(request, ct).ConfigureAwait(false); }
             catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException && !ct.IsCancellationRequested)
             {
-                throw new AccountException("Couldn't reach the Holm account service. Check the internet connection.", null, ex);
+                throw new AccountException("Couldn't reach the HolyNotch account service. Check the internet connection.", null, ex);
             }
             using (response)
             {
@@ -194,15 +194,15 @@ public sealed class FirebaseClient
 
     static string Describe(string? code) => code switch
     {
-        "EMAIL_EXISTS" => "There is already a Holm account with this email. Sign in instead.",
+        "EMAIL_EXISTS" => "There is already a HolyNotch account with this email. Sign in instead.",
         "INVALID_LOGIN_CREDENTIALS" or "EMAIL_NOT_FOUND" or "INVALID_PASSWORD" => "The email or the password is wrong.",
         "INVALID_EMAIL" => "That isn't an email address.",
-        "USER_DISABLED" => "This Holm account has been switched off.",
+        "USER_DISABLED" => "This HolyNotch account has been switched off.",
         "TOO_MANY_ATTEMPTS_TRY_LATER" => "Too many tries. Wait a few minutes and try again.",
         "TOKEN_EXPIRED" or "INVALID_REFRESH_TOKEN" or "INVALID_ID_TOKEN" or "USER_NOT_FOUND" => "You were signed out. Sign in again.",
-        "OPERATION_NOT_ALLOWED" => "Signing in with email isn't switched on for the Holm account service yet.",
-        "PERMISSION_DENIED" or "UNAUTHENTICATED" => "The Holm account service refused this. Sign in again.",
-        _ => "The Holm account service answered with an error" + (code != null ? $" ({code})." : "."),
+        "OPERATION_NOT_ALLOWED" => "Signing in with email isn't switched on for the HolyNotch account service yet.",
+        "PERMISSION_DENIED" or "UNAUTHENTICATED" => "The HolyNotch account service refused this. Sign in again.",
+        _ => "The HolyNotch account service answered with an error" + (code != null ? $" ({code})." : "."),
     };
 
     static string Text(JsonNode? json, string name)

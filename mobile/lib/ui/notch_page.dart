@@ -44,7 +44,7 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
     _preview.media = const MediaInfo(
       package: 'preview',
       app: 'Music',
-      title: 'Holm',
+      title: 'HolyNotch',
       artist: 'Your music here',
       playing: true,
       position: 42000,
@@ -114,7 +114,7 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
     if (!mounted) return;
     final text = switch (answer) {
       'granted' => 'Unlocked. Android’s pop-ups can be hidden now.',
-      'denied' => 'Shizuku didn’t allow Holm.',
+      'denied' => 'Shizuku didn’t allow HolyNotch.',
       'missing' => 'Install Shizuku first.',
       'stopped' => 'Start Shizuku first (in the Shizuku app).',
       _ => 'That didn’t work. Try the command from a computer.',
@@ -245,7 +245,7 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
         _Permission(
           icon: Icons.layers_outlined,
           title: 'Dynamic Notch',
-          detail: overlay ? 'On. It shows over every app.' : 'Turn on “Holm Dynamic Notch” under Accessibility › Installed apps.',
+          detail: overlay ? 'On. It shows over every app.' : 'Turn on “HolyNotch Dynamic Notch” under Accessibility › Installed apps.',
           on: overlay,
           onTap: NotchLink.openAccessibility,
         ),
@@ -254,7 +254,7 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
           title: 'Notifications and music',
           detail: notifications
               ? 'On. Music, timers, downloads and new notifications.'
-              : 'Let Holm read notifications to show them and the music.',
+              : 'Let HolyNotch read notifications to show them and the music.',
           on: notifications,
           onTap: NotchLink.openNotificationAccess,
         ),
@@ -272,7 +272,7 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
           _Permission(
             icon: Icons.screenshot_outlined,
             title: 'Screenshots to your PC',
-            detail: 'Let Holm see new screenshots, to offer sending them.',
+            detail: 'Let HolyNotch see new screenshots, to offer sending them.',
             on: false,
             onTap: () async {
               await NotchLink.askPermission('images');
@@ -283,7 +283,7 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
           _Permission(
             icon: Icons.call_outlined,
             title: 'Answer calls in the notch',
-            detail: 'Let Holm answer, decline and hang up when you tap there.',
+            detail: 'Let HolyNotch answer, decline and hang up when you tap there.',
             on: false,
             onTap: () async {
               await NotchLink.askPermission('calls');
@@ -294,7 +294,7 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
           _Permission(
             icon: Icons.event_outlined,
             title: 'Next event in the overview',
-            detail: 'Let Holm read your calendar to show what’s next.',
+            detail: 'Let HolyNotch read your calendar to show what’s next.',
             on: false,
             onTap: () async {
               await NotchLink.askPermission('calendar');
@@ -369,7 +369,7 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
           title: 'Open look',
           detail: 'Closed, the notch is always black like the camera',
           value: n.look,
-          options: const {NotchLook.holm: 'Holm', NotchLook.nothing: 'Nothing'},
+          options: const {NotchLook.holm: 'HolyNotch', NotchLook.nothing: 'Nothing'},
           onChanged: (v) => _set(n.copyWith(look: v)),
         ),
         if (n.look == NotchLook.holm) _Designs(selected: n.design, onChanged: (id) => _set(n.copyWith(design: id))),
@@ -469,7 +469,7 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
                 dense: true,
                 title: const Text('Also on your PC', style: TextStyle(fontSize: 15)),
                 subtitle: const Text(
-                  'PCs signed in to your Holm account show notifications, calls, songs and timers from here, end-to-end encrypted',
+                  'PCs signed in to your HolyNotch account show notifications, calls, songs and timers from here, end-to-end encrypted',
                   style: TextStyle(color: HolmColors.dim, fontSize: 12.5),
                 ),
                 value: n.toPc,
@@ -701,7 +701,7 @@ class _Popups extends StatelessWidget {
             switch (shizuku) {
               'missing' => 'Android lets an app do this only with Shizuku, or one command from a computer.',
               'stopped' => 'Start Shizuku in its app, then unlock here.',
-              _ => 'Shizuku is running: one tap gives Holm the permission.',
+              _ => 'Shizuku is running: one tap gives HolyNotch the permission.',
             },
             style: const TextStyle(color: HolmColors.dim, fontSize: 13),
           ),
@@ -840,7 +840,7 @@ class _Designs extends StatelessWidget {
       scrollDirection: Axis.horizontal,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       children: [
-        _swatch(null, 'Holm', Colors.black, Colors.white, const Color(0xFF0A84FF)),
+        _swatch(null, 'HolyNotch', Colors.black, Colors.white, const Color(0xFF0A84FF)),
         for (final d in NotchDesign.all) _swatch(d.id, d.name, d.background, d.ink, d.accent),
       ],
     ),

@@ -2,6 +2,10 @@
 
 ## 2.4.0 – unreleased
 
+### Changed
+
+- **Holm is now HolyNotch.** A fork of Holm by ademerci (MIT License), on both the PC and the phone (HolyNotch for Android 1.3.0). Your settings, account and friends stay; friend codes, invites and Beam still work with Holm. Updates come from the fork's GitHub releases.
+
 ### Added
 
 - **A phone tab in the open notch.** Next to the clipboard and sound tools: your phone's battery, Wi-Fi or mobile data, VPN, Bluetooth and Do Not Disturb, the song it plays and what came in on it lately. Send it files or the copied text, close a notification here and it goes on the phone too, and play, pause or skip its music.

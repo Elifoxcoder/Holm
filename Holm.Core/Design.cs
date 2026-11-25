@@ -86,7 +86,7 @@ internal static class Designs
 
     public static readonly IReadOnlyList<Design> BuiltIn = new Design[]
     {
-        new() { Id = "classic", Name = "Classic", Description = "Holm as it always was: black, round, the cover's colours", Toggle = 0xFF30D158 },
+        new() { Id = "classic", Name = "Classic", Description = "HolyNotch as it always was: black, round, the cover's colours", Toggle = 0xFF30D158 },
         new()
         {
             Id = "instrument", Name = "Instrument", Description = "Black with white ink, small corners, tools as words", Instrument = true, Wash = false,
@@ -284,7 +284,7 @@ internal static class Designs
             File.WriteAllText(target, json);
             return (design with { Source = target }, null);
         }
-        catch (Exception ex) { return (null, "Holm couldn't read the file: " + ex.Message); }
+        catch (Exception ex) { return (null, "HolyNotch couldn't read the file: " + ex.Message); }
     }
 
     /// <summary>

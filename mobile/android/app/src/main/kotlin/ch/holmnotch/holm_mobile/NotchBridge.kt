@@ -122,7 +122,7 @@ object NotchBridge {
                     val file = java.io.File(args as String)
                     val values = android.content.ContentValues().apply {
                         put(android.provider.MediaStore.Downloads.DISPLAY_NAME, file.name)
-                        put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS + "/Holm")
+                        put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS + "/HolyNotch")
                         put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
                     }
                     val resolver = context.contentResolver

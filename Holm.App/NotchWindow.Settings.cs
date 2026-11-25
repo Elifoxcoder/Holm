@@ -35,7 +35,7 @@ public sealed partial class NotchWindow
             ShowSky();
             ApplyState(animate: true);
         }),
-        Switch("Show Focumon", "\uE7FC", "Show your monster and timer in the open toolbar and the closed notch. Requires the Focumon for Holm browser extension.",
+        Switch("Show Focumon", "\uE7FC", "Show your monster and timer in the open toolbar and the closed notch. Requires the Focumon for HolyNotch browser extension.",
             s => s.Focumon, SetFocumon),
         Switch("AI usage", "", "Show Claude and Codex limits and active sessions in the notch.", s => s.AiUsage, on =>
         {
@@ -73,11 +73,11 @@ public sealed partial class NotchWindow
                     s => s.AiRings, on => { _settings.AiRings = on; Save(); ApplyState(animate: true); }) with { Icon = AiUsageIcon },
                 // Not a setting of the file: the system's own sign-in list, so its default is "off".
                 new SettingsSwitch(OperatingSystem.IsWindows() ? "Start with Windows" : "Start at sign-in", "",
-                    OperatingSystem.IsWindows() ? "Holm starts when you sign in to Windows." : "Holm starts when you sign in.", () => _autostart.IsEnabled,
+                    OperatingSystem.IsWindows() ? "HolyNotch starts when you sign in to Windows." : "HolyNotch starts when you sign in.", () => _autostart.IsEnabled,
                     on => _autostart.Set(on), false),
                 Switch("Ctrl+H opens and closes the notch", "\uE765", "Press Ctrl+H anywhere to open the notch, and again to close it. Other apps don't get Ctrl+H while this is on.",
                     s => s.HotKey, SetHotKey),
-                Switch("Minimize over browser tabs", "\uE774", "While a maximized browser is in front on the notch's screen, the notch shrinks to a small pill so the tabs under it can be clicked. Hover over or click the pill to open Holm. Off by default.",
+                Switch("Minimize over browser tabs", "\uE774", "While a maximized browser is in front on the notch's screen, the notch shrinks to a small pill so the tabs under it can be clicked. Hover over or click the pill to open HolyNotch. Off by default.",
                     s => s.HideOverBrowsers, on => { _settings.HideOverBrowsers = on; Save(); WatchFullscreen(); }),
             }),
             new("popouts", "Pop-outs", "\uEA8F", Color.FromRgb(0xFF, 0x9F, 0x0A), "What pops out of the notch when it happens", PopoutSwitches()),
@@ -86,16 +86,16 @@ public sealed partial class NotchWindow
                 Switch("Calls", "\uE717", "Shows a call with its time and a mute button.", s => s.Calls, SetCalls),
                 Switch("Pause music during calls", "\uE769", "Music pauses when a call starts and plays on after.", s => s.PauseForCalls, SetPauseForCalls),
                 Switch("Microphone and camera dot", "\uE720", "A dot beside the notch while an app uses the microphone or camera.", s => s.Privacy, SetPrivacy),
-                Switch("Dictation with Handy", "\uE720", "Dictate with Handy, free and offline: the notch shows when it listens" + (OperatingSystem.IsWindows() ? ", and Handy's own overlay stays out of sight" : "") + ". Holm finds Handy or offers to install it.",
+                Switch("Dictation with Handy", "\uE720", "Dictate with Handy, free and offline: the notch shows when it listens" + (OperatingSystem.IsWindows() ? ", and Handy's own overlay stays out of sight" : "") + ". HolyNotch finds Handy or offers to install it.",
                     s => s.Dictation, SetDictation),
                 Switch("VPN indicator", "\uE72E", "A small lock while a VPN is connected.", s => s.Vpn, SetVpn),
                 Switch("Record clipboard history", "", "Keep up to 20 copied texts and pictures for this session. Turning this off clears the history.", s => s.ClipboardHistory, SetClipboardHistory),
-                Switch("Clear copied passwords after 30 s", "\uE8D7", "Copied passwords leave the clipboard after 30 seconds. Copied texts stay in memory; copied pictures wait in your temp folder until the list is cleared or Holm restarts. Passwords marked private by password managers are never read.",
+                Switch("Clear copied passwords after 30 s", "\uE8D7", "Copied passwords leave the clipboard after 30 seconds. Copied texts stay in memory; copied pictures wait in your temp folder until the list is cleared or HolyNotch restarts. Passwords marked private by password managers are never read.",
                     s => s.ClearPasswords, SetClearPasswords),
             }),
             new("beam", "Beam", "\uE724", Color.FromRgb(0x0A, 0x84, 0xFF), "Sending files to friends, people nearby and your phone", new[]
             {
-                Switch("Beam (drop files on the notch)", "\uE724", "Drop files on the notch to send them. Also needed for friends and chat. Holm looks at copied text for friend and file codes; nothing of it is kept or sent.",
+                Switch("Beam (drop files on the notch)", "\uE724", "Drop files on the notch to send them. Also needed for friends and chat. HolyNotch looks at copied text for friend and file codes; nothing of it is kept or sent.",
                     s => s.Beam, SetBeam),
                 Switch("Beam in the tool bar", "", "A Beam button in the open notch's tool bar: drag files in to send them, or receive from your phone or with a code. Also under Settings › Start page.",
                     s => !HomeLayout.Read(s).IsToolHidden(HomeLayout.Beam), on =>
@@ -142,8 +142,8 @@ public sealed partial class NotchWindow
             new ProfileEditor(FriendsService.AccountName(), CurrentProfile, ApplyProfile, AvatarColors, AvatarColor),
             () => MeCard(CurrentProfile()),
             new[] { new HubPage(StartPage.Key, "\uE8A9", "Start page", "What the open notch shows, and where", BuildStartPage),
-                new HubPage("design", "\uE790", "Design", "How Holm looks: the design, its accent colour, your own designs", DesignPage),
-                new HubPage("updates", "\uE896", "Updates", "New versions of Holm", UpdatesPage) },
+                new HubPage("design", "\uE790", "Design", "How HolyNotch looks: the design, its accent colour, your own designs", DesignPage),
+                new HubPage("updates", "\uE896", "Updates", "New versions of HolyNotch", UpdatesPage) },
             new[] { new HubPage("network", "\uE701", "Wi-Fi", "Speed test and connection details", () => new NetworkPage(CurrentLink, TrySetClipboardAsync)) },
             BuildAccountPage);
         if ((Screens.Primary ?? (Screens.All.Count > 0 ? Screens.All[0] : null)) is { } screen)
@@ -165,12 +165,12 @@ public sealed partial class NotchWindow
                 s => s.ScreenshotText, on => { _settings.ScreenshotText = on; Save(); }),
             Switch("Caps Lock hint", "\uE765", "The notch says when Caps Lock goes on or off.", s => s.CapsLock, SetCapsLock),
             Switch("All notifications in the notch", "\uE7E7", OperatingSystem.IsWindows()
-                    ? "Every app's notification pops out at the top in the notch, not only messages. Turn on Do not disturb in Windows to keep its own banners away; they still reach Holm."
-                    : "Every app's notification pops out at the top in the notch, not only messages. Turn on Do not disturb in your desktop to keep its own banners away; they still reach Holm.",
+                    ? "Every app's notification pops out at the top in the notch, not only messages. Turn on Do not disturb in Windows to keep its own banners away; they still reach HolyNotch."
+                    : "Every app's notification pops out at the top in the notch, not only messages. Turn on Do not disturb in your desktop to keep its own banners away; they still reach HolyNotch.",
                 s => s.AllNotifications, SetAllNotifications),
         };
         if (_mediaKeys.IsSupported)
-            list.Add(Switch("Volume and media only in the notch", "\uE995", "Holm takes the volume and media keys and changes the volume or track itself, so Windows' own pop-up doesn't show and the notch does. Brightness keys stay with Windows.",
+            list.Add(Switch("Volume and media only in the notch", "\uE995", "HolyNotch takes the volume and media keys and changes the volume or track itself, so Windows' own pop-up doesn't show and the notch does. Brightness keys stay with Windows.",
                 s => s.NotchOnlyPopups, SetNotchOnlyPopups));
         list.AddRange(new[]
         {

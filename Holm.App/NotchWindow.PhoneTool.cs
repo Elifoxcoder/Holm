@@ -171,7 +171,7 @@ public sealed partial class NotchWindow
     {
         if (_account is not { SignedIn: true } account)
         {
-            _phoneUnlinkedText.Text = "Your phone links by itself, no code needed: sign in to the same Holm account here and in the Holm app on the phone.";
+            _phoneUnlinkedText.Text = "Your phone links by itself, no code needed: sign in to the same HolyNotch account here and in the HolyNotch app on the phone.";
             _phoneUnlinkedButton.Label = "Sign in…";
             _phoneUnlinkedAction = () => ShowHub("profile");
         }
@@ -184,7 +184,7 @@ public sealed partial class NotchWindow
         }
         else
         {
-            _phoneUnlinkedText.Text = $"Signed in as {account.Email}. Open Holm on your phone, signed in to the same account: it shows up here within a minute.";
+            _phoneUnlinkedText.Text = $"Signed in as {account.Email}. Open HolyNotch on your phone, signed in to the same account: it shows up here within a minute.";
             _phoneUnlinkedButton.Label = "Look again";
             _phoneUnlinkedAction = () => { _friends.AskForDevices(); ShowPeek(null, "Asked your devices", "", null); };
             _friends.AskForDevices(); // the phone answers if it runs

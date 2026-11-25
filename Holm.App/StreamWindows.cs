@@ -171,7 +171,7 @@ internal sealed class StreamBadge : Window
 
     public StreamBadge(Action stop)
     {
-        Title = "Holm LIVE";
+        Title = "HolyNotch LIVE";
         WindowDecorations = WindowDecorations.None;
         TransparencyLevelHint = new[] { WindowTransparencyLevel.Transparent };
         Background = Brushes.Transparent;

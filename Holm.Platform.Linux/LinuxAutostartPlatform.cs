@@ -48,7 +48,7 @@ public sealed class LinuxAutostartPlatform : IAutostartPlatform
     internal static string Entry(string[] command) => string.Join("\n",
         "[Desktop Entry]",
         "Type=Application",
-        "Name=Holm",
+        "Name=HolyNotch",
         "Comment=The notch at the top of the screen",
         "Exec=" + Exec(command),
         "Terminal=false",

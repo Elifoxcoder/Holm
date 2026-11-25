@@ -272,7 +272,7 @@ public sealed partial class NotchWindow
             row.Children.Add(new TextBlock { Text = LaterGlyph, FontFamily = IconFont, FontSize = 14, Foreground = TimerOrange, VerticalAlignment = VerticalAlignment.Center });
             var text = new StackPanel { Margin = new Thickness(10, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center };
             text.Children.Add(new TextBlock { Text = $"For {send.FriendName}: {SendLater.Describe(send)}", FontSize = 12, FontWeight = FontWeight.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
-            text.Children.Add(new TextBlock { Text = _settings.SendLater ? "Goes when their Holm is back" : "Paused (Send later is off)", FontSize = 11, Foreground = Dim });
+            text.Children.Add(new TextBlock { Text = _settings.SendLater ? "Goes when their HolyNotch is back" : "Paused (Send later is off)", FontSize = 11, Foreground = Dim });
             Grid.SetColumn(text, 1);
             row.Children.Add(text);
             var cancel = NotchButton.Pill();

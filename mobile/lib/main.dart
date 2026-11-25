@@ -33,7 +33,7 @@ class HolmApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-        title: 'Holm',
+        title: 'HolyNotch',
         debugShowCheckedModeBanner: false,
         theme: holmTheme(),
         darkTheme: holmTheme(),
@@ -117,7 +117,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
         builder: (context) => Padding(
           padding: const EdgeInsets.fromLTRB(24, 4, 24, 28),
           child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('New in Holm ${info.name}', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w600)),
+            Text('New in HolyNotch ${info.name}', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w600)),
             const SizedBox(height: 12),
             Text(info.notes, style: const TextStyle(color: HolmColors.dim, fontSize: 15, height: 1.4)),
             const SizedBox(height: 20),
@@ -195,8 +195,8 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
           TextField(controller: name, maxLength: 40, decoration: const InputDecoration(hintText: 'Alex’s phone')),
           Text(
               s.account == null
-                  ? 'Holm on your laptop and your friends see this name.'
-                  : 'Your devices see this name. Friends see the name in your Holm profile.',
+                  ? 'HolyNotch on your laptop and your friends see this name.'
+                  : 'Your devices see this name. Friends see the name in your HolyNotch profile.',
               style: const TextStyle(color: HolmColors.faint, fontSize: 13)),
           const SizedBox(height: 16),
           HolmCard(
@@ -207,7 +207,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
               const SizedBox(width: 12),
               Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  const Text('Holm account', style: TextStyle(fontWeight: FontWeight.w600)),
+                  const Text('HolyNotch account', style: TextStyle(fontWeight: FontWeight.w600)),
                   Text(s.account?.email ?? 'Not signed in', style: const TextStyle(color: HolmColors.dim, fontSize: 13)),
                 ]),
               ),
@@ -224,12 +224,12 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
               final detail = u.checking
                   ? 'Checking…'
                   : next != null
-                      ? 'Holm ${next.name} is ready'
+                      ? 'HolyNotch ${next.name} is ready'
                       : u.unreachable
-                          ? "Couldn't reach Holm's update server"
+                          ? "Couldn't reach HolyNotch's update server"
                           : u.lastChecked != null
                               ? 'This is the newest version'
-                              : 'Holm looks for new versions every few hours';
+                              : 'HolyNotch looks for new versions every few hours';
               return HolmCard(
                 margin: EdgeInsets.zero,
                 child: Row(children: [
@@ -237,7 +237,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
                   const SizedBox(width: 12),
                   Expanded(
                     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text('Holm ${u.currentName ?? ''}'.trim(), style: const TextStyle(fontWeight: FontWeight.w600)),
+                      Text('HolyNotch ${u.currentName ?? ''}'.trim(), style: const TextStyle(fontWeight: FontWeight.w600)),
                       Text(detail, style: const TextStyle(color: HolmColors.dim, fontSize: 13)),
                     ]),
                   ),
@@ -254,7 +254,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
             builder: (context, setSheet) => SwitchListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Test versions'),
-              subtitle: const Text('Get new versions of Holm before everyone else', style: TextStyle(color: HolmColors.dim, fontSize: 13)),
+              subtitle: const Text('Get new versions of HolyNotch before everyone else', style: TextStyle(color: HolmColors.dim, fontSize: 13)),
               value: s.notch.betaUpdates,
               onChanged: (v) {
                 s.setNotch(s.notch.copyWith(betaUpdates: v));
@@ -327,7 +327,7 @@ class _UpdateBanner extends StatelessWidget {
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text('Holm ${info.name} is ready', style: const TextStyle(fontWeight: FontWeight.w600)),
+                    Text('HolyNotch ${info.name} is ready', style: const TextStyle(fontWeight: FontWeight.w600)),
                     const SizedBox(height: 2),
                     Text(detail,
                         maxLines: 2,
@@ -369,7 +369,7 @@ class _TopBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 10),
-          const Text('Holm', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+          const Text('HolyNotch', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
           const Spacer(),
           RoundIconButton(Icons.settings_outlined, tooltip: 'Settings', onPressed: onSettings),
         ]),

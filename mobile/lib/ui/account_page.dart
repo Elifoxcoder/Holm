@@ -32,7 +32,7 @@ class _SignInState extends State<_SignIn> {
 
   Future<void> _go() async {
     if (_email.text.trim().isEmpty || _password.text.isEmpty) {
-      setState(() => _error = 'Type the email and password of your Holm account.');
+      setState(() => _error = 'Type the email and password of your HolyNotch account.');
       return;
     }
     setState(() => _error = null);
@@ -56,10 +56,10 @@ class _SignInState extends State<_SignIn> {
   Widget build(BuildContext context) {
     final busy = widget.state.accountBusy;
     return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const Text('Holm account', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600)),
+      const Text('HolyNotch account', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600)),
       const SizedBox(height: 6),
       const Text(
-          'Sign in as in Holm on your PC (Settings › Account). Your PCs then reach this phone on any network, and your friends come along.',
+          'Sign in as in HolyNotch on your PC (Settings › Account). Your PCs then reach this phone on any network, and your friends come along.',
           style: TextStyle(color: HolmColors.dim, height: 1.35)),
       const SizedBox(height: 18),
       TextField(
@@ -98,7 +98,7 @@ class _SignInState extends State<_SignIn> {
         ],
       ]),
       const SizedBox(height: 14),
-      const Text('Your password stays on this phone: Holm only sends a key made from it, and your data is encrypted.',
+      const Text('Your password stays on this phone: HolyNotch only sends a key made from it, and your data is encrypted.',
           style: TextStyle(color: HolmColors.faint, fontSize: 12.5)),
     ]);
   }
@@ -129,7 +129,7 @@ class _SignedIn extends StatelessWidget {
   Widget build(BuildContext context) {
     final devices = state.ownDevices;
     return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const Text('Holm account', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600)),
+      const Text('HolyNotch account', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600)),
       const SizedBox(height: 14),
       HolmCard(
         margin: EdgeInsets.zero,
