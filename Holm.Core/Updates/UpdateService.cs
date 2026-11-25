@@ -16,11 +16,21 @@ namespace WinNotch.Updates;
 
 internal sealed record UpdateRelease(Version Version, string Tag, Uri ReleaseUrl, Uri DownloadUrl, long Size, string Sha256);
 
-/// <summary>Reads public stable releases and stages a verified standalone executable without touching the installed app.</summary>
+/// <summary>
+/// Finds the newest stable HolyNotch and stages a verified standalone executable without touching the installed app.
+/// First HolyNotch's own update server (<see cref="ServerBase"/>: latest.json and the zip, as the phone app's updates);
+/// GitHub's releases only when that server can't be reached or answers nonsense. Either way the zip's SHA-256 and the
+/// exe's version and product name are checked before anything is installed.
+/// </summary>
 internal sealed class UpdateService : IDisposable
 {
     const string RepositoryUrl = "https://github.com/Elifoxcoder/Holm";
     internal const string LatestReleaseUrl = "https://api.github.com/repos/Elifoxcoder/Holm/releases/latest";
+    /// <summary>HolyNotch's own update server: latest.json and the release files (tool/publish-desktop.ps1 puts them there).</summary>
+    internal const string ServerBase = HolyNotchServer.Url + "/desktop/";
+    /// <summary>The page with the downloads, opened where an update can't install itself (Linux).</summary>
+    internal const string DownloadPage = "https://sites.elifox.ch/holynotch";
+    static readonly Regex Sha256Hex = new(@"\A[0-9a-fA-F]{64}\z", RegexOptions.CultureInvariant);
     internal const long MaxDownloadBytes = 256L * 1024 * 1024;
     internal const long MaxExecutableBytes = 512L * 1024 * 1024;
     const int MaxMetadataBytes = 1024 * 1024;
@@ -36,6 +46,50 @@ internal sealed class UpdateService : IDisposable
     }
 
     public async Task<UpdateRelease?> CheckAsync(Version currentVersion, CancellationToken ct = default)
+    {
+        try { return await CheckServerAsync(currentVersion, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is HttpRequestException or InvalidDataException or JsonException
+                                   || ex is OperationCanceledException && !ct.IsCancellationRequested)
+        {
+            // The own server is down or broken: GitHub's releases, as before.
+            Diag.Log("Updates: HolyNotch's update server failed (" + ex.Message + "), asking GitHub");
+            return await CheckGitHubAsync(currentVersion, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// latest.json on HolyNotch's server: {"version":"2.4.1","file":"HolyNotch-2.4.1-win-x64.zip","size":…,"sha256":"…"}.
+    /// The file must be exactly the zip name for that version, next to latest.json: the server can't send the app elsewhere.
+    /// </summary>
+    internal async Task<UpdateRelease?> CheckServerAsync(Version currentVersion, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
+        using var request = Request(new Uri(ServerBase + "latest.json"));
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+        using var metadata = new MemoryStream();
+        await CopyBoundedAsync(stream, metadata, MaxMetadataBytes, timeout.Token).ConfigureAwait(false);
+        using var document = JsonDocument.Parse(metadata.ToArray());
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object) throw new InvalidDataException("The update server returned an invalid answer.");
+        string? tag = Text(root, "version");
+        if (!TryVersion(tag, out var version)) throw new InvalidDataException("The update server named no valid version.");
+        tag = "v" + tag!.TrimStart('v');
+        if (Normalize(version!) <= Normalize(currentVersion)) return null;
+        string name = AssetName(tag);
+        if (Text(root, "file") != name) throw new InvalidDataException("The update server's file does not belong to HolyNotch.");
+        if (!root.TryGetProperty("size", out var sizeValue) || sizeValue.ValueKind != JsonValueKind.Number
+            || !sizeValue.TryGetInt64(out long size) || size <= 0 || size > MaxDownloadBytes)
+            throw new InvalidDataException("The update download is missing or too large.");
+        string sha = Text(root, "sha256") ?? "";
+        if (!Sha256Hex.IsMatch(sha)) throw new InvalidDataException("The update download has no SHA-256 checksum.");
+        return new UpdateRelease(version!, tag, new Uri(DownloadPage), new Uri(ServerBase + name), size, sha.ToLowerInvariant());
+    }
+
+    /// <summary>GitHub's latest release of the fork: the fallback.</summary>
+    internal async Task<UpdateRelease?> CheckGitHubAsync(Version currentVersion, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(30));
@@ -147,10 +201,13 @@ internal sealed class UpdateService : IDisposable
 
     static void ValidateRelease(UpdateRelease release)
     {
+        bool fromServer = release.DownloadUrl.AbsoluteUri == ServerBase + AssetName(release.Tag)
+                          && release.ReleaseUrl.AbsoluteUri == new Uri(DownloadPage).AbsoluteUri;
+        bool fromGitHub = release.DownloadUrl.AbsoluteUri == $"{RepositoryUrl}/releases/download/{release.Tag}/{AssetName(release.Tag)}"
+                          && release.ReleaseUrl.AbsoluteUri == $"{RepositoryUrl}/releases/tag/{release.Tag}";
         if (!TryVersion(release.Tag, out var version) || Normalize(version!) != Normalize(release.Version)
             || release.Size <= 0 || release.Size > MaxDownloadBytes || !Sha256Digest.IsMatch("sha256:" + release.Sha256)
-            || release.DownloadUrl.AbsoluteUri != $"{RepositoryUrl}/releases/download/{release.Tag}/{AssetName(release.Tag)}"
-            || release.ReleaseUrl.AbsoluteUri != $"{RepositoryUrl}/releases/tag/{release.Tag}")
+            || !(fromServer || fromGitHub))
             throw new InvalidDataException("The update does not describe a verified HolyNotch release.");
     }
 
