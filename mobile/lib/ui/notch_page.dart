@@ -75,6 +75,7 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _rev.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _poll?.cancel();
     if (_onScreen) NotchLink.preview(false);
@@ -234,81 +235,43 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
     if (_onScreen) NotchLink.preview(true, open: open);
   }
 
+  /// Every change here also reaches an open sub-page, which rebuilds from this state.
+  final _rev = ValueNotifier(0);
+
   @override
-  Widget build(BuildContext context) {
-    final g = _editOpen ? n.open : n.closed;
-    final overlay = _status['overlay'] == true, notifications = _status['notifications'] == true;
-    return ListView(
-      padding: const EdgeInsets.only(bottom: 28),
-      children: [
-        const PageHeader('Notch', 'Live activities around the camera'),
-        _Permission(
-          icon: Icons.layers_outlined,
-          title: 'Dynamic Notch',
-          detail: overlay ? 'On. It shows over every app.' : 'Turn on “HolyNotch Dynamic Notch” under Accessibility › Installed apps.',
-          on: overlay,
-          onTap: NotchLink.openAccessibility,
+  void setState(VoidCallback fn) {
+    super.setState(fn);
+    _rev.value++;
+  }
+
+  /// One group of settings on its own page, rebuilt whenever the settings or this page change.
+  void _open(String title, String subtitle, List<Widget> Function() children) {
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => Scaffold(
+        backgroundColor: HolmColors.panel,
+        appBar: AppBar(backgroundColor: HolmColors.panel, title: Text(title)),
+        body: ListenableBuilder(
+          listenable: Listenable.merge([s, _rev]),
+          builder: (context, _) => ListView(
+            padding: const EdgeInsets.only(bottom: 28),
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Text(subtitle, style: const TextStyle(color: HolmColors.dim)),
+              ),
+              ...children(),
+            ],
+          ),
         ),
-        _Permission(
-          icon: Icons.notifications_none_rounded,
-          title: 'Notifications and music',
-          detail: notifications
-              ? 'On. Music, timers, downloads and new notifications.'
-              : 'Let HolyNotch read notifications to show them and the music.',
-          on: notifications,
-          onTap: NotchLink.openNotificationAccess,
-        ),
-        _Popups(
-          allowed: _status['popupsAllowed'] == true,
-          hidden: _status['popupsHidden'] == true,
-          shizuku: _shizuku,
-          onChanged: (v) async {
-            await NotchLink.hidePopups(v);
-            _refresh();
-          },
-          onShizuku: _unlockWithShizuku,
-        ),
-        if (!_images && n.shows(ActivityKind.screenshot))
-          _Permission(
-            icon: Icons.screenshot_outlined,
-            title: 'Screenshots to your PC',
-            detail: 'Let HolyNotch see new screenshots, to offer sending them.',
-            on: false,
-            onTap: () async {
-              await NotchLink.askPermission('images');
-              _refresh();
-            },
-          ),
-        if (!_calls && n.shows(ActivityKind.call))
-          _Permission(
-            icon: Icons.call_outlined,
-            title: 'Answer calls in the notch',
-            detail: 'Let HolyNotch answer, decline and hang up when you tap there.',
-            on: false,
-            onTap: () async {
-              await NotchLink.askPermission('calls');
-              _refresh();
-            },
-          ),
-        if (!_calendar && n.shows(ActivityKind.home))
-          _Permission(
-            icon: Icons.event_outlined,
-            title: 'Next event in the overview',
-            detail: 'Let HolyNotch read your calendar to show what’s next.',
-            on: false,
-            onTap: () async {
-              await NotchLink.askPermission('calendar');
-              _refresh();
-            },
-          ),
-        if (!_bluetooth)
-          _Permission(
-            icon: Icons.bluetooth_rounded,
-            title: 'Bluetooth names',
-            detail: 'Show which headphones connect.',
-            on: false,
-            onTap: NotchLink.askBluetooth,
-          ),
+      ),
+    ));
+  }
+
+  bool get _overlay => _status['overlay'] == true;
+
+  List<Widget> _previewPart() {
+    final overlay = _overlay;
+    return [
         SectionLabel(
           'Preview',
           trailing: Row(
@@ -339,6 +302,13 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
             onSelectionChanged: (v) => _showOpen(v.first),
           ),
         ),
+    ];
+  }
+
+  List<Widget> _shapePage() {
+    final g = _editOpen ? n.open : n.closed;
+    return [
+      ..._previewPart(),
         _Slider('Width', g.width, 40, 420, (v) => _geometry(g.copyWith(width: v))),
         // Open, the notch is as tall as what it shows needs, up to this.
         _Slider(_editOpen ? 'Max height' : 'Height', g.height, 20, _editOpen ? 320 : 80, (v) => _geometry(g.copyWith(height: v))),
@@ -357,7 +327,41 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
             _Slider(label, g.corners![i], 0, 80, (v) => _geometry(g.copyWith(corners: [...g.corners!]..[i] = v))),
         _Slider('Left and right', g.x, -160, 160, (v) => _geometry(g.copyWith(x: v))),
         _Slider('From the top', g.y, 0, 80, (v) => _geometry(g.copyWith(y: v))),
-        const SectionLabel('Show'),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (_status['camera'] is Map)
+                  PillButton('Fit to camera', icon: Icons.center_focus_strong_outlined, onPressed: _fitToCamera),
+                PillButton(
+                  'Reset the shape',
+                  icon: Icons.restart_alt_rounded,
+                  primary: false,
+                  onPressed: () {
+                    const d = NotchSettings();
+                    _set(n.copyWith(closed: d.closed, open: d.open));
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+    ];
+  }
+
+  List<Widget> _lookPage() => [
+        ..._previewPart(),
+        _Choice<NotchOutline>(
+          title: 'Edge',
+          detail: 'While the notch is black: nothing, a thin grey line or a soft glow, so it shows against dark screens',
+          value: n.outline,
+          options: {for (final o in NotchOutline.values) o: o.label},
+          onChanged: (v) => _set(n.copyWith(outline: v)),
+        ),
         _Choice<int>(
           title: 'Activities at once',
           detail: 'Two puts the second in a bubble beside the notch',
@@ -373,94 +377,9 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
           onChanged: (v) => _set(n.copyWith(look: v)),
         ),
         if (n.look == NotchLook.holm) _Designs(selected: n.design, onChanged: (id) => _set(n.copyWith(design: id))),
-        const SectionLabel('Quiet'),
-        HolmCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Keep quiet', style: TextStyle(fontWeight: FontWeight.w600)),
-              const SizedBox(height: 2),
-              const Text(
-                'Then only calls, timers and alarms show up. What’s already running stays.',
-                style: TextStyle(color: HolmColors.dim, fontSize: 12.5),
-              ),
-              const SizedBox(height: 10),
-              SegmentedButton<QuietMode>(
-                showSelectedIcon: false,
-                segments: [
-                  for (final q in QuietMode.values)
-                    ButtonSegment(value: q, label: Text(q == QuietMode.dnd ? 'With DND' : q == QuietMode.hours ? 'At times' : 'Never')),
-                ],
-                selected: {n.quiet},
-                onSelectionChanged: (v) => _set(n.copyWith(quiet: v.first)),
-              ),
-              if (n.quiet == QuietMode.hours) ...[
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    _TimeButton('From', n.quietFrom, (m) => _set(n.copyWith(quietFrom: m))),
-                    const SizedBox(width: 8),
-                    _TimeButton('To', n.quietTo, (m) => _set(n.copyWith(quietTo: m))),
-                  ],
-                ),
-              ],
-            ],
-          ),
-        ),
-        const SectionLabel('Gestures'),
-        HolmCard(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Column(
-            children: [
-              _GestureRow('Double tap', n.doubleTap, (g) => _set(n.copyWith(doubleTap: g))),
-              _GestureRow('Long press', n.longPress, (g) => _set(n.copyWith(longPress: g))),
-            ],
-          ),
-        ),
-        const SectionLabel('App colours'),
-        HolmCard(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Column(
-            children: [
-              for (final e in n.colors.entries)
-                ListTile(
-                  dense: true,
-                  leading: CircleAvatar(radius: 10, backgroundColor: Color(e.value)),
-                  title: Text(n.muted[e.key] ?? _appNames[e.key] ?? e.key, style: const TextStyle(fontSize: 15)),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.close_rounded, color: HolmColors.dim),
-                    tooltip: 'Back to its own colour',
-                    onPressed: () => _set(n.copyWith(colors: Map.of(n.colors)..remove(e.key))),
-                  ),
-                  onTap: () => _pickColor(e.key, _appNames[e.key] ?? e.key),
-                ),
-              ListTile(
-                dense: true,
-                leading: const Icon(Icons.add_rounded, color: HolmColors.accent),
-                title: const Text('Choose an app’s colour', style: TextStyle(fontSize: 15)),
-                onTap: _pickApp,
-              ),
-            ],
-          ),
-        ),
-        const SectionLabel('Activities'),
-        HolmCard(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Column(
-            children: [
-              for (final kind in ActivityKind.values)
-                SwitchListTile(
-                  key: ValueKey(kind),
-                  dense: true,
-                  title: Text(kind.label, style: const TextStyle(fontSize: 15)),
-                  subtitle: Text(kind.detail, style: const TextStyle(color: HolmColors.dim, fontSize: 12.5)),
-                  value: n.shows(kind),
-                  onChanged: (on) => _set(n.copyWith(off: on ? ({...n.off}..remove(kind)) : {...n.off, kind})),
-                ),
-            ],
-          ),
-        ),
-        const SectionLabel('Notifications'),
+      ];
+
+  List<Widget> _notificationsPage() => [
         HolmCard(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Column(
@@ -563,29 +482,199 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
             ],
           ),
         ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                if (_status['camera'] is Map)
-                  PillButton('Fit to camera', icon: Icons.center_focus_strong_outlined, onPressed: _fitToCamera),
-                PillButton(
-                  'Reset the shape',
-                  icon: Icons.restart_alt_rounded,
-                  primary: false,
-                  onPressed: () {
-                    const d = NotchSettings();
-                    _set(n.copyWith(closed: d.closed, open: d.open));
-                  },
+        const SectionLabel('App colours'),
+        HolmCard(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Column(
+            children: [
+              for (final e in n.colors.entries)
+                ListTile(
+                  dense: true,
+                  leading: CircleAvatar(radius: 10, backgroundColor: Color(e.value)),
+                  title: Text(n.muted[e.key] ?? _appNames[e.key] ?? e.key, style: const TextStyle(fontSize: 15)),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.close_rounded, color: HolmColors.dim),
+                    tooltip: 'Back to its own colour',
+                    onPressed: () => _set(n.copyWith(colors: Map.of(n.colors)..remove(e.key))),
+                  ),
+                  onTap: () => _pickColor(e.key, _appNames[e.key] ?? e.key),
                 ),
-              ],
-            ),
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.add_rounded, color: HolmColors.accent),
+                title: const Text('Choose an app’s colour', style: TextStyle(fontSize: 15)),
+                onTap: _pickApp,
+              ),
+            ],
           ),
         ),
+      ];
+
+  List<Widget> _quietPage() => [
+        const SectionLabel('Quiet'),
+        HolmCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Keep quiet', style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 2),
+              const Text(
+                'Then only calls, timers and alarms show up. What’s already running stays.',
+                style: TextStyle(color: HolmColors.dim, fontSize: 12.5),
+              ),
+              const SizedBox(height: 10),
+              SegmentedButton<QuietMode>(
+                showSelectedIcon: false,
+                segments: [
+                  for (final q in QuietMode.values)
+                    ButtonSegment(value: q, label: Text(q == QuietMode.dnd ? 'With DND' : q == QuietMode.hours ? 'At times' : 'Never')),
+                ],
+                selected: {n.quiet},
+                onSelectionChanged: (v) => _set(n.copyWith(quiet: v.first)),
+              ),
+              if (n.quiet == QuietMode.hours) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    _TimeButton('From', n.quietFrom, (m) => _set(n.copyWith(quietFrom: m))),
+                    const SizedBox(width: 8),
+                    _TimeButton('To', n.quietTo, (m) => _set(n.copyWith(quietTo: m))),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+        const SectionLabel('Gestures'),
+        HolmCard(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Column(
+            children: [
+              _GestureRow('Double tap', n.doubleTap, (g) => _set(n.copyWith(doubleTap: g))),
+              _GestureRow('Long press', n.longPress, (g) => _set(n.copyWith(longPress: g))),
+            ],
+          ),
+        ),
+      ];
+
+  List<Widget> _activitiesPage() => [
+        HolmCard(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Column(
+            children: [
+              for (final kind in ActivityKind.values)
+                SwitchListTile(
+                  key: ValueKey(kind),
+                  dense: true,
+                  title: Text(kind.label, style: const TextStyle(fontSize: 15)),
+                  subtitle: Text(kind.detail, style: const TextStyle(color: HolmColors.dim, fontSize: 12.5)),
+                  value: n.shows(kind),
+                  onChanged: (on) => _set(n.copyWith(off: on ? ({...n.off}..remove(kind)) : {...n.off, kind})),
+                ),
+            ],
+          ),
+        ),
+      ];
+
+  Widget _group(IconData icon, String title, String subtitle, List<Widget> Function() page) => HolmCard(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        onTap: () => _open(title, subtitle, page),
+        child: Row(children: [
+          Icon(icon, color: HolmColors.accent),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 2),
+              Text(subtitle, style: const TextStyle(color: HolmColors.dim, fontSize: 12.5)),
+            ]),
+          ),
+          const Icon(Icons.chevron_right_rounded, color: HolmColors.dim),
+        ]),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final overlay = _overlay, notifications = _status['notifications'] == true;
+    final off = ActivityKind.values.where((k) => !n.shows(k)).length;
+    return ListView(
+      padding: const EdgeInsets.only(bottom: 28),
+      children: [
+        const PageHeader('Notch', 'Live activities around the camera'),
+        _Permission(
+          icon: Icons.layers_outlined,
+          title: 'Dynamic Notch',
+          detail: overlay ? 'On. It shows over every app.' : 'Turn on “HolyNotch Dynamic Notch” under Accessibility › Installed apps.',
+          on: overlay,
+          onTap: NotchLink.openAccessibility,
+        ),
+        _Permission(
+          icon: Icons.notifications_none_rounded,
+          title: 'Notifications and music',
+          detail: notifications
+              ? 'On. Music, timers, downloads and new notifications.'
+              : 'Let HolyNotch read notifications to show them and the music.',
+          on: notifications,
+          onTap: NotchLink.openNotificationAccess,
+        ),
+        _Popups(
+          allowed: _status['popupsAllowed'] == true,
+          hidden: _status['popupsHidden'] == true,
+          shizuku: _shizuku,
+          onChanged: (v) async {
+            await NotchLink.hidePopups(v);
+            _refresh();
+          },
+          onShizuku: _unlockWithShizuku,
+        ),
+        if (!_images && n.shows(ActivityKind.screenshot))
+          _Permission(
+            icon: Icons.screenshot_outlined,
+            title: 'Screenshots to your PC',
+            detail: 'Let HolyNotch see new screenshots, to offer sending them.',
+            on: false,
+            onTap: () async {
+              await NotchLink.askPermission('images');
+              _refresh();
+            },
+          ),
+        if (!_calls && n.shows(ActivityKind.call))
+          _Permission(
+            icon: Icons.call_outlined,
+            title: 'Answer calls in the notch',
+            detail: 'Let HolyNotch answer, decline and hang up when you tap there.',
+            on: false,
+            onTap: () async {
+              await NotchLink.askPermission('calls');
+              _refresh();
+            },
+          ),
+        if (!_calendar && n.shows(ActivityKind.home))
+          _Permission(
+            icon: Icons.event_outlined,
+            title: 'Next event in the overview',
+            detail: 'Let HolyNotch read your calendar to show what’s next.',
+            on: false,
+            onTap: () async {
+              await NotchLink.askPermission('calendar');
+              _refresh();
+            },
+          ),
+        if (!_bluetooth)
+          _Permission(
+            icon: Icons.bluetooth_rounded,
+            title: 'Bluetooth names',
+            detail: 'Show which headphones connect.',
+            on: false,
+            onTap: NotchLink.askBluetooth,
+          ),
+        const SectionLabel('Settings'),
+        _group(Icons.crop_free_rounded, 'Shape and position', 'Size, corners, where it sits; fit it to the camera', _shapePage),
+        _group(Icons.palette_outlined, 'Look', 'Edge, open look and design, one or two activities', _lookPage),
+        _group(Icons.widgets_outlined, 'Activities',
+            off == 0 ? 'Everything shows' : '$off of ${ActivityKind.values.length} switched off', _activitiesPage),
+        _group(Icons.notifications_none_rounded, 'Notifications', 'On your PC, compact, app colours, muted apps', _notificationsPage),
+        _group(Icons.do_not_disturb_on_outlined, 'Quiet and gestures', 'When it keeps quiet; double tap and long press', _quietPage),
       ],
     );
   }

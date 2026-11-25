@@ -8,6 +8,11 @@
 - **Your account moves by itself** at the next sign-in or token refresh, with its data, until the end of January 2027; signed-in apps stay signed in. After that, an account still at Holm has to be created again.
 - **Friends still on Holm can't be reached any more.** They are marked *Unreachable* in Chat; once they use HolyNotch, add them again with a new invite code.
 
+### Added
+
+- **Mute Teams** – *Settings › Pop-outs › Teams notifications*: with all notifications in the notch, Microsoft Teams can be kept out of it.
+- **Android 1.4.0:** an edge for the black notch (*Notch › Look › Edge*: none, a thin grey line or a soft glow), so it shows against dark screens; and the Notch page's settings are grouped into pages (shape, look, activities, notifications, quiet and gestures).
+
 ### Fixed
 
 - After sending a file from the phone, the notch no longer keeps showing *Asking…* (Android 1.3.3).

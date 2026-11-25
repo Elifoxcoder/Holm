@@ -305,7 +305,10 @@ class _NotchStageState extends State<NotchStage> with SingleTickerProviderStateM
                           c.collapse();
                         }
                       },
-                child: ClipRRect(
+                child: _Outline(
+                  style: _outlineFor(c, open),
+                  radius: _corners(w, h),
+                  child: ClipRRect(
                   borderRadius: _corners(w, h),
                   child: Stack(
                     fit: StackFit.expand,
@@ -352,6 +355,7 @@ class _NotchStageState extends State<NotchStage> with SingleTickerProviderStateM
                     ],
                   ),
                 ),
+                ),
               ),
             ),
           ),
@@ -384,6 +388,41 @@ class _NotchStageState extends State<NotchStage> with SingleTickerProviderStateM
       );
     },
   );
+}
+
+/// The edge the settings ask for, only while the notch is black: closed always, open unless a design colours it.
+NotchOutline _outlineFor(NotchController c, bool open) {
+  if (c.settings.outline == NotchOutline.none) return NotchOutline.none;
+  final design = _design(c);
+  final black = !open || design == null || design.background.computeLuminance() < 0.02;
+  return black ? c.settings.outline : NotchOutline.none;
+}
+
+/// A thin grey line over the notch's edge, or a soft light glow around it (it stays inside the overlay window's margin).
+class _Outline extends StatelessWidget {
+  final NotchOutline style;
+  final BorderRadius radius;
+  final Widget child;
+  const _Outline({required this.style, required this.radius, required this.child});
+
+  static const lineColor = Color(0xFF48484A);
+  static const glowColor = Color(0x33FFFFFF);
+
+  @override
+  Widget build(BuildContext context) => switch (style) {
+        NotchOutline.none => child,
+        NotchOutline.line => Container(
+            foregroundDecoration: BoxDecoration(borderRadius: radius, border: Border.all(color: lineColor, width: 0.8)),
+            child: child,
+          ),
+        NotchOutline.glow => DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: radius,
+              boxShadow: const [BoxShadow(color: glowColor, blurRadius: 7, spreadRadius: 0.5)],
+            ),
+            child: child,
+          ),
+      };
 }
 
 /// The open player: black, with a hint of the blurred cover rising from the bottom. It fades out before the camera's

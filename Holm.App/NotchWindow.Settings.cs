@@ -168,6 +168,8 @@ public sealed partial class NotchWindow
                     ? "Every app's notification pops out at the top in the notch, not only messages. Turn on Do not disturb in Windows to keep its own banners away; they still reach HolyNotch."
                     : "Every app's notification pops out at the top in the notch, not only messages. Turn on Do not disturb in your desktop to keep its own banners away; they still reach HolyNotch.",
                 s => s.AllNotifications, SetAllNotifications),
+            Switch("Teams notifications", "", "With all notifications on: Microsoft Teams' notifications pop out too. Off, Teams stays quiet in the notch.",
+                s => s.TeamsPopups, on => { _settings.TeamsPopups = on; Save(); }),
         };
         if (_mediaKeys.IsSupported)
             list.Add(Switch("Volume and media only in the notch", "\uE995", "HolyNotch takes the volume and media keys and changes the volume or track itself, so Windows' own pop-up doesn't show and the notch does. Brightness keys stay with Windows.",

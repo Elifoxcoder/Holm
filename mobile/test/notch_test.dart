@@ -203,6 +203,14 @@ void main() {
     expect(NotchSettings.fromJsonString('garbage').maxActivities, 2);
   });
 
+  test('the edge of a black notch is kept, and none unless chosen', () {
+    for (final o in NotchOutline.values) {
+      expect(NotchSettings.fromJsonString(NotchSettings(outline: o).toJsonString()).outline, o);
+    }
+    expect(NotchSettings.fromJsonString('{}').outline, NotchOutline.none);
+    expect(NotchSettings.fromJsonString('{"outline":"neon"}').outline, NotchOutline.none);
+  });
+
   test('springs overshoot a little and settle on the target', () {
     final s = Spring(0)..retarget(100, 0.34, 0.63);
     var peak = 0.0;

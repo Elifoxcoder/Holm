@@ -180,6 +180,7 @@ public sealed partial class NotchWindow
     void OnOtherNotification(ChatMessage notification)
     {
         if (!_settings.AllNotifications) return;
+        if (!_settings.TeamsPopups && Messengers.IsTeams(notification.App)) { Diag.Log("Teams is muted: no pop-out"); return; }
         if (Silenced(notification)) { Diag.Log("Quiet hours: no pop-out"); return; }
         ShowMessage(notification);
         ApplyState(animate: true);

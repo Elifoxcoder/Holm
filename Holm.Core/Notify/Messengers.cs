@@ -64,6 +64,18 @@ public static class Messengers
 
     public static Messenger? Get(string key) => All.FirstOrDefault(m => m.Key == key);
 
+    /// <summary>
+    /// Whether a notification's app (its app id, or the name Windows shows when there is none) is Microsoft Teams: the
+    /// new Teams (MSTeams_…), the classic one (com.squirrel.Teams.Teams, MicrosoftTeams) or the name alone.
+    /// </summary>
+    public static bool IsTeams(string? app)
+        => !string.IsNullOrWhiteSpace(app)
+           && (app.Contains("MSTeams", StringComparison.OrdinalIgnoreCase)
+               || app.Contains("MicrosoftTeams", StringComparison.OrdinalIgnoreCase)
+               || app.Contains("squirrel.Teams", StringComparison.OrdinalIgnoreCase)
+               || app.Trim().Equals("Teams", StringComparison.OrdinalIgnoreCase)
+               || app.Trim().Equals("Microsoft Teams", StringComparison.OrdinalIgnoreCase));
+
     /// <summary>The messenger an app id belongs to; with no app id, the name Windows shows for the app.</summary>
     public static Messenger? ForApp(string? appId, string? displayName = null)
     {

@@ -17,6 +17,22 @@ public class MessengersTests
         => Assert.Equal(key, Messengers.ForApp(appId)?.Key);
 
     [Theory]
+    [InlineData("MSTeams_8wekyb3d8bbwe!MSTeams", true)]
+    [InlineData("com.squirrel.Teams.Teams", true)]
+    [InlineData("MicrosoftTeams_8wekyb3d8bbwe!MicrosoftTeams", true)]
+    [InlineData("Microsoft Teams", true)]
+    [InlineData("com.squirrel.slack.slack", false)]
+    [InlineData("Microsoft.OutlookForWindows_8wekyb3d8bbwe!Microsoft.OutlookforWindows", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void Knows_Teams_so_it_can_be_muted(string? app, bool teams)
+        => Assert.Equal(teams, Messengers.IsTeams(app));
+
+    [Fact]
+    public void Teams_pops_out_unless_switched_off()
+        => Assert.True(new AppSettings().TeamsPopups);
+
+    [Theory]
     [InlineData("Claude_pzs8sxrjxfjjc!Claude")]
     [InlineData("DolbyLaboratories.DolbySettings_rz1tebttyb220!App")]
     [InlineData("Windows.SystemToast.WiFiNetworkManager")]

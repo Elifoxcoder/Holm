@@ -69,6 +69,17 @@ enum ActivityKind {
 
 enum NotchLook { holm, nothing }
 
+/// The edge of the notch where it is black: nothing (it melts into the camera), a thin grey line, or a soft light glow.
+/// Black notches can vanish against a dark wallpaper or app; the edge shows where the notch ends.
+enum NotchOutline {
+  none('None'),
+  line('Thin line'),
+  glow('Glow');
+
+  final String label;
+  const NotchOutline(this.label);
+}
+
 /// When the notch keeps quiet: only calls, timers and alarms come through (what's already running stays).
 enum QuietMode {
   off('Never'),
@@ -120,6 +131,8 @@ class NotchSettings {
   final bool compactBanners;
   /// The colour of your Pixel Buds Pro 2 for their 3D picture: porcelain, hazel, wintergreen or peony.
   final String budsColor;
+  /// The edge drawn around the notch while it is black (closed always; open unless a design colours it).
+  final NotchOutline outline;
 
   const NotchSettings({
     this.maxActivities = 2,
@@ -140,6 +153,7 @@ class NotchSettings {
     this.toPc = true,
     this.compactBanners = false,
     this.budsColor = 'porcelain',
+    this.outline = NotchOutline.none,
   });
 
   bool shows(ActivityKind kind) => !off.contains(kind);
@@ -172,6 +186,7 @@ class NotchSettings {
     bool? toPc,
     bool? compactBanners,
     String? budsColor,
+    NotchOutline? outline,
   }) =>
       NotchSettings(
         maxActivities: maxActivities ?? this.maxActivities,
@@ -192,6 +207,7 @@ class NotchSettings {
         toPc: toPc ?? this.toPc,
         compactBanners: compactBanners ?? this.compactBanners,
         budsColor: budsColor ?? this.budsColor,
+        outline: outline ?? this.outline,
       );
 
   String toJsonString() => jsonEncode({
@@ -213,6 +229,7 @@ class NotchSettings {
         'toPc': toPc,
         'compact': compactBanners,
         'budsColor': budsColor,
+        'outline': outline.name,
       });
 
   static NotchSettings fromJsonString(String? text) {
@@ -243,6 +260,7 @@ class NotchSettings {
         toPc: j['toPc'] != false,
         compactBanners: j['compact'] == true,
         budsColor: const {'porcelain', 'hazel', 'wintergreen', 'peony'}.contains(j['budsColor']) ? j['budsColor'] as String : 'porcelain',
+        outline: NotchOutline.values.asNameMap()[j['outline']] ?? NotchOutline.none,
       );
     } catch (_) {
       return d;
