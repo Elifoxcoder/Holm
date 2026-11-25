@@ -1,0 +1,149 @@
+# HolyNotch's releases (this fork). Builds Windows and Linux and publishes the GitHub release that every running
+# HolyNotch updates from, whenever the version in Holm.App.csproj has no release yet.
+# Started by a push that changes Holm.App.csproj on main, by "Sync with Holm" after it merged new upstream work,
+# or by hand (Actions › HolyNotch release › Run workflow). A version that is already released is skipped.
+# Holm's own workflows (release.yml, cross-platform.yml, …) are switched off on this fork.
+name: HolyNotch release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["Holm.App/Holm.App.csproj"]
+
+concurrency:
+  group: holynotch-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      island: ${{ steps.v.outputs.island }}
+      new: ${{ steps.v.outputs.new }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(grep -oP '(?<=<Version>)[0-9]+\.[0-9]+\.[0-9]+(?=</Version>)' Holm.App/Holm.App.csproj | head -1)
+          island=$(grep -oP '(?<=<ReleaseIsland>)[^<]+' Holm.App/Holm.App.csproj | head -1)
+          test -n "$version" || { echo "::error::No <Version> in Holm.App.csproj"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "island=$island" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "HolyNotch $version is released already: nothing to do."
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: version
+    if: needs.version.outputs.new == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: ubuntu-latest
+            rid: linux-x64
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Test
+        shell: bash
+        run: |
+          filter="Category!=Local&Category!=Online&Category!=Manual"
+          if [ "${{ runner.os }}" != "Windows" ]; then filter="$filter&FullyQualifiedName!~UpdateInstallerTests"; fi
+          dotnet test Holm.Tests -c Release --filter "$filter"
+
+      - name: Build and pack
+        shell: pwsh
+        env:
+          GIPHY_API_KEY: ${{ secrets.GIPHY_API_KEY }} # optional: without it, people paste their own key in the GIF picker
+        run: |
+          dotnet publish Holm.App -c Release -r ${{ matrix.rid }} --self-contained -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:DebugType=none -o out/sc
+          New-Item -ItemType Directory -Force assets, pkg | Out-Null
+          Copy-Item LICENSE pkg/LICENSE
+          $about = "See https://github.com/$env:GITHUB_REPOSITORY for details. HolyNotch is a fork of Holm by ademerci (MIT License)."
+          if ("${{ matrix.rid }}" -eq "win-x64") {
+            # The updater installs only an exe whose file version is exactly the release's (x.y.z.0) and named HolyNotch.
+            $info = [Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path out/sc/Holm.App.exe).Path)
+            $file = '{0}.{1}.{2}.{3}' -f $info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart, $info.FilePrivatePart
+            if ($file -ne "$env:VERSION.0") { throw "The exe's file version is $file, not $env:VERSION.0: the updater would refuse it." }
+            if ($info.ProductName -ne "HolyNotch") { throw "The exe's product name is '$($info.ProductName)', not 'HolyNotch': the updater would refuse it." }
+            Copy-Item out/sc/Holm.App.exe assets/HolyNotch.exe
+            Copy-Item out/sc/Holm.App.exe pkg/HolyNotch.exe
+            Set-Content pkg/README.txt "HolyNotch $env:VERSION for Windows x64`r`n`r`nRun HolyNotch.exe. No .NET installation required.`r`n$about" -NoNewline
+            Compress-Archive -Path pkg/* -DestinationPath "assets/HolyNotch-$env:VERSION-win-x64.zip"
+          } else {
+            Copy-Item out/sc/Holm.App pkg/HolyNotch
+            chmod +x pkg/HolyNotch
+            Set-Content pkg/README.txt "HolyNotch $env:VERSION for Linux x64`n`nRun ./HolyNotch. No .NET installation required.`n$about" -NoNewline
+            tar -czf "assets/HolyNotch-$env:VERSION-linux-x64.tar.gz" -C pkg .
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.rid }}
+          path: assets/
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ISLAND: ${{ needs.version.outputs.island }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: assets
+          merge-multiple: true
+
+      - name: Check that both systems are there
+        run: |
+          for f in HolyNotch.exe "HolyNotch-$VERSION-win-x64.zip" "HolyNotch-$VERSION-linux-x64.tar.gz"; do
+            test -s "assets/$f" || { echo "::error::assets/$f is missing: a release holds the Windows and the Linux build"; exit 1; }
+          done
+          ls -l assets
+
+      - name: Notes from the CHANGELOG
+        run: |
+          {
+            echo "| System | Download |"
+            echo "| --- | --- |"
+            echo "| Windows 10/11 x64 | [HolyNotch.exe](https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/HolyNotch.exe) (or the zip) |"
+            echo "| Linux x64 | [HolyNotch-$VERSION-linux-x64.tar.gz](https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/HolyNotch-$VERSION-linux-x64.tar.gz) |"
+            echo
+            echo "Running HolyNotch updates itself to this version within two hours (Settings › Updates)."
+            echo
+            # The CHANGELOG section of this version, without its heading.
+            awk -v v="$VERSION" '$0 ~ "^## "v"( |$)" {on=1; next} on && /^## / {exit} on' CHANGELOG.md
+            echo
+            echo "---"
+            echo "HolyNotch is a fork of [Holm](https://github.com/ademerci/Holm) by ademerci (MIT License), kept in sync with it."
+          } > notes.md
+          cat notes.md
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="HolyNotch $VERSION"
+          if [ -n "$ISLAND" ]; then title="$title — $ISLAND"; fi
+          gh release create "v$VERSION" assets/* --target "${{ github.sha }}" --title "$title" --notes-file notes.md --latest

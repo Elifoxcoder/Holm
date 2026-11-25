@@ -4,7 +4,7 @@
     <!-- The cross-platform rewrite's own version, ahead of the WPF app's (WinNotch.csproj) it is meant to follow. -->
     <Version>2.4.0</Version>
     <ReleaseIsland>Brecqhou</ReleaseIsland>
-    <!-- The updater installs only an exe whose product name is "HolyNotch" (UpdateService.ValidateExecutable). -->
+    <!-- The updater installs only an exe whose product name is "Holm" (UpdateService.ValidateExecutable). -->
     <Product>HolyNotch</Product>
     <!-- One shared app; only the backend it loads differs. The Windows backend needs the Windows target for
          WinRT, so the app takes that target when it is built for Windows and plain net10.0 everywhere else. -->
