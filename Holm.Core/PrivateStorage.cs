@@ -57,16 +57,22 @@ internal static class PrivateStorage
         return Path.Combine(dataFolder, "Temp");
     }
 
-    internal static void EnsureFolder(string path)
+    /// <summary>
+    /// Creates a private folder (0700 on Linux). <paramref name="tightenExisting"/> also makes an existing folder private:
+    /// right for Holm's own folders, never for a folder a file is merely written into (Downloads, /tmp), which keeps its
+    /// owner's permissions; changing those failed for /tmp (and the file wasn't written) and would lock up a shared folder.
+    /// </summary>
+    internal static void EnsureFolder(string path, bool tightenExisting = true)
     {
         string full = Path.GetFullPath(path);
         var info = new DirectoryInfo(full);
         if (info.Exists && IsReparsePoint(info)) throw new IOException("Holm won't use a linked data folder.");
+        bool existed = info.Exists;
         if (OperatingSystem.IsLinux()) Directory.CreateDirectory(full, PrivateDirectoryMode);
         else Directory.CreateDirectory(full);
         info.Refresh();
         if (IsReparsePoint(info)) throw new IOException("Holm won't use a linked data folder.");
-        if (OperatingSystem.IsLinux()) File.SetUnixFileMode(full, PrivateDirectoryMode);
+        if (OperatingSystem.IsLinux() && (!existed || tightenExisting)) File.SetUnixFileMode(full, PrivateDirectoryMode);
     }
 
     /// <summary>Also tightens files written by older code, without following links.</summary>
@@ -140,7 +146,7 @@ internal static class PrivateStorage
 
     internal static FileStream CreateFile(string path, bool useAsync = false, int bufferSize = 4096)
     {
-        EnsureFolder(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        EnsureFolder(Path.GetDirectoryName(Path.GetFullPath(path))!, tightenExisting: false);
         RejectLink(path);
         var options = new FileStreamOptions
         {
@@ -167,7 +173,7 @@ internal static class PrivateStorage
 
     internal static FileStream OpenOrCreatePrivate(string path, FileAccess access, FileShare share)
     {
-        EnsureFolder(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        EnsureFolder(Path.GetDirectoryName(Path.GetFullPath(path))!, tightenExisting: false);
         RejectLink(path);
         var options = new FileStreamOptions
         {
@@ -192,7 +198,7 @@ internal static class PrivateStorage
     internal static void WriteAllTextAtomic(string path, string text)
     {
         string full = Path.GetFullPath(path);
-        EnsureFolder(Path.GetDirectoryName(full)!);
+        EnsureFolder(Path.GetDirectoryName(full)!, tightenExisting: false);
         RejectLink(full);
         string temp = full + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try

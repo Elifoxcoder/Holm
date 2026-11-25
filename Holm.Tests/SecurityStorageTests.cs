@@ -13,6 +13,24 @@ public sealed class SecurityStorageTests : IDisposable
     readonly TempFolder _folder = new();
 
     [Fact]
+    public void Writing_a_private_file_leaves_an_existing_folder_as_its_owner_set_it()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        const UnixFileMode shared = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+            | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+        string folder = Path.Combine(_folder.Path, "shared");
+        Directory.CreateDirectory(folder);
+        File.SetUnixFileMode(folder, shared);
+        string file = Path.Combine(folder, "chat.json");
+
+        PrivateStorage.WriteAllTextAtomic(file, "{}");
+
+        Assert.Equal(shared, File.GetUnixFileMode(folder)); // Downloads or /tmp keep their permissions
+        Assert.Equal(PrivateStorage.PrivateFileMode, File.GetUnixFileMode(file)); // the file itself is private
+        Assert.Equal("{}", PrivateStorage.ReadAllText(file));
+    }
+
+    [Fact]
     public void Queued_files_from_the_legacy_shared_temp_folder_migrate_to_private_storage()
     {
         string legacy = Path.Combine(_folder.Path, "legacy", "Holm", "Beam");
