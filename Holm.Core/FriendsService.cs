@@ -917,20 +917,17 @@ internal sealed partial class FriendsService
         _follow = cts;
         Func<string, long, string, Task> received = (id, arrived, text) =>
             _ui(() => { if (_follow == cts) Handle(id, arrived, text); });
-        // Our inbox on the server the settings name, or else on ntfy (where older friends write) and on the relay.
-        _ = Task.Run(() => FriendInbox.FollowAsync(_settings.FriendsServer, me.Topic, _settings.FriendsSince, received,
-            time => _ = _ui(() => { if (_follow == cts) { _settings.FriendsSince = time; _settings.Save(); } }),
-            Diag.Log, cts.Token));
+        // Our inbox on the server the settings name, or else on HolyNotch's relay. Holm's servers (its relay, ntfy.sh)
+        // are never followed: friends still on them have to add us again.
+        if (!FriendIdentity.IsRetired(_settings.FriendsServer))
+            _ = Task.Run(() => FriendInbox.FollowAsync(_settings.FriendsServer, me.Topic, _settings.FriendsSince, received,
+                time => _ = _ui(() => { if (_follow == cts) { _settings.FriendsSince = time; _settings.Save(); } }),
+                Diag.Log, cts.Token));
         if (_settings.FriendsServer == null)
             _ = Task.Run(() => FriendInbox.FollowRelayAsync(me.Topic, _settings.FriendsRelaySince ?? Now, received,
                 time => _ = _ui(() => { if (_follow == cts) { _settings.FriendsRelaySince = time; _settings.Save(); } }),
                 () => _ = _ui(() => { if (_follow == cts) MoveToRelay(); }),
                 Diag.Log, cts.Token));
-        // And on Holm's relay, where friends still on Holm (or who haven't got our new code yet) write.
-        if (_settings.FriendsServer == null && FriendIdentity.HolmRelayServer is { } holm)
-            _ = Task.Run(() => FriendInbox.FollowRelayAsync(me.Topic, _settings.FriendsHolmRelaySince ?? Now, received,
-                time => _ = _ui(() => { if (_follow == cts) { _settings.FriendsHolmRelaySince = time; _settings.Save(); } }),
-                null, Diag.Log, cts.Token, holm));
         SyncProfiles();
         AnnounceDevice(query: true);
     }

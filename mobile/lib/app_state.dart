@@ -1058,8 +1058,6 @@ class AppState extends ChangeNotifier {
     if (_following) return;
     _following = true;
     _connect(const Duration(seconds: 2));
-    _poll = Timer.periodic(const Duration(seconds: 60), (_) => _pollLegacy());
-    _pollLegacy();
   }
 
   void stopInbox() {
@@ -1092,20 +1090,6 @@ class AppState extends ChangeNotifier {
     _ws = null;
     if (!_following) return;
     _reconnect = Timer(backoff, () => _connect(Duration(seconds: (backoff.inSeconds * 2).clamp(2, 120))));
-  }
-
-  /// Older Holms (and a relay that is down) write to ntfy.sh, and friends still on Holm to Holm's relay: both are
-  /// looked at too. A note that came through two servers counts once (_handleEvent).
-  Future<void> _pollLegacy() async {
-    final since = '${_since ?? (unixNow() - 12 * 3600)}';
-    for (final server in [holmRelayServer, legacyServer]) {
-      try {
-        final events = await Inbox.poll(server, me.topic, since);
-        for (final e in events) {
-          _handleEvent(e);
-        }
-      } catch (_) {}
-    }
   }
 
   void _handleLine(String line) {

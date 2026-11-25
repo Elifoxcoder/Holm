@@ -96,7 +96,9 @@ class _FriendTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final last = state.chatWith(friend).lastOrNull;
     final unread = state.unread[friend.key] ?? 0;
-    final preview = last == null ? 'Say hello' : (last.mine ? 'You: ${last.text}' : last.text);
+    final preview = friend.retired
+        ? "Unreachable · still on Holm's server"
+        : last == null ? 'Say hello' : (last.mine ? 'You: ${last.text}' : last.text);
     return HolmCard(
       padding: const EdgeInsets.all(12),
       color: unread > 0 ? HolmColors.cardStrong : HolmColors.card,
@@ -348,8 +350,9 @@ class _ConversationPageState extends State<ConversationPage> {
                 Expanded(
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Text(f.name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-                    Text(online ? 'Active now' : 'HolyNotch',
-                        style: TextStyle(fontSize: 13, color: online ? HolmColors.green : HolmColors.dim)),
+                    Text(f.retired ? "Unreachable: ask them for a new invite code" : online ? 'Active now' : 'HolyNotch',
+                        maxLines: 1, overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 13, color: online && !f.retired ? HolmColors.green : HolmColors.dim)),
                   ]),
                 ),
               ]),

@@ -28,12 +28,12 @@ internal sealed class AccountPage : HubView
         "What goes into it: the settings that mean the same everywhere (switches, clock, quiet hours, quick reactions), your profile " +
         "(name, status, color, picture), your achievements, your friends list, and your friends key and inbox, so friends reach you " +
         "with one friend code on every computer.\n\n" +
-        "Encrypted here first: your password never leaves this computer. HolyNotch makes two keys of it; Firebase (Google) gets one to " +
+        "Encrypted here first: your password never leaves this computer. HolyNotch makes two keys of it; the HolyNotch server gets one to " +
         "check your sign-in, the other opens your data and stays on your computers. The account service stores your email address, " +
-        "when you sync, and sealed data it can't read. Firebase sees your IP address, as any web service does.\n\n" +
+        "when you sync, and sealed data it can't read. The server sees your IP address, as any web service does.\n\n" +
         "Stays on this computer: notes, reminders, the shelf, chats, files, where the notch sits and on which display, the weather " +
         "place and your AI app.\n\n" +
-        "Where: Google Firebase. The data is stored in Zürich, Switzerland (europe-west6); sign-in is run by Firebase Authentication.\n\n" +
+        "Where: HolyNotch's own server (" + HolyNotchServer.Host + "), not Google and not Holm's servers.\n\n" +
         "You can delete the account and everything in it here at any time. A forgotten password can't be reset: the account's data " +
         "is then lost, each computer keeps its own.";
 
@@ -161,8 +161,8 @@ internal sealed class AccountPage : HubView
         foreach (string line in new[]
                  {
                      "Settings, profile, achievements and friends, the same on every computer",
-                     "Encrypted on this computer first: Firebase (Google) can't read it",
-                     "Stored in Zürich; the service sees your email address",
+                     "Encrypted on this computer first: the server can't read it",
+                     "Stored on HolyNotch's own server; it sees your email address",
                      "Notes, reminders, chats and files stay on each computer",
                      "A forgotten password can't be reset",
                  })

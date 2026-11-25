@@ -1,17 +1,22 @@
 # Changelog
 
-## 2.4.1 – unreleased
+## 2.4.1 – 2026-11-25
 
 ### Changed
 
-- **HolyNotch has its own server.** Sign-in and the synced settings, profile, friends and achievements, the friend inboxes (chat, requests, invites, presence) and file transfers now run on HolyNotch's own server (`server/`), no longer on Google's Firebase, Holm's relay and magic-wormhole's relay. HolyNotch for Android 1.3.1 too.
-- **Nothing to do for you.** An account at Holm moves over by itself, with its data, at the next sign-in or token refresh: signed-in apps stay signed in. Friends get your new friend code once; friends still on Holm reach you as before (HolyNotch keeps following Holm's relay), and files to and from Holm still go through magic-wormhole's relay.
+- **HolyNotch has its own server, and only that.** Sign-in and the synced settings, profile, friends and achievements, the friend inboxes (chat, requests, invites, presence) and file transfers run on HolyNotch's own server (`server/`). HolyNotch no longer contacts Google's Firebase, Holm's relay, ntfy.sh or magic-wormhole's relay. HolyNotch for Android 1.4.0 too.
+- **Your account moves by itself** at the next sign-in or token refresh, with its data, until the end of January 2027; signed-in apps stay signed in. After that, an account still at Holm has to be created again.
+- **Friends still on Holm can't be reached any more.** They are marked *Unreachable* in Chat; once they use HolyNotch, add them again with a new invite code.
+
+### Fixed
+
+- After sending a file from the phone, the notch no longer keeps showing *Asking…* (Android 1.3.3).
 
 ### Security
 
 - Addressed the 2026-11-25 security audit across the desktop app, Android app, relay and HolyNotch server: bounded network/image handling, safer received-file actions, replay and invite defenses, private local storage, lock-screen protection and least-privilege CI. Existing Holm protocols and installed-app compatibility are preserved; the remaining protocol-level limitations are recorded in [the audit follow-up](docs/security-audit-2026-11-25.md).
 
-## 2.4.0 – unreleased
+## 2.4.0 – 2026-11-25
 
 ### Changed
 

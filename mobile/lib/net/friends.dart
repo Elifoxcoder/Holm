@@ -1,6 +1,6 @@
 // Holm.Core/Sharing/Friends.cs and FriendInvite.cs in Dart: friend codes, notes sealed end to end, the inbox on
-// HolyNotch's and Holm's relays, and short invite codes. ntfy.sh is read only for old friend cards and old invites;
-// new invite cards are never mirrored to that public third-party server.
+// HolyNotch's server, and short invite codes. Holm's servers (its relay, ntfy.sh) are never contacted: a friend whose
+// inbox is there is unreachable until added again with a new code.
 
 import 'dart:async';
 import 'dart:convert';
@@ -15,10 +15,17 @@ import 'server.dart';
 /// HolyNotch's own server, where our inbox is (server.dart).
 const relayServer = holyNotchUrl;
 
-/// Holm's relay: where our inbox was before HolyNotch had its own server, and where friends still on Holm write.
-/// Looked at as well, and invite codes are read there too.
-const holmRelayServer = 'https://relay.holmnotch.ch';
+/// What an old card without a server means (ntfy.sh). Like Holm's relay, never contacted.
 const legacyServer = 'https://ntfy.sh';
+
+/// Holm's servers, which HolyNotch no longer uses (as FriendIdentity.RetiredServers on the desktop).
+const retiredServers = {'https://relay.holmnotch.ch', legacyServer};
+
+/// Whether an inbox on [server] can't be reached any more (null: an old card, ntfy.sh).
+bool isRetiredServer(String? server) {
+  final n = normalizeHttpsServer(server ?? legacyServer);
+  return n != null && retiredServers.contains(n.toLowerCase());
+}
 const _userAgent = 'Holm-Friends/1';
 
 class Friend {
@@ -30,6 +37,9 @@ class Friend {
   Friend({required this.name, required this.topic, required this.key, this.server});
 
   String get serverUrl => normalizeHttpsServer(server ?? legacyServer)!;
+
+  /// Their inbox is on Holm's server: they have to send a new code.
+  bool get retired => isRetiredServer(server);
 
   Map<String, dynamic> toJson() => {'name': name, 'topic': topic, 'key': key, 'server': server};
   factory Friend.fromJson(Map<String, dynamic> j) =>
@@ -401,18 +411,17 @@ class Inbox {
   static Uri _endpoint(String server, String topic, [String suffix = '']) {
     final normalized = normalizeHttpsServer(server);
     if (normalized == null) throw const HttpException('The friend inbox URL is not allowed.');
+    // Every request to an inbox comes through here: Holm's servers are never contacted.
+    if (retiredServers.contains(normalized.toLowerCase())) {
+      throw const HttpException("This inbox is on Holm's server, which HolyNotch no longer uses. Add them again with a new code.");
+    }
     return Uri.parse('$normalized/${Uri.encodeComponent(topic)}$suffix');
   }
 
   static String _host(String server) => Uri.tryParse(normalizeHttpsServer(server) ?? '')?.host ?? 'the server';
 
   static Future<void> post(Friend to, String note, {bool keep = true}) async {
-    try {
-      await _postTo(to.serverUrl, to.topic, note, keep);
-    } on IOException {
-      if (to.serverUrl != relayServer && to.serverUrl != holmRelayServer) rethrow;
-      await _postTo(legacyServer, to.topic, note, keep); // old Holm followers still read ordinary notes there
-    }
+    await _postTo(to.serverUrl, to.topic, note, keep);
   }
 
   static Future<void> _postTo(String server, String topic, String note, bool keep) async {
@@ -454,26 +463,19 @@ class Inbox {
     ).timeout(const Duration(seconds: 20));
   }
 
-  /// New invite cards go only to the first-party relays. In particular they are never mirrored to ntfy.sh: a public
-  /// copy of the 50-bit code's derivation makes the invite much easier to attack.
-  static Future<void> publishInvite(String topic, String card) async {
-    await _postTo(relayServer, topic, card, true);
-    try {
-      await _postTo(holmRelayServer, topic, card, true);
-    } on IOException {
-      // Holm's relay is for older Holm friends; the first-party relay is authoritative.
-    }
-  }
+  /// Invite cards go to HolyNotch's server only.
+  static Future<void> publishInvite(String topic, String card) => _postTo(relayServer, topic, card, true);
 
-  /// ntfy is read only for invite codes issued before mirroring stopped. New codes are fetched from the two relays.
+  /// The invite card for [code] on HolyNotch's server.
   static Future<Friend?> fetchInvite(String code) async {
     final topic = Invite.topic(code);
-    final results = await Future.wait([
-      for (final s in [relayServer, holmRelayServer, legacyServer])
-        poll(s, topic, '12h').then<List<InboxEvent>?>((v) => v).catchError((_) => null),
-    ]);
-    if (results.every((r) => r == null)) throw const HttpException("Couldn't reach the invite server");
-    final cards = [for (final r in results) ...?r].where((e) => e.isMessage && e.text != null).toList().reversed;
+    final List<InboxEvent> events;
+    try {
+      events = await poll(relayServer, topic, '12h');
+    } catch (_) {
+      throw const HttpException("Couldn't reach the invite server");
+    }
+    final cards = events.where((e) => e.isMessage && e.text != null).toList().reversed;
     for (final e in cards) {
       final friend = Invite.open(code, e.text!);
       if (friend != null) return friend;

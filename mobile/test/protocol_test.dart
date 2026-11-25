@@ -19,7 +19,17 @@ void main() {
     final f = parseFriendCode('Add me: $desktopCode thanks')!;
     expect(f.name, 'Laptop');
     expect(f.topic, 'wnf-wyofza32dzlahfjbg2ddtsnm5w');
-    expect(f.server, holmRelayServer); // a code from Holm names Holm's relay
+    expect(f.server, 'https://relay.holmnotch.ch'); // a code from Holm names Holm's relay
+    expect(f.retired, isTrue); // which HolyNotch no longer contacts
+  });
+
+  test("Holm's servers are retired and never contacted", () async {
+    expect(isRetiredServer('https://relay.holmnotch.ch'), isTrue);
+    expect(isRetiredServer('https://NTFY.sh/'), isTrue);
+    expect(isRetiredServer(null), isTrue); // an old card without a server meant ntfy.sh
+    expect(isRetiredServer(relayServer), isFalse);
+    final holmFriend = Friend(name: 'Old', topic: 'wnf-old', key: 'k', server: 'https://relay.holmnotch.ch');
+    await expectLater(Inbox.post(holmFriend, 'note'), throwsA(isA<HttpException>()));
   });
 
   test('invite topic and proof match FriendInvite.cs', () {

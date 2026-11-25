@@ -13,16 +13,19 @@ Holm uses:
 The server only ever sees ciphertext: the apps encrypt every synced section, note and transfer themselves. It sees
 emails (for sign-in), inbox names and IP addresses (only to limit abuse, never stored).
 
-## Holm users and existing accounts
+## No Holm servers
 
-- **Accounts move by themselves.** An account that is still in Holm's Firebase project is copied here, with the same uid
-  and its encrypted documents, the first time a HolyNotch app signs in (password) or refreshes its token (an app that
-  was signed in stays signed in). Set `MIGRATE_FIREBASE_KEY` empty to switch this off.
-- **Friends on Holm still reach you.** Your friend code now names this server, and HolyNotch sends it to all your friends
-  once. Until a friend has it (or if they stay on Holm), they write to Holm's relay, which HolyNotch keeps following.
-  Invite codes are left on both.
-- **Files to and from Holm still work.** HolyNotch waits on this relay and on magic-wormhole's at the same time. Two
-  HolyNotch apps meet here; a Holm app only ever comes to magic-wormhole's, and HolyNotch takes that after 2 seconds.
+Since desktop 2.4.1 and Android 1.4.0 the apps talk only to this server. They never contact Holm's relay
+(`relay.holmnotch.ch`), ntfy.sh or magic-wormhole's transit relay.
+
+- **Friends still on Holm can't be reached.** A friend whose inbox is on one of Holm's servers is shown as unreachable;
+  add them again with a new invite code once they use HolyNotch too.
+- **Accounts move until the end of January 2027.** An account that is still in Holm's Firebase project is copied here,
+  with the same uid and its encrypted documents, the first time a HolyNotch app signs in (password) or refreshes its
+  token. This is the server's only contact with Holm's services, and it stops at `MIGRATE_UNTIL` (default
+  `2027-02-01T00:00:00Z`), or at once with `MIGRATE_FIREBASE_KEY` empty. After that, people who hadn't moved create a
+  new account here. An account that moved by refresh token and never signed in with its password here can then only
+  be used on the devices that are signed in.
 
 ## Install or update (Ubuntu, nginx, certbot, Node 22+)
 

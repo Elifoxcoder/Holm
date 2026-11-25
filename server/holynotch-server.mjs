@@ -5,7 +5,8 @@
 //               POST /v1/accounts:signUp | :signInWithPassword | :delete      POST /v1/token (refresh)
 //               GET | PATCH | DELETE /v1/projects/<p>/databases/(default)/documents/users/<uid>[/sync/<section>]
 //             An account that is still in Holm's Firebase project moves here by itself at its first sign-in (same uid,
-//             same encrypted documents), when MIGRATE_FIREBASE_KEY is set.
+//             same encrypted documents), when MIGRATE_FIREBASE_KEY is set, until MIGRATE_UNTIL (end of January 2027).
+//             That is the only contact with Holm's services left, and it ends then.
 //   Inboxes   the relay for friend notes (as relay/ on Cloudflare): POST /<topic>, GET /<topic>/json?poll=1, GET /<topic>/ws
 //   Transfers a magic-wormhole style transit relay on TCP (TRANSIT_PORT): "please relay <token> for side <side>\n", "ok\n"
 //   Admin     /admin (the page) and /admin/stats (JSON, "Authorization: Bearer <ADMIN_KEY>")
@@ -29,6 +30,10 @@ const DATA = env.DATA_DIR ?? "/var/lib/holynotch";
 const ADMIN_KEY = env.ADMIN_KEY ?? "";
 const MIGRATE_KEY = env.MIGRATE_FIREBASE_KEY ?? ""; // Holm's public Firebase web API key: moves old accounts over
 const MIGRATE_PROJECT = env.MIGRATE_FIREBASE_PROJECT ?? "holm-accounts";
+// After this moment Holm's Firebase is never contacted again: no account moves, and an account that came by refresh
+// token without ever signing in with its password here can only be used by the apps that are signed in already.
+const MIGRATE_UNTIL = Date.parse(env.MIGRATE_UNTIL ?? "2027-02-01T00:00:00Z");
+const migrationOpen = () => MIGRATE_KEY !== "" && Number.isFinite(MIGRATE_UNTIL) && Date.now() < MIGRATE_UNTIL;
 const PAGE = fs.readFileSync(new URL("./admin.html", import.meta.url), "utf8");
 
 // The admin page uses inline script/styles and Google Fonts. Everything else stays denied, and it cannot be framed.
@@ -297,7 +302,7 @@ async function firebase(url, body, form = false) {
 
 /** Whether the email and sign-in secret open the account at Holm's Firebase (its uid and ID token), or null. */
 async function firebaseSignIn(email, secret) {
-  if (!MIGRATE_KEY) return null;
+  if (!migrationOpen()) return null;
   const s = await firebase(`${FIREBASE_AUTH}:signInWithPassword?key=${encodeURIComponent(MIGRATE_KEY)}`, { email, password: secret, returnSecureToken: true });
   return s && /^[A-Za-z0-9]{6,64}$/.test(s.localId ?? "") ? { uid: s.localId, idToken: s.idToken } : null;
 }
@@ -346,7 +351,7 @@ async function migrate(email, secret) {
  * stays signed in, with the same refresh token. The uid, or null.
  */
 async function migrateByRefresh(token) {
-  if (!MIGRATE_KEY) return null;
+  if (!migrationOpen()) return null;
   const t = await firebase(`https://securetoken.googleapis.com/v1/token?key=${encodeURIComponent(MIGRATE_KEY)}`,
                            { grant_type: "refresh_token", refresh_token: token }, true);
   if (!t || !/^[A-Za-z0-9]{6,64}$/.test(t.user_id ?? "")) return null;

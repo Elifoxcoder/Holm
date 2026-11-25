@@ -11,8 +11,8 @@ using System.Threading.Tasks;
 namespace WinNotch.Sharing;
 
 /// <summary>
-/// Pairs two Holm apps over the internet through a "transit relay" (the public one run by the
-/// magic-wormhole project). Both sides connect, name the same channel, and the relay pipes bytes between
+/// Pairs two HolyNotch apps over the internet through a "transit relay" (HolyNotch's own, on the same
+/// protocol as magic-wormhole's). Both sides connect, name the same channel, and the relay pipes bytes between
 /// them. The channel name is derived from the share code and everything sent is encrypted with a key
 /// derived from it too, so the relay only ever sees encrypted data.
 /// </summary>
@@ -21,56 +21,13 @@ public static class RelayLink
     /// <summary>HolyNotch's own transit relay (server/, on the VPS).</summary>
     public const string DefaultHost = HolyNotchServer.Host;
     public const int DefaultPort = HolyNotchServer.TransitPort;
-    /// <summary>
-    /// The public relay of the magic-wormhole project, which Holm uses: tried at the same time as ours, so a friend on
-    /// Holm still gets our files (settable for tests; null: ours only).
-    /// </summary>
-    public static string? HolmHost { get; internal set; } = "transit.magic-wormhole.io";
-    /// <summary>How long a pair on Holm's relay waits for one on ours (a HolyNotch partner pairs on both at once).</summary>
-    internal static TimeSpan OursGrace = TimeSpan.FromSeconds(2);
 
     /// <summary>
-    /// Connects and waits until the other side has connected to the same channel too. On the default relay this is
-    /// HolyNotch's and Holm's at once: ours wins when the partner is there (a HolyNotch partner pairs on both, and both
-    /// sides then take ours), Holm's when only a Holm partner came.
+    /// Connects and waits until the other side has connected to the same channel too. Only HolyNotch's own relay:
+    /// magic-wormhole's public relay (Holm's) is no longer used.
     /// </summary>
     /// <exception cref="IOException">The relay refused or dropped the connection.</exception>
-    public static Task<Stream> ConnectAsync(string host, int port, byte[] token, CancellationToken ct)
-        => host == DefaultHost && port == DefaultPort && HolmHost is { } holm
-            ? ConnectEitherAsync(token, holm, ct)
-            : ConnectOneAsync(host, port, token, ct);
-
-    static async Task<Stream> ConnectEitherAsync(byte[] token, string holmHost, CancellationToken ct)
-    {
-        using var both = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var ours = ConnectOneAsync(DefaultHost, DefaultPort, token, both.Token);
-        var theirs = ConnectOneAsync(holmHost, DefaultPort, token, both.Token);
-        Stream? chosen = null;
-        try
-        {
-            var first = await Task.WhenAny(ours, theirs).ConfigureAwait(false);
-            if (first == ours && ours.IsCompletedSuccessfully) return chosen = ours.Result;
-            if (first == theirs && theirs.IsCompletedSuccessfully)
-            {
-                var grace = Task.Delay(OursGrace, ct);
-                if (await Task.WhenAny(ours, grace).ConfigureAwait(false) == ours && ours.IsCompletedSuccessfully) return chosen = ours.Result;
-                return chosen = theirs.Result;
-            }
-            // One relay failed (down, unreachable): the other one alone; when both fail, ours says why.
-            var other = first == ours ? theirs : ours;
-            try { return chosen = await other.ConfigureAwait(false); }
-            catch (Exception) when (other == theirs) { await ours.ConfigureAwait(false); throw; }
-        }
-        finally
-        {
-            both.Cancel(); // the other one stops waiting; if it paired anyway, its connection closes
-            foreach (var t in new[] { ours, theirs })
-                _ = t.ContinueWith(done => { if (done.IsCompletedSuccessfully && !ReferenceEquals(done.Result, chosen)) done.Result.Dispose(); },
-                                   CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-        }
-    }
-
-    static async Task<Stream> ConnectOneAsync(string host, int port, byte[] token, CancellationToken ct)
+    public static async Task<Stream> ConnectAsync(string host, int port, byte[] token, CancellationToken ct)
     {
         if (token.Length != 32) throw new ArgumentException("Tokens are 32 bytes.", nameof(token));
         var client = await ReachAsync(host, port, ct).ConfigureAwait(false);

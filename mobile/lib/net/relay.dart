@@ -27,47 +27,10 @@ class RelayLink {
   static const host = holyNotchHost;
   static const port = holyNotchTransitPort;
 
-  /// The public relay of the magic-wormhole project, which Holm uses: tried at the same time as ours, so a friend on
-  /// Holm still gets our files. As Holm.Core/Sharing/RelayLink.cs.
-  static const holmHost = 'transit.magic-wormhole.io';
-
-  /// How long a pair on Holm's relay waits for one on ours (a HolyNotch partner pairs on both at once).
-  static const oursGrace = Duration(seconds: 2);
-
   /// Connects and waits until the other side is on the same channel too; the channel then carries the transfer.
-  /// On the default relay: ours and Holm's at once. Ours wins when the partner is there (a HolyNotch partner pairs on
-  /// both, and both sides then take ours), Holm's when only a Holm partner came.
-  static Future<SecureChannel> connect(List<int> secret, {required bool initiator, String relayHost = host, int relayPort = port}) {
-    if (relayHost != host || relayPort != port) return _connectOne(secret, initiator, relayHost, relayPort);
-    return _connectEither(secret, initiator);
-  }
-
-  static Future<SecureChannel> _connectEither(List<int> secret, bool initiator) async {
-    final ours = _Attempt(_connectOne(secret, initiator, host, port));
-    final theirs = _Attempt(_connectOne(secret, initiator, holmHost, port));
-    SecureChannel? chosen;
-    try {
-      final first = await Future.any([ours.done, theirs.done]);
-      if (first == ours && ours.channel != null) return chosen = ours.channel!;
-      if (first == theirs && theirs.channel != null) {
-        await Future.any([ours.done, Future<void>.delayed(oursGrace)]);
-        if (ours.channel != null) return chosen = ours.channel!;
-        return chosen = theirs.channel!;
-      }
-      // One relay failed (down, unreachable): the other one alone; when both fail, ours says why.
-      final other = first == ours ? theirs : ours;
-      await other.done;
-      if (other.channel != null) return chosen = other.channel!;
-      throw ours.error ?? theirs.error ?? const SocketException("The relay couldn't be reached.");
-    } finally {
-      // The other one closes, now or whenever it pairs after all (it waits at most as long as the relay keeps it).
-      for (final a in [ours, theirs]) {
-        a.done.then((_) {
-          if (a.channel != null && !identical(a.channel, chosen)) a.channel!.close();
-        });
-      }
-    }
-  }
+  /// Only HolyNotch's own relay: magic-wormhole's public relay (Holm's) is no longer used.
+  static Future<SecureChannel> connect(List<int> secret, {required bool initiator, String relayHost = host, int relayPort = port}) =>
+      _connectOne(secret, initiator, relayHost, relayPort);
 
   static Future<SecureChannel> _connectOne(List<int> secret, bool initiator, String relayHost, int relayPort) async {
     final token = ShareSecret.relayToken(secret);
@@ -129,22 +92,5 @@ class RelayLink {
       line.writeCharCode(b);
     }
     throw const SocketException('The relay sent something unexpected.');
-  }
-}
-
-/// One relay attempt of [RelayLink._connectEither]: settles with itself, holding the channel or the error.
-class _Attempt {
-  SecureChannel? channel;
-  Object? error;
-  late final Future<_Attempt> done;
-
-  _Attempt(Future<SecureChannel> connecting) {
-    done = connecting.then((c) {
-      channel = c;
-      return this;
-    }, onError: (Object e) {
-      error = e;
-      return this;
-    });
   }
 }

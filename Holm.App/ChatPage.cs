@@ -362,7 +362,8 @@ internal sealed class ChatPage : HubView
         }
         else
         {
-            string text = last == null ? friend.Status ?? (_social.IsOnline(friend) ? "Active now" : "Say hi 👋")
+            string text = FriendIdentity.IsRetired(friend.Server) ? "Unreachable · still on Holm's server"
+                        : last == null ? friend.Status ?? (_social.IsOnline(friend) ? "Active now" : "Say hi 👋")
                         : (last.Mine ? "You: " : "") + last.Text.Replace('\n', ' ');
             preview = new TextBlock
             {
@@ -419,8 +420,10 @@ internal sealed class ChatPage : HubView
         var words = new StackPanel { Margin = new Thickness(11, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
         words.Children.Add(new TextBlock { Text = friend.Name, FontSize = 15, FontWeight = FontWeight.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
         bool online = _social.IsOnline(friend);
-        string line = online ? "Active now" : "Offline · messages wait about 12 hours";
-        if (friend.Status != null) line += " · " + friend.Status;
+        bool retired = FriendIdentity.IsRetired(friend.Server);
+        string line = retired ? "Unreachable: their inbox is on Holm's server. Ask them for a new invite code."
+                    : online ? "Active now" : "Offline · messages wait about 12 hours";
+        if (friend.Status != null && !retired) line += " · " + friend.Status;
         words.Children.Add(new TextBlock { Text = line, FontSize = 11.5, Foreground = online ? HubTheme.Green : HubTheme.Dim, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 1, 0, 0) });
         Grid.SetColumn(words, 1);
         row.Children.Add(words);

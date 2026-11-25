@@ -20,13 +20,11 @@ public sealed class RelayInboxTests : IDisposable
 {
     readonly FakeInboxServer _relay = new(), _ntfy = new();
     readonly string _wasDefault = FriendIdentity.DefaultServer, _wasRelay = FriendIdentity.RelayServer;
-    readonly string? _wasHolm = FriendIdentity.HolmRelayServer;
 
     public RelayInboxTests()
     {
         FriendIdentity.DefaultServer = _ntfy.Url;
         FriendIdentity.RelayServer = _relay.Url;
-        FriendIdentity.HolmRelayServer = null; // these tests never call the real Holm relay
         FriendsService.ProtectKey = (data, _) => data.ToArray();
         FriendsService.UnprotectKey = (data, _) => data.ToArray();
     }
@@ -35,7 +33,6 @@ public sealed class RelayInboxTests : IDisposable
     {
         FriendIdentity.DefaultServer = _wasDefault;
         FriendIdentity.RelayServer = _wasRelay;
-        FriendIdentity.HolmRelayServer = _wasHolm;
         _relay.Dispose();
         _ntfy.Dispose();
     }
@@ -534,21 +531,18 @@ public sealed class RelayWorkerTests : IDisposable
 {
     readonly string? _url = Environment.GetEnvironmentVariable("HOLM_RELAY_URL");
     readonly string _wasDefault = FriendIdentity.DefaultServer, _wasRelay = FriendIdentity.RelayServer;
-    readonly string? _wasHolm = FriendIdentity.HolmRelayServer;
 
     public RelayWorkerTests()
     {
         if (_url == null) return;
         FriendIdentity.RelayServer = _url.TrimEnd('/');
         FriendIdentity.DefaultServer = "http://127.0.0.1:9"; // no ntfy: everything must work on the relay alone
-        FriendIdentity.HolmRelayServer = null;
     }
 
     public void Dispose()
     {
         FriendIdentity.DefaultServer = _wasDefault;
         FriendIdentity.RelayServer = _wasRelay;
-        FriendIdentity.HolmRelayServer = _wasHolm;
     }
 
     [Fact]

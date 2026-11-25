@@ -120,16 +120,18 @@ public sealed class FriendIdentity : IDisposable
     /// <summary>Test-only escape hatch for local fake inboxes. There is no setting or UI that enables this in Holm.</summary>
     internal static bool AllowInsecureServers { get; set; }
     const string EcPublicKeyOid = "1.2.840.10045.2.1", P256CurveOid = "1.2.840.10045.3.1.7";
-    /// <summary>
-    /// Holm's own inbox server (relay/: a Cloudflare Worker). It takes ntfy's POST, so any Holm can leave notes there;
-    /// Holm 1.18+ follows its inbox there and on <see cref="DefaultServer"/>, where older friends still write.
-    /// </summary>
+    /// <summary>HolyNotch's inbox server (server/, on the VPS). It takes ntfy's POST and polling, like Holm's relay did.</summary>
     public static string RelayServer { get; internal set; } = HolyNotchServer.Url;
     /// <summary>
-    /// Holm's relay, where HolyNotch's inboxes were before HolyNotch had its own server, and where friends who still use
-    /// Holm (or haven't heard of the move yet) write. Followed as well; invite codes are left there too. Null: none.
+    /// Servers HolyNotch never contacts: Holm's relay and ntfy.sh, where Holm's inboxes are (and where a card without a
+    /// server points). A friend whose inbox is on one of them is unreachable until added again with a new code.
     /// </summary>
-    public static string? HolmRelayServer { get; internal set; } = "https://relay.holmnotch.ch";
+    public static IReadOnlySet<string> RetiredServers { get; internal set; } =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "https://relay.holmnotch.ch", "https://ntfy.sh" };
+
+    /// <summary>Whether this inbox server (null: <see cref="DefaultServer"/>) is one HolyNotch no longer uses.</summary>
+    public static bool IsRetired(string? server)
+        => TryNormalizeServer(server, out string normalized) && RetiredServers.Contains(normalized);
     const string CodePrefix = "WNF1.";
     static readonly Regex CodeInText = new(@"WNF1\.[A-Za-z0-9_-]{40,2000}");
 
@@ -635,6 +637,9 @@ public static class FriendInbox
     static string InboxUrl(string? server, string topic)
     {
         if (!FriendIdentity.TryNormalizeServer(server, out string normalized)) throw new IOException("The friend inbox URL is not allowed.");
+        // Every request to an inbox comes through here: Holm's servers are never contacted.
+        if (FriendIdentity.RetiredServers.Contains(normalized))
+            throw new IOException("This inbox is on Holm's server, which HolyNotch no longer uses. Add them again with a new code.");
         return $"{normalized}/{Uri.EscapeDataString(topic)}";
     }
 
@@ -644,18 +649,18 @@ public static class FriendInbox
 
     static bool IsRelay(string? server)
         => FriendIdentity.TryNormalizeServer(server, out string normalized)
-            && (normalized == FriendIdentity.RelayServer || normalized == FriendIdentity.HolmRelayServer);
+            && normalized == FriendIdentity.RelayServer;
 
     /// <summary>
-    /// Leaves a note in a friend's inbox. A note for the relay that it doesn't take (down, over its daily limit) goes to
-    /// ntfy instead: a Holm that follows the relay follows ntfy as well. <paramref name="keep"/> false is for presence
-    /// notes, worth nothing later: the server passes them on live and doesn't keep them ("Cache: no", as ntfy has it).
+    /// Leaves a note in a friend's inbox. <paramref name="keep"/> false is for presence notes, worth nothing later: the
+    /// server passes them on live and doesn't keep them ("Cache: no", as ntfy has it). (Tests with a fake ntfy as
+    /// <see cref="FriendIdentity.DefaultServer"/> still get the old fallback; ntfy.sh itself is retired.)
     /// </summary>
     /// <exception cref="IOException">The server couldn't be reached or refused the note; the message says which.</exception>
     public static async Task PostAsync(Friend to, string note, CancellationToken ct, bool keep = true)
     {
         try { await PostToAsync(to.Server, to.Topic, note, keep, ct).ConfigureAwait(false); }
-        catch (IOException) when (IsRelay(to.Server) && !ct.IsCancellationRequested)
+        catch (IOException) when (IsRelay(to.Server) && !FriendIdentity.IsRetired(null) && !ct.IsCancellationRequested)
         {
             await PostToAsync(FriendIdentity.DefaultServer, to.Topic, note, keep, ct).ConfigureAwait(false);
         }
@@ -683,33 +688,20 @@ public static class FriendInbox
         }
     }
 
-    /// <summary>
-    /// Leaves a sealed invite card at the first-party relay, where it waits 12 hours, and on Holm's legacy relay for
-    /// older Holm apps. New invites are deliberately not mirrored to ntfy.sh: a public third-party copy makes the
-    /// unstretched 50-bit code derivation much easier to attack. Fetching still checks ntfy for already-issued old codes.
-    /// </summary>
-    /// <exception cref="IOException">The primary relay did not take it.</exception>
-    public static async Task PublishInviteAsync(string topic, string card, CancellationToken ct)
-    {
-        await PostToAsync(FriendIdentity.RelayServer, topic, card, true, ct).ConfigureAwait(false);
-        // Holm's relay as well, for a friend on Holm who types the code; a failure there changes nothing.
-        if (FriendIdentity.HolmRelayServer is { } h)
-        {
-            try { await PostToAsync(h, topic, card, true, ct).ConfigureAwait(false); } catch (IOException) { }
-        }
-    }
+    /// <summary>Leaves a sealed invite card at HolyNotch's relay, where it waits 12 hours.</summary>
+    /// <exception cref="IOException">The relay did not take it.</exception>
+    public static Task PublishInviteAsync(string topic, string card, CancellationToken ct)
+        => PostToAsync(FriendIdentity.RelayServer, topic, card, true, ct);
 
-    /// <summary>Invite cards on the first-party relays, plus ntfy only for compatibility with codes issued before mirroring stopped.</summary>
-    /// <exception cref="IOException">Neither server could be reached.</exception>
+    /// <summary>The invite cards at HolyNotch's relay (and at a test's fake ntfy; ntfy.sh itself is retired).</summary>
+    /// <exception cref="IOException">The relay couldn't be reached.</exception>
     public static async Task<List<string>> FetchInviteAsync(string topic, CancellationToken ct)
     {
         var relay = FetchInviteFromAsync(FriendIdentity.RelayServer, topic, ct);
-        var legacy = FetchInviteFromAsync(FriendIdentity.DefaultServer, topic, ct);
-        var holm = FriendIdentity.HolmRelayServer is { } h ? FetchInviteFromAsync(h, topic, ct) : Task.FromResult(new List<string>());
+        var legacy = FriendIdentity.IsRetired(null) ? relay : FetchInviteFromAsync(FriendIdentity.DefaultServer, topic, ct);
         await EitherAsync(relay, legacy).ConfigureAwait(false);
         var cards = new List<string>();
-        try { cards.AddRange(await holm.ConfigureAwait(false)); } catch (IOException) { }
-        if (legacy.IsCompletedSuccessfully) cards.AddRange(legacy.Result);
+        if (legacy != relay && legacy.IsCompletedSuccessfully) cards.AddRange(legacy.Result);
         if (relay.IsCompletedSuccessfully) cards.AddRange(relay.Result);
         cards.Reverse();
         return cards;
