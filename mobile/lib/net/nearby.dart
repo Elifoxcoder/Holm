@@ -158,7 +158,14 @@ class NearbyService {
         .join()
         .trim();
     if (peerName.isEmpty) peerName = 'HolyNotch';
-    final isNew = !_peers.containsKey(peerId);
+    var isNew = !_peers.containsKey(peerId);
+    // The same device started again (an update, a restart): same name and address, new id. Its old entry goes now,
+    // not after three minutes, or it shows twice.
+    if (isNew) {
+      final before = _peers.length;
+      _peers.removeWhere((id, p) => id != peerId && p.name == peerName && p.address == datagram.address);
+      if (_peers.length != before) isNew = true;
+    }
     _peers[peerId] = NearbyPeer(peerId, peerName, datagram.address, port, DateTime.now());
     if (isNew) _changes.add(null);
     if (packet['T'] == 'query') {

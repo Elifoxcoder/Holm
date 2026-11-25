@@ -1,3 +1,4 @@
+import 'dart:async';
 // Holm.Core/Sharing/FileTransfer.cs in Dart: offer (names and sizes) → answer → data frames → done → received.
 
 import 'dart:convert';
@@ -126,7 +127,13 @@ Future<bool> sendTransfer(SecureChannel channel, String sender, List<Outgoing> i
     }
   }
   await channel.send([_done]);
-  final confirmation = await channel.receive();
+  // Never "Sending…" forever: a confirmation lost on the way (or a receiver gone) ends it after half a minute.
+  final List<int> confirmation;
+  try {
+    confirmation = await channel.receive().timeout(const Duration(seconds: 30));
+  } on TimeoutException {
+    throw const FormatException("The receiver didn't confirm.");
+  }
   if (confirmation.length != 1 || confirmation[0] != _received) throw const FormatException("The receiver didn't confirm.");
   progress?.call(1);
   return true;

@@ -120,6 +120,10 @@ test("the transit relay pairs two sides with the same token and pipes their byte
   const echo = new Promise((resolve) => b.s.once("data", (d) => resolve(String(d))));
   a.s.write("encrypted bytes");
   assert.equal(await echo, "encrypted bytes");
+  // The receiver confirms and closes at once: the confirmation still reaches the sender.
+  const last = new Promise((resolve) => { let got = ""; a.s.on("data", (d) => { got += d; }); a.s.on("end", () => resolve(got)); });
+  b.s.end("received");
+  assert.equal(await last, "received");
   a.s.destroy(); b.s.destroy();
 });
 

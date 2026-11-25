@@ -229,6 +229,11 @@ public sealed class NearbyService : IDisposable
             string name = new string((packet.Name ?? "").Where(c => !char.IsControl(c)).Take(40).ToArray()).Trim();
             var peer = new NearbyPeer(packet.Id, name.Length > 0 ? name : "Holm", new IPEndPoint(result.RemoteEndPoint.Address, packet.Port), DateTime.UtcNow);
             bool isNew = !_peers.ContainsKey(packet.Id);
+            // The same device started again (an update, a restart): same name and address, new id. Its old entry goes
+            // now, not after three minutes, or it shows twice.
+            if (isNew)
+                foreach (var old in _peers.Values.Where(p => p.Id != packet.Id && p.Name == peer.Name && p.Endpoint.Address.Equals(peer.Endpoint.Address)).ToList())
+                    _peers.TryRemove(old.Id, out _);
             _peers[packet.Id] = peer;
             if (isNew) PeersChanged?.Invoke();
 

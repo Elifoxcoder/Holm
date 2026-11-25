@@ -27,6 +27,16 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot)
 
+# An APK without Flutter's assets (fonts, pictures) starts but shows boxes for every icon: never upload one.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $Apk))
+try {
+    $names = $zip.Entries | ForEach-Object FullName
+    foreach ($must in "assets/flutter_assets/FontManifest.json", "assets/flutter_assets/fonts/MaterialIcons-Regular.otf") {
+        if ($names -notcontains $must) { throw "$Apk has no $must (a broken build): run flutter clean, then build again." }
+    }
+} finally { $zip.Dispose() }
+
 $line = (Select-String -Path pubspec.yaml -Pattern '^version:\s*(\d+\.\d+\.\d+)\+(\d+)').Matches[0]
 if (-not $line) { throw "No version like 1.2.3+4 in pubspec.yaml" }
 $name = $line.Groups[1].Value

@@ -547,9 +547,16 @@ const transit = net.createServer((socket) => {
 function pair(a, aRest, b, bRest) {
   transitOpen++;
   track("transfer");
-  let bytes = 0;
-  const done = () => { if (a.done) return; a.done = true; transitOpen--; track("transferBytes", "", bytes); a.destroy(); b.destroy(); };
-  for (const s of [a, b]) { s.setTimeout(TRANSIT_IDLE, done); s.on("close", done); s.on("error", done); }
+  let bytes = 0, closed = 0;
+  // One side closing (the receiver right after its "received") must not cut what is still on its way to the other:
+  // the other side gets everything, then the end. Only an idle line or an error ends both at once.
+  const counted = () => { if (++closed === 2) { transitOpen--; track("transferBytes", "", bytes); } };
+  const kill = () => { a.destroy(); b.destroy(); };
+  for (const [s, other] of [[a, b], [b, a]]) {
+    s.setTimeout(TRANSIT_IDLE, kill);
+    s.on("error", () => other.end());
+    s.on("close", () => { other.end(); setTimeout(() => other.destroy(), 30_000).unref(); counted(); });
+  }
   a.write("ok\n"); b.write("ok\n");
   if (aRest.length) b.write(aRest);
   if (bRest.length) a.write(bRest);
