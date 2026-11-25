@@ -9,6 +9,7 @@ using Avalonia.Threading;
 using Holm.Platform;
 using WinNotch;
 using WinNotch.Notify;
+using WinNotch.Sharing;
 
 namespace Holm.App;
 
@@ -114,11 +115,19 @@ public sealed partial class NotchWindow
             ShowPeek(DownloadGlyph, "Downloaded " + name, "", null);
             return;
         }
-        ShowTask(CheckGlyph, Green, "Downloaded", $"{name} · {SizeText(download.Bytes)}", null,
-                 ("Open", () => { HideTask(); Try(() => _shell.Open(file)); }),
-                 ("Show", () => { HideTask(); Try(() => _shell.Reveal(file)); }));
+        (string Label, Action Act)? open = FileTransfer.IsDangerousToOpen(file)
+            ? null : ("Open", () => { HideTask(); OpenReceivedFile(file); });
+        ShowTask(CheckGlyph, Green, "Downloaded " + name, $"{name} · {SizeText(download.Bytes)}", null,
+                 open, ("Show", () => { HideTask(); Try(() => _shell.Reveal(file)); }));
         _taskHide.Interval = TimeSpan.FromSeconds(6);
         _taskHide.Start();
+    }
+
+    /// <summary>Received programs, scripts and shortcuts are kept, but never launched from a completion prompt.</summary>
+    void OpenReceivedFile(string path)
+    {
+        if (FileTransfer.IsDangerousToOpen(path)) { Try(() => _shell.Reveal(path)); return; }
+        Try(() => _shell.Open(path));
     }
 
     static void Try(Action action)

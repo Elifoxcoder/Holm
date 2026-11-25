@@ -167,8 +167,8 @@ internal sealed class ProfileEditor : Border
     internal static IBrush? PictureBrush(string? base64)
     {
         if (base64 == null) return null;
-        try { return new ImageBrush(new Bitmap(new MemoryStream(Convert.FromBase64String(base64)))) { Stretch = Stretch.UniformToFill }; }
-        catch (Exception ex) when (ex is not OutOfMemoryException) { return null; }
+        var picture = ImageSecurity.Avatar(base64);
+        return picture == null ? null : new ImageBrush(picture) { Stretch = Stretch.UniformToFill };
     }
 
     Border Swatch(Color color)

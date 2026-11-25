@@ -6,9 +6,11 @@
 // Secrets: ADMIN_KEY (the page's key) and CF_API_TOKEN (Account Analytics: Read, to query the counts).
 
 import PAGE from "./admin.html"; // wrangler bundles .html as text
+import { createLimiter, requestIp, sameAdminKey } from "./security.js";
 
 const DATASET = "holm_relay";
 const FREE = { workerRequests: 100_000, objectRequests: 100_000, rowsWritten: 100_000 };
+const adminFailures = createLimiter(5, 600);
 
 /** An inbox as the counts know it: 12 hex characters of its SHA-256, so the counts can't be used to read it. */
 export async function inboxHash(topic) {
@@ -28,20 +30,17 @@ export async function track(env, kind, topic) {
   } catch { /* counting never breaks a note */ }
 }
 
-function sameKey(a, b) {
-  const x = new TextEncoder().encode(a ?? ""), y = new TextEncoder().encode(b ?? "");
-  let diff = x.length ^ y.length;
-  for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] ?? 0) ^ (y[i] ?? 0);
-  return diff === 0;
-}
-
 async function query(env, sql) {
   const response = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.ACCOUNT_ID}/analytics_engine/sql`, {
     method: "POST",
     headers: { authorization: `Bearer ${env.CF_API_TOKEN}` },
     body: `${sql} FORMAT JSON`,
   });
-  if (!response.ok) throw new Error(`Analytics Engine answered ${response.status}: ${(await response.text()).slice(0, 200)}`);
+  if (!response.ok) {
+    // Never copy an upstream response (it can contain account or service details) into the admin response or logs.
+    try { await response.body?.cancel(); } catch { /* already closed */ }
+    throw Object.assign(new Error("upstream unavailable"), { status: response.status });
+  }
   return (await response.json()).data ?? [];
 }
 
@@ -83,11 +82,21 @@ export async function stats(env) {
 export async function admin(request, env, path) {
   if (path === "/admin" || path === "/admin/") return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
   if (path !== "/admin/stats") return null;
-  const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  const json = (status, body, headers = {}) => new Response(JSON.stringify(body), {
+    status, headers: { "content-type": "application/json", "cache-control": "no-store", ...headers },
+  });
   if (!env.ADMIN_KEY) return json(503, { error: "ADMIN_KEY isn't set: npx wrangler secret put ADMIN_KEY" });
+  const ip = requestIp(request);
+  if (!adminFailures.check(ip)) return json(429, { error: "too many attempts, wait ten minutes" }, { "retry-after": "600" });
   const key = (request.headers.get("authorization") ?? "").replace(/^Bearer /, "");
-  if (!sameKey(key, env.ADMIN_KEY)) return json(401, { error: "wrong key" });
+  if (!await sameAdminKey(key, env.ADMIN_KEY)) {
+    adminFailures.hit(ip);
+    return json(401, { error: "wrong key" });
+  }
   if (!env.CF_API_TOKEN || !env.ACCOUNT_ID) return json(503, { error: "CF_API_TOKEN or ACCOUNT_ID isn't set" });
   try { return json(200, await stats(env)); }
-  catch (e) { return json(502, { error: String(e.message ?? e) }); }
+  catch (e) {
+    console.error(`admin upstream failed (${e?.status ?? "network"})`);
+    return json(502, { error: "upstream unavailable" });
+  }
 }

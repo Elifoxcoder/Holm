@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Holm.Platform;
 using Windows.Media.Control;
@@ -15,6 +16,8 @@ namespace Holm.Platform.Windows;
 /// </summary>
 public sealed class WindowsMediaPlatform : IMediaPlatform
 {
+    const int MaxCoverBytes = 8 * 1024 * 1024;
+
     static readonly Dictionary<string, string> KnownApps = new(StringComparer.OrdinalIgnoreCase)
     {
         ["chrome"] = "Chrome", ["msedge"] = "Edge", ["firefox"] = "Firefox", ["308046B0AF4A39CB"] = "Firefox",
@@ -159,9 +162,9 @@ public sealed class WindowsMediaPlatform : IMediaPlatform
             if (thumbnail == null) return null;
             using var stream = await thumbnail.OpenReadAsync();
             using var input = stream.AsStreamForRead();
-            using var copy = new MemoryStream();
-            await input.CopyToAsync(copy);
-            return copy.Length == 0 ? null : copy.ToArray();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            byte[] bytes = await BoundedIo.ReadAllBytesAsync(input, MaxCoverBytes, timeout.Token);
+            return bytes.Length == 0 ? null : bytes;
         }
         catch { return null; }
     }

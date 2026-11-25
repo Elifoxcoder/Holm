@@ -27,3 +27,11 @@ export function isNoteFor(topic, text) {
   if (typeof text !== "string" || text.length > MAX_NOTE) return false;
   return isInvite(topic) ? CARD.test(text) : NOTE.test(text);
 }
+
+/** Reads never initialize an inbox. Only a retained POST creates the notes table and its cleanup alarm. */
+export function keptNotes(sql, since, t = now()) {
+  if (since == null) return [];
+  const table = sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'notes'").toArray();
+  if (table.length === 0) return [];
+  return sql.exec("SELECT id, time, message FROM notes WHERE time >= ? AND expires > ? ORDER BY seq", since, t).toArray();
+}

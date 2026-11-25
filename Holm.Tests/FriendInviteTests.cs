@@ -1,3 +1,5 @@
+using System;
+using System.Text.Json;
 using WinNotch.Sharing;
 
 namespace WinNotch.Tests;
@@ -90,6 +92,65 @@ public class FriendInviteTests
         string code = FriendInvite.New();
         var friend = FriendInvite.Open(code, FriendInvite.Seal(code, lena.FriendCode, Now + 60), Now);
         Assert.Equal("https://ntfy.example.org", friend!.Server);
+    }
+
+    [Fact]
+    public void New_notes_have_authenticated_ids_and_old_notes_use_a_stable_sealed_hash()
+    {
+        using var noah = FriendIdentity.Create("Noah", null);
+        using var lena = FriendIdentity.Create("Lena", null);
+        var note = new FriendNote(FriendNoteKind.Chat, "Noah", Now, Text: "hi", MessageId: Guid.NewGuid().ToString("N"),
+                                  NoteId: FriendNotes.NewNoteId());
+        string first = FriendNotes.Seal(noah, lena.AsFriend(), note);
+        string again = FriendNotes.Seal(noah, lena.AsFriend(), note);
+        var opened = FriendNotes.Open(lena, first, out _)!;
+        var repeated = FriendNotes.Open(lena, again, out _)!;
+
+        Assert.StartsWith("wnf1 ", first);
+        Assert.Equal(note.NoteId, opened.NoteId);
+        Assert.Equal(opened.NoteId, repeated.NoteId);
+        Assert.Equal(FriendNotes.ReplayId(first, opened), FriendNotes.ReplayId(again, repeated));
+        Assert.NotEqual(FriendNotes.NewNoteId(), FriendNotes.NewNoteId());
+
+        string legacy = FriendNotes.SealWithoutNoteId(noah, lena.AsFriend(), note);
+        var old = FriendNotes.Open(lena, legacy, out _)!;
+        Assert.Null(old.NoteId);
+        Assert.StartsWith("hash:", FriendNotes.ReplayId(legacy, old));
+        Assert.Equal(FriendNotes.ReplayId(legacy, old), FriendNotes.ReplayId(legacy, old));
+        string[] outer = legacy.Split(' ');
+        string paddedKey = outer[1] + new string('=', (4 - outer[1].Length % 4) % 4);
+        Assert.Equal(FriendIdentity.FromBase64Url(outer[1]), FriendIdentity.FromBase64Url(paddedKey));
+        using (var imported = FriendIdentity.ImportP256PublicKey(paddedKey)) Assert.Equal(256, imported.KeySize);
+        string padded = outer[0] + " " + paddedKey + " " + outer[2];
+        Assert.NotEqual(legacy, padded);
+        var paddedNote = FriendNotes.Open(lena, padded, out _)!;
+        Assert.Equal(FriendNotes.ReplayId(legacy, old), FriendNotes.ReplayId(padded, paddedNote));
+        Assert.NotEqual(FriendNotes.ReplayId(first, opened), FriendNotes.ReplayId(legacy, old));
+    }
+
+    [Fact]
+    public void Sender_time_has_a_bounded_future_skew_and_retention_bounded_past()
+    {
+        long now = Now;
+        Assert.True(FriendNotes.IsSentTimePlausible(now, now));
+        Assert.True(FriendNotes.IsSentTimePlausible(now + 300, now));
+        Assert.True(FriendNotes.IsSentTimePlausible(now - 7 * 24 * 60 * 60 - 300, now));
+        Assert.False(FriendNotes.IsSentTimePlausible(now + 301, now));
+        Assert.False(FriendNotes.IsSentTimePlausible(now - 7 * 24 * 60 * 60 - 301, now));
+    }
+
+    [Fact]
+    public void Invite_settings_from_before_single_use_keep_their_old_behavior()
+    {
+        var old = JsonSerializer.Deserialize<OwnInvite>("{\"Code\":\"HOLM-7KQ2X-9XF4M\",\"Proof\":\"8712e671199feb7ee20ad6dd346d5ef8\",\"Expires\":9999999999}")!;
+        Assert.False(old.SingleUse);
+        Assert.False(old.Revoked);
+        var current = new OwnInvite { SingleUse = true, Revoked = true, UsedBy = "friend", RevokedAt = 123 };
+        var back = JsonSerializer.Deserialize<OwnInvite>(JsonSerializer.Serialize(current))!;
+        Assert.True(back.SingleUse);
+        Assert.True(back.Revoked);
+        Assert.Equal("friend", back.UsedBy);
+        Assert.Equal(123, back.RevokedAt);
     }
 
     [Fact]

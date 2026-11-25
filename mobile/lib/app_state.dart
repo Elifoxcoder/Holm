@@ -95,6 +95,8 @@ class SendTarget {
 
   String get name => peer?.name ?? device!.name;
   bool get overInternet => device != null;
+  bool get authenticated => device != null;
+  String? get deviceId => device?.id;
 }
 
 /// The Holm account the phone is signed in to.
@@ -149,7 +151,8 @@ class AppState extends ChangeNotifier {
   final Map<String, OwnDevice> _devices = {};
   DateTime? _announced;
   bool clipboardSync = false; // send what's copied here when the app opens, copy texts that arrive
-  String? syncTarget; // the device name clipboard sync goes to (Holm desktop gets a new id each start)
+  String? syncTarget; // display name; the id below is what makes a sender authenticated for automatic sync
+  String? syncTargetId;
   /// The device something was last sent to (by name): where a screenshot from the notch goes.
   String? lastTarget;
   String _devicesTold = '';
@@ -166,9 +169,9 @@ class AppState extends ChangeNotifier {
   String note = '';
   static const maxNote = 4000;
   final List<ReceivedFile> received = [];
-  final List<String> _seen = [];
-  /// Notes taken already, by their sealed text (each is sealed with its own nonce, so equal text is the same note).
-  final List<int> _seenNotes = [];
+  /// Transport ids plus authenticated note ids (or sealed-text hashes for old notes), persisted and hard-bounded.
+  final BoundedIds _seen = BoundedIds(limit: BoundedIds.defaultLimit);
+  final BoundedIds _usedInvites = BoundedIds(limit: 128, maxLength: 64);
   int? _since;
 
   TransferStatus? transfer;
@@ -177,6 +180,8 @@ class AppState extends ChangeNotifier {
 
   /// Asks the person whether to take an offer (set by the UI).
   Future<bool> Function(ShareOffer offer)? askOffer;
+  /// Shows every outgoing file name and size. No file send is allowed without this explicit confirmation.
+  Future<bool> Function(String title, List<String> paths)? confirmFiles;
 
   /// A short message for the person (set by the UI).
   void Function(String message)? toast;
@@ -200,6 +205,7 @@ class AppState extends ChangeNotifier {
     deviceName = j['deviceName'] as String? ?? deviceName;
     clipboardSync = j['clipboardSync'] as bool? ?? false;
     syncTarget = j['syncTarget'] as String?;
+    syncTargetId = OwnDevice.isId(j['syncTargetId']) ? j['syncTargetId'] as String : null;
     lastTarget = j['lastTarget'] as String?;
     addresses.addAll([for (final x in (j['addresses'] as List? ?? [])) x as String]);
     me = j['identity'] != null ? Identity.fromJson(j['identity'] as Map<String, dynamic>) : Identity.create(deviceName);
@@ -235,7 +241,14 @@ class AppState extends ChangeNotifier {
       final file = ReceivedFile.fromJson(r as Map<String, dynamic>);
       if (File(file.path).existsSync()) received.add(file);
     }
-    _seen.addAll([for (final s in (j['seen'] as List? ?? [])) s as String]);
+    _seen.restore(
+      [for (final s in (j['seen'] as List? ?? const [])) if (s is String) s],
+      times: [for (final t in (j['seenTimes'] as List? ?? const [])) if (t is int) t],
+    );
+    _usedInvites.restore(
+      [for (final s in (j['usedInvites'] as List? ?? const [])) if (s is String) s],
+      times: [for (final t in (j['usedInviteTimes'] as List? ?? const [])) if (t is int) t],
+    );
     _since = j['since'] as int?;
     _lastClip = j['lastClip'] as String?;
 
@@ -261,6 +274,7 @@ class AppState extends ChangeNotifier {
   }
 
   void _saveNow() {
+    final now = unixNow();
     final j = {
       'deviceName': deviceName,
       'deviceId': deviceId,
@@ -268,6 +282,7 @@ class AppState extends ChangeNotifier {
       'notch': notch.toJsonString(),
       'clipboardSync': clipboardSync,
       'syncTarget': syncTarget,
+      'syncTargetId': syncTargetId,
       'lastTarget': lastTarget,
       'addresses': addresses,
       'identity': me.toJson(),
@@ -279,7 +294,10 @@ class AppState extends ChangeNotifier {
       'clipboard': [for (final c in clipboard) c.toJson()],
       'note': note,
       'received': [for (final r in received) r.toJson()],
-      'seen': _seen,
+      'seen': _seen.toJson(now: now),
+      'seenTimes': _seen.timesToJson(now: now),
+      'usedInvites': _usedInvites.toJson(now: now),
+      'usedInviteTimes': _usedInvites.timesToJson(now: now),
       'since': _since,
       'lastClip': _lastClip,
     };
@@ -378,11 +396,43 @@ class AppState extends ChangeNotifier {
         'failed': t.failed,
       });
 
-  void setClipboardSync(bool on, [String? target]) {
+  void setClipboardSync(bool on, [SendTarget? target]) {
+    if (on && target?.device == null) {
+      // Automatic clipboard movement is account-only. A nearby name is not proof of identity.
+      clipboardSync = false;
+      _changed();
+      return;
+    }
     clipboardSync = on;
-    if (target != null) syncTarget = target;
+    if (on) {
+      final device = target!.device!;
+      syncTarget = device.name;
+      syncTargetId = device.id;
+    }
     _changed();
     if (on) syncClipboardNow();
+  }
+
+  OwnDevice? get _syncDevice {
+    if (account == null || !clipboardSync) return null;
+    final devices = ownDevices;
+    if (syncTargetId case final id?) {
+      for (final device in devices) {
+        if (device.id == id) return device;
+      }
+      return null;
+    }
+    // Migration from the old name-only setting: resolve only against authenticated account devices, and only when
+    // the name is unique. It can never select an unauthenticated nearby peer.
+    final matches = devices.where((d) => d.name == syncTarget).toList();
+    return matches.length == 1 ? matches.first : null;
+  }
+
+  bool _isSyncSender(String? deviceId, String name) {
+    if (deviceId == null || account == null || !clipboardSync) return false;
+    if (syncTargetId != null) return deviceId == syncTargetId;
+    final matches = ownDevices.where((d) => d.name == syncTarget).toList();
+    return matches.length == 1 && matches.first.id == deviceId;
   }
 
   /// Asks one address directly and remembers it (a network that drops broadcasts).
@@ -395,14 +445,16 @@ class AppState extends ChangeNotifier {
 
   // ───────────── nearby: sending ─────────────
 
-  /// Everywhere something can go: Holms on this Wi-Fi first (faster), then the account's devices elsewhere. A device
-  /// that is both on this Wi-Fi and in the account shows once, as nearby.
+  /// Everywhere something can go: unauthenticated nearby Holms first, then authenticated account devices. A nearby
+  // name collision is hidden rather than allowed to shadow the account device: LAN discovery proves no identity.
   List<SendTarget> get targets {
-    final list = [for (final peer in nearby.peers) SendTarget.nearby(peer)];
-    final names = {for (final peer in nearby.peers) peer.name};
-    for (final device in ownDevices) {
-      if (!names.contains(device.name)) list.add(SendTarget.device(device));
-    }
+    final devices = ownDevices;
+    final accountNames = {for (final device in devices) device.name.toLowerCase()};
+    final list = [
+      for (final peer in nearby.peers)
+        if (!accountNames.contains(peer.name.toLowerCase())) SendTarget.nearby(peer),
+    ];
+    list.addAll([for (final device in devices) SendTarget.device(device)]);
     return list;
   }
 
@@ -413,8 +465,11 @@ class AppState extends ChangeNotifier {
     return null;
   }
 
-  Future<void> sendFiles(SendTarget target, List<String> paths) =>
-      _send(target, [for (final path in paths) Outgoing.file(path)], text: false);
+  Future<bool> sendFiles(SendTarget target, List<String> paths) async {
+    final confirm = confirmFiles;
+    if (confirm == null || !await confirm('Send ${paths.length} file(s)?', List.unmodifiable(paths))) return false;
+    return _send(target, [for (final path in paths) Outgoing.file(path)], text: false);
+  }
 
   Future<bool> sendText(SendTarget target, String text, {bool quiet = false}) {
     final bytes = Uint8List.fromList(utf8.encode(text));
@@ -500,19 +555,21 @@ class AppState extends ChangeNotifier {
 
   // ───────────── nearby: receiving ─────────────
 
-  Future<void> _onIncoming(SecureChannel channel, {String? knownSender}) async {
+  Future<void> _onIncoming(SecureChannel channel, {String? knownSender, String? knownSenderId}) async {
     String sender = knownSender ?? '';
     try {
       final got = await receiveTransfer(channel, (offer) async {
-        // Over the relay the note proved which device it is: show the name we know it by.
-        if (knownSender != null) offer = ShareOffer(knownSender, offer.files, offer.isText);
+        // Over the relay the note proved which account device it is: show the name we know it by. A nearby ECDH
+        // connection is encrypted but unauthenticated, and must always ask before touching the clipboard.
+        if (knownSender != null) {
+          offer = ShareOffer(knownSender, offer.files, offer.isText, authenticated: true, senderDeviceId: knownSenderId);
+        }
         sender = offer.sender;
-        if (offer.isText && clipboardSync) return true; // sync is on: texts go straight to the clipboard
+        if (offer.isText && _isSyncSender(knownSenderId, sender)) return true;
         final ask = askOffer;
         if (ask == null || !foreground) {
-          // The app isn't open: the notch asks.
-          final summary = offer.files.length == 1 ? offer.files.first.name : '${offer.files.length} files';
-          return NotchLink.ask(offer.sender, summary, offer.isText);
+          // The app isn't open: the notch asks, with the same authentication warning as the in-app dialog.
+          return NotchLink.ask(offer.sender, offerSummary(offer), offer.isText, authenticated: offer.authenticated);
         }
         return ask(offer).timeout(const Duration(seconds: 60), onTimeout: () => false);
       }, receivedFolder, progress: (offer, v) {
@@ -592,9 +649,9 @@ class AppState extends ChangeNotifier {
     _lastClip = text;
     _addClip(ClipItem(text, DateTime.now()));
     if (!isNew || !clipboardSync) return;
-    // The device chosen for sync, else the one that is there (a PC renamed, or the choice made on another network).
-    final target = _targetNamed(syncTarget) ?? (targets.length == 1 ? targets.first : null);
-    if (target != null) await sendText(target, text, quiet: true);
+    // Only the authenticated account device chosen for sync. There is deliberately no "only one nearby device" fallback.
+    final device = _syncDevice;
+    if (device != null) await sendText(SendTarget.device(device), text, quiet: true);
   }
 
   Future<void> copy(String text) async {
@@ -674,6 +731,9 @@ class AppState extends ChangeNotifier {
       if (data.topic != me.topic || base64Url(key.spki()) != me.publicKey) {
         // Another inbox: read it from now on, as Holm does when it takes the account's identity.
         me = Identity(name, data.topic!, key);
+        _devices.clear();
+        clipboardSync = false;
+        syncTargetId = null;
         _since = unixNow();
         _seen.clear();
         incoming.clear();
@@ -713,6 +773,8 @@ class AppState extends ChangeNotifier {
     account = null;
     accountError = null;
     _devices.clear();
+    clipboardSync = false;
+    syncTargetId = null;
     me = Identity.create(deviceName);
     friends.clear();
     chats.clear();
@@ -743,7 +805,7 @@ class AppState extends ChangeNotifier {
     final from = note.from.isEmpty ? 'HolyNotch' : note.from;
     switch (note.kind) {
       // A PC closed one of our notifications in its phone tool: gone here too.
-      case 'phone' when note.fields['Y'] == 'dismiss' && note.fields['N'] == deviceId && note.fields['I'] is String:
+      case 'phone' when note.fields['Y'] == 'dismiss' && note.fields['N'] == deviceId && note.fields['I'] is String && age <= 60:
         NotchLink.dismissNotification(note.fields['I'] as String);
         return;
       // A PC plays, pauses or skips our music from its phone tool.
@@ -765,7 +827,7 @@ class AppState extends ChangeNotifier {
         if (_takenSecrets.length > 50) _takenSecrets.removeAt(0);
         final name = _devices[id]?.name ?? from;
         _devices[id as String] = OwnDevice(id, name, DateTime.now());
-        unawaited(_receiveOverRelay(bytes, name));
+        unawaited(_receiveOverRelay(bytes, name, id));
       default:
         break;
     }
@@ -773,13 +835,13 @@ class AppState extends ChangeNotifier {
 
   final List<String> _takenSecrets = [];
 
-  Future<void> _receiveOverRelay(List<int> secret, String from) async {
+  Future<void> _receiveOverRelay(List<int> secret, String from, String deviceId) async {
     final connecting = TransferStatus('$from is sending you something', 'Connecting…');
     _status(connecting);
     try {
       final channel = await RelayLink.connectWithRetry(secret, initiator: false, patience: const Duration(minutes: 2));
       try {
-        await _onIncoming(channel, knownSender: from);
+        await _onIncoming(channel, knownSender: from, knownSenderId: deviceId);
       } finally {
         await channel.close();
         // A text that went quietly to the clipboard (in the background) says nothing more: don't stay on "Connecting…".
@@ -822,6 +884,7 @@ class AppState extends ChangeNotifier {
     Friend? card;
     String? proof;
     if (invite != null) {
+      if (_usedInvites.contains(invite)) return 'That invite code has already been used';
       card = await Inbox.fetchInvite(invite);
       if (card == null) return 'That invite code has expired or is mistyped';
       proof = Invite.proof(invite);
@@ -840,6 +903,8 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       return "Couldn't send the request: $e";
     }
+    if (invite != null) _usedInvites.remember(invite); // local single-use; server-side revocation belongs to the issuer
+    _changed();
     return proof != null ? 'Request sent. ${card.name} is added as soon as their HolyNotch sees it' : 'Request sent to ${card.name}';
   }
 
@@ -1030,34 +1095,42 @@ class AppState extends ChangeNotifier {
     if (e != null) _handleEvent(e);
   }
 
-  int _serverNow = 0;
-
   void _handleEvent(InboxEvent e) {
-    if (e.time > _serverNow) _serverNow = e.time;
     if (!e.isMessage || e.id == null) return;
-    if (_seen.contains(e.id)) return;
-    _seen.add(e.id!);
-    if (_seen.length > 200) _seen.removeRange(0, _seen.length - 200);
-    if (e.time > (_since ?? 0)) _since = e.time;
+    final transportFresh = _seen.remember(e.id);
+    if (!transportFresh) return;
     final text = e.text;
-    if (text == null || !text.startsWith(Notes.prefix)) return;
-    // The same note comes through both servers (Holm's relay and ntfy), with different ids: once is enough.
-    // Without this, a PC's "files" note started a second "Connecting…" that waited for a sender long gone.
-    final digest = text.hashCode ^ text.length;
-    if (_seenNotes.contains(digest)) return;
-    _seenNotes.add(digest);
-    if (_seenNotes.length > 300) _seenNotes.removeAt(0);
+    if (text == null || !text.startsWith(Notes.prefix)) {
+      if (transportFresh) _changed();
+      return;
+    }
     final opened = Notes.open(me, text);
-    if (opened == null) return;
+    if (opened == null) {
+      if (transportFresh) _changed();
+      return;
+    }
     final (note, sender) = opened;
-    final age = (_serverNow - e.time).clamp(0, 1 << 31);
-    _handleNote(note, sender, age);
+    // A mirrored note has another transport id. Its authenticated id, or the sealed-text hash for old senders,
+    // catches that replay across servers and restarts. Retention is bounded; the time check rejects stale notes.
+    final noteFresh = _seen.remember(Notes.replayId(text, note));
+    final now = unixNow();
+    if (!Notes.isSentTimePlausible(note.sent, now)) {
+      if (transportFresh || noteFresh) _changed();
+      return;
+    }
+    if (e.time > (_since ?? 0) && e.time <= now + 300) _since = e.time;
+    if (!noteFresh) {
+      if (transportFresh) _changed();
+      return;
+    }
+    final age = authenticatedNoteAge(note, now);
+    _handleNote(note, sender, age, now);
     _changed();
   }
 
-  void _handleNote(Note note, String sender, int age) {
+  void _handleNote(Note note, String sender, int age, int now) {
     if (sender == me.publicKey) {
-      _handleOwn(note, age); // sealed by our own identity: another device of the account
+      if (isFreshOwnDeviceNote(note, now)) _handleOwn(note, age); // sealed by our own identity: another account device
       return;
     }
     final friend = friendByKey(sender);

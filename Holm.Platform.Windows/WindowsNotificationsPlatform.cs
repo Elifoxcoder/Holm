@@ -22,6 +22,8 @@ namespace Holm.Platform.Windows;
 /// </summary>
 public sealed class WindowsNotificationsPlatform : INotificationsPlatform
 {
+    const int MaxLogoBytes = 1024 * 1024;
+
     UserNotificationListener? _listener;
     FileSystemWatcher? _watcher;
     Timer? _poll, _settle;
@@ -195,9 +197,9 @@ public sealed class WindowsNotificationsPlatform : INotificationsPlatform
             if (logo == null) return;
             using var stream = await logo.OpenReadAsync();
             using var input = stream.AsStreamForRead();
-            using var copy = new MemoryStream();
-            await input.CopyToAsync(copy);
-            if (copy.Length > 0) _logos[appId] = copy.ToArray();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            byte[] bytes = await BoundedIo.ReadAllBytesAsync(input, MaxLogoBytes, timeout.Token);
+            if (bytes.Length > 0) _logos[appId] = bytes;
         }
         catch (Exception ex) { Diag.Log("Logo unavailable: " + ex.Message); }
     }

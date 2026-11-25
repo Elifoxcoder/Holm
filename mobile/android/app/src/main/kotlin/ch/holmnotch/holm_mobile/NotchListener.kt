@@ -6,17 +6,25 @@ import android.app.PendingIntent
 import android.app.RemoteInput
 import android.content.Intent
 import android.os.Bundle
+import android.os.CancellationSignal
 import android.content.ComponentName
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.drawable.Drawable
+import android.net.Uri
 import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.Locale
 
 /**
  * What the notch hears from the system's notifications: new ones, ongoing ones (downloads, timers, Live Updates, Quick
@@ -32,7 +40,32 @@ class NotchListener : NotificationListenerService() {
     private val artFromUri = object : LinkedHashMap<String, ByteArray>(8, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>?) = size > 8
     }
-    private val artLoading = mutableSetOf<String>()
+    private var artLoad: ArtLoad? = null
+    private var artLoadingKey: String? = null
+
+    private class ArtLoad {
+        @Volatile var cancelled = false
+        @Volatile var finished = false
+        @Volatile var connection: HttpURLConnection? = null
+        @Volatile var input: InputStream? = null
+        @Volatile var signal: CancellationSignal? = null
+        var thread: Thread? = null
+        var timeout: Runnable? = null
+
+        fun cancel() {
+            if (cancelled) return
+            cancelled = true
+            thread?.interrupt()
+            runCatching { signal?.cancel() }
+            runCatching { connection?.disconnect() }
+            runCatching { input?.close() }
+        }
+
+        fun checkActive() {
+            if (cancelled) throw java.io.IOException("Artwork load cancelled")
+        }
+    }
+
     /** The song whose cover is still missing, and how often it was looked for again. */
     private var artMissingKey: String? = null
     private var artRetries = 0
@@ -71,6 +104,8 @@ class NotchListener : NotificationListenerService() {
     }
 
     override fun onListenerDisconnected() {
+        cancelArt()
+        artFromUri.clear()
         sessions?.removeOnActiveSessionsChangedListener(onSessions)
         controller?.unregisterCallback(onMedia)
         controller = null
@@ -103,32 +138,41 @@ class NotchListener : NotificationListenerService() {
 
     /** Presses one of the notification's buttons. */
     fun fireAction(key: String, index: Int) {
+        if (NotchBridge.isDeviceLocked(this)) return
         val action = runCatching { activeNotifications.firstOrNull { it.key == key }?.notification?.actions?.getOrNull(index) }.getOrNull()
-        runCatching { action?.actionIntent?.send() }
+        if (!NotchBridge.isDeviceLocked(this)) runCatching { action?.actionIntent?.send() }
     }
 
     /** Answers a message from the notch: the text goes to the app as if typed in its notification. */
     fun reply(key: String, index: Int, text: String): Boolean = runCatching {
+        if (NotchBridge.isDeviceLocked(this)) return false
         val action = activeNotifications.firstOrNull { it.key == key }?.notification?.actions?.getOrNull(index) ?: return false
         val inputs = action.remoteInputs ?: return false
         val intent = Intent()
         RemoteInput.addResultsToIntent(inputs, intent, Bundle().apply { putCharSequence(inputs.first().resultKey, text) })
-        action.actionIntent.send(this, 0, intent)
-        true
+        if (NotchBridge.isDeviceLocked(this)) false else {
+            action.actionIntent.send(this, 0, intent)
+            true
+        }
     }.getOrDefault(false)
 
     /** Clears a notification from the shade too (a swipe to the right in the notch), if it can be cleared. */
     fun clear(key: String) {
-        runCatching { if (activeNotifications.any { it.key == key && it.isClearable }) cancelNotification(key) }
+        if (NotchBridge.isDeviceLocked(this)) return
+        runCatching {
+            if (!NotchBridge.isDeviceLocked(this) && activeNotifications.any { it.key == key && it.isClearable }) cancelNotification(key)
+        }
     }
 
     /** Answer, decline or hang up a call, with the buttons of the phone app's call notification. */
     fun callAction(key: String, which: String) {
+        if (NotchBridge.isDeviceLocked(this)) return
         // With "Answer calls" allowed, Android's telephony does it: listeners get call notifications without their
         // buttons on Android 15 and later.
         if (checkSelfPermission(android.Manifest.permission.ANSWER_PHONE_CALLS) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
             val telecom = getSystemService(android.telecom.TelecomManager::class.java)
             val done = runCatching {
+                if (NotchBridge.isDeviceLocked(this)) return@runCatching false
                 @Suppress("DEPRECATION")
                 if (which == "answer") telecom.acceptRingingCall() else telecom.endCall()
                 true
@@ -149,17 +193,21 @@ class NotchListener : NotificationListenerService() {
                 ?: x.getParcelable(Notification.EXTRA_DECLINE_INTENT, PendingIntent::class.java)
                 ?: actions.firstOrNull()?.actionIntent
         }
-        runCatching { intent?.send() }.onFailure { android.util.Log.w("HolmNotch", "call $which failed", it) }
+        if (!NotchBridge.isDeviceLocked(this)) runCatching { intent?.send() }
+            .onFailure { android.util.Log.w("HolmNotch", "call $which failed", it) }
     }
 
-    fun contentIntent(key: String): PendingIntent? =
-        runCatching { activeNotifications.firstOrNull { it.key == key }?.notification?.contentIntent }.getOrNull()
+    fun contentIntent(key: String): PendingIntent? {
+        if (NotchBridge.isDeviceLocked(this)) return null
+        return runCatching { activeNotifications.firstOrNull { it.key == key }?.notification?.contentIntent }.getOrNull()
+    }
 
     private fun send(sbn: StatusBarNotification, initial: Boolean) {
-        if (sbn.packageName == packageName) return
+        if (sbn.packageName == packageName || NotchBridge.isDeviceLocked(this)) return
         val n = sbn.notification
         val x = n.extras
         val pkg = sbn.packageName
+        val locked = NotchBridge.isDeviceLocked(this)
         // Google Play services' earbuds card ("L: 100%  C: 96%  R: 100%"): the earbuds activity shows it, not a pop-up.
         if (pkg == "com.google.android.gms" && sendBudsBattery(n)) return
         sendIcon(pkg)
@@ -169,7 +217,7 @@ class NotchListener : NotificationListenerService() {
             x.getString(Notification.EXTRA_TEMPLATE)?.contains("MediaStyle") == true
         val callType = x.getInt(Notification.EXTRA_CALL_TYPE, 0)
         // The turn arrow of a navigation, the caller's photo: the notification's own picture.
-        val picture = if (pkg in PICTURE_APPS || callType != 0 || n.category == Notification.CATEGORY_NAVIGATION)
+        val picture = if (!locked && (pkg in PICTURE_APPS || callType != 0 || n.category == Notification.CATEGORY_NAVIGATION))
             runCatching { n.getLargeIcon()?.loadDrawable(this)?.let { png(it, 96) } }.getOrNull() else null
         NotchBridge.toNotch(
             mapOf(
@@ -178,13 +226,14 @@ class NotchListener : NotificationListenerService() {
                 "key" to sbn.key,
                 "package" to pkg,
                 "app" to label(pkg),
-                "title" to x.getCharSequence(Notification.EXTRA_TITLE)?.toString(),
-                "text" to (x.getCharSequence(Notification.EXTRA_TEXT) ?: x.getCharSequence(Notification.EXTRA_BIG_TEXT))?.toString(),
-                "sub" to x.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString(),
+                "title" to if (locked) null else x.getCharSequence(Notification.EXTRA_TITLE)?.toString(),
+                "text" to if (locked) null else
+                    (x.getCharSequence(Notification.EXTRA_TEXT) ?: x.getCharSequence(Notification.EXTRA_BIG_TEXT))?.toString(),
+                "sub" to if (locked) null else x.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString(),
                 "category" to n.category,
                 "channel" to n.channelId,
                 // Google's Clock keeps the timer's state and time left here ("RUNNING|…|⏳0:03:31"); its view is custom.
-                "sortKey" to n.sortKey,
+                "sortKey" to if (locked) null else n.sortKey,
                 "ongoing" to sbn.isOngoing,
                 "summary" to ((n.flags and Notification.FLAG_GROUP_SUMMARY) != 0),
                 "media" to isMedia,
@@ -196,17 +245,17 @@ class NotchListener : NotificationListenerService() {
                 "when" to n.`when`,
                 // Android 16 Live Updates: promoted ongoing notifications, with a short text for the status chip.
                 "promoted" to ((n.flags and FLAG_PROMOTED_ONGOING) != 0),
-                "shortText" to x.getCharSequence("android.shortCriticalText")?.toString(),
+                "shortText" to if (locked) null else x.getCharSequence("android.shortCriticalText")?.toString(),
                 "color" to n.color,
                 "importance" to importance,
                 "posted" to sbn.postTime,
                 // The notification's buttons ("Stop", "Add 1 min", "Mark as read"); a reply's is marked: it asks for text.
-                "actions" to (n.actions ?: emptyArray()).mapIndexed { i, a ->
+                "actions" to if (locked) emptyList() else (n.actions ?: emptyArray()).mapIndexed { i, a ->
                     listOf(i, a.title?.toString() ?: "", a.remoteInputs?.any { it.allowFreeFormInput } == true)
                 },
                 // Calls: 1 incoming, 2 ongoing, 3 screening (Notification.CallStyle).
                 "callType" to callType,
-                "caller" to (if (callType != 0) runCatching {
+                "caller" to if (locked) null else (if (callType != 0) runCatching {
                     x.getParcelable(Notification.EXTRA_CALL_PERSON, android.app.Person::class.java)?.name?.toString()
                 }.getOrNull() else null),
                 "picture" to picture,
@@ -275,10 +324,15 @@ class NotchListener : NotificationListenerService() {
     }
 
     private fun sendMedia() {
+        if (NotchBridge.isDeviceLocked(this)) {
+            cancelArt()
+            return
+        }
         val c = controller
         val meta = c?.metadata
         val state = c?.playbackState
         if (c == null || meta == null) {
+            cancelArt()
             NotchBridge.toNotch(mapOf("type" to "media", "active" to false))
             return
         }
@@ -291,7 +345,7 @@ class NotchListener : NotificationListenerService() {
             val bmp = meta.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART) ?: meta.getBitmap(MediaMetadata.METADATA_KEY_ART)
                 ?: meta.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
             art = bmp?.let { runCatching { png(it, 256) }.getOrNull() } ?: artFromUri[artKey] ?: coverFromNotification(c.packageName, title)
-            if (art == null) loadArt(artKey, meta)
+            if (art != null) cancelArt() else loadArt(artKey, meta)
             // Players often send the title first and the cover a moment later: only a song with its cover counts as sent.
             if (art != null) lastArtKey = artKey else lookAgainForArt(artKey)
         }
@@ -333,32 +387,141 @@ class NotchListener : NotificationListenerService() {
 
     /**
      * Spotify and others name the cover by a link (an https address or a content:// one) instead of handing it over:
-     * fetched once in the background, then the song is sent again with it.
+     * fetched once in the background, then the song is sent again with it. Both the compressed input and decoded
+     * bitmap are bounded; an obsolete load is cancelled when the song changes or the listener disconnects.
      */
     private fun loadArt(artKey: String, meta: MediaMetadata) {
+        if (artLoadingKey != artKey) cancelArt()
         val uri = listOf(MediaMetadata.METADATA_KEY_ALBUM_ART_URI, MediaMetadata.METADATA_KEY_ART_URI, MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI)
-            .firstNotNullOfOrNull { meta.getString(it)?.takeIf { s -> s.isNotBlank() } } ?: return
-        if (!artLoading.add(artKey)) return
-        Thread {
-            val bytes = runCatching {
-                val parsed = android.net.Uri.parse(uri)
-                val input = when (parsed.scheme) {
-                    "http", "https" -> (java.net.URL(uri).openConnection() as java.net.HttpURLConnection).apply {
-                        connectTimeout = 8000
-                        readTimeout = 8000
-                    }.inputStream
-                    else -> contentResolver.openInputStream(parsed)
-                }
-                input?.use { android.graphics.BitmapFactory.decodeStream(it) }?.let { png(it, 256) }
-            }.getOrNull()
+            .firstNotNullOfOrNull { meta.getString(it)?.takeIf { s -> s.isNotBlank() } }
+            ?.let(Uri::parse) ?: return
+        val scheme = uri.scheme?.lowercase(Locale.ROOT)
+        if (scheme != "https" && scheme != "content") return
+        if (scheme == "content" && !UriSecurity.isAllowedContentUri(this, uri)) return
+        if (artLoadingKey == artKey && artLoad?.cancelled == false) return
+
+        val request = ArtLoad()
+        artLoad = request
+        artLoadingKey = artKey
+        val timeout = Runnable { if (!request.finished) request.cancel() }
+        request.timeout = timeout
+        NotchBridge.handler.postDelayed(timeout, ART_TIMEOUT_MS)
+        request.thread = Thread({
+            val bytes = runCatching { fetchArt(uri, request) }.getOrNull()
+            request.finished = true
+            NotchBridge.handler.removeCallbacks(timeout)
             NotchBridge.handler.post {
-                artLoading.remove(artKey)
-                if (bytes != null) {
+                if (artLoad !== request) return@post
+                artLoad = null
+                artLoadingKey = null
+                if (!request.cancelled && bytes != null) {
                     artFromUri[artKey] = bytes
                     if (lastArtKey != artKey) sendMedia()
                 }
             }
-        }.start()
+        }, "HolmArt")
+        if (request.cancelled) request.thread?.interrupt() else request.thread?.start()
+    }
+
+    private fun cancelArt() {
+        artLoad?.cancel()
+        artLoad = null
+        artLoadingKey = null
+    }
+
+    private fun fetchArt(uri: Uri, request: ArtLoad): ByteArray? {
+        request.checkActive()
+        val bytes = (if (uri.scheme.equals("https", ignoreCase = true)) fetchHttps(uri, request)
+        else {
+            val signal = CancellationSignal()
+            request.signal = signal
+            contentResolver.openAssetFileDescriptor(uri, "r", signal)?.use { descriptor ->
+                val input = descriptor.createInputStream()
+                request.input = input
+                readBounded(input, request)
+            }
+        }) ?: return null
+        request.checkActive()
+        val bitmap = decodeArt(bytes) ?: return null
+        return try {
+            png(bitmap, ART_SIZE)
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    private fun fetchHttps(uri: Uri, request: ArtLoad): ByteArray? {
+        var current = uri
+        for (redirects in 0..MAX_ART_REDIRECTS) {
+            request.checkActive()
+            val connection = URL(current.toString()).openConnection() as HttpURLConnection
+            request.connection = connection
+            connection.instanceFollowRedirects = false // a redirect must never downgrade https to http
+            connection.connectTimeout = ART_IO_TIMEOUT_MS
+            connection.readTimeout = ART_IO_TIMEOUT_MS
+            connection.setRequestProperty("Accept", "image/*")
+            try {
+                val code = connection.responseCode
+                if (code in 300..399) {
+                    val location = connection.getHeaderField("Location") ?: return null
+                    val next = runCatching { URL(URL(current.toString()), location) }.getOrNull() ?: return null
+                    if (!next.protocol.equals("https", ignoreCase = true)) return null
+                    current = Uri.parse(next.toString())
+                    continue
+                }
+                if (code !in 200..299 || connection.contentLengthLong > MAX_ART_BYTES) return null
+                request.input = connection.inputStream
+                return readBounded(request.input!!, request)
+            } finally {
+                connection.disconnect()
+            }
+        }
+        return null
+    }
+
+    private fun readBounded(input: InputStream, request: ArtLoad): ByteArray? {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(16 * 1024)
+        while (true) {
+            request.checkActive()
+            val count = input.read(buffer)
+            if (count < 0) break
+            if (output.size().toLong() + count > MAX_ART_BYTES) return null
+            output.write(buffer, 0, count)
+        }
+        request.checkActive()
+        return output.toByteArray()
+    }
+
+    /** Bounds pass first, then a power-of-two sample decode and a final fit. No full-resolution bitmap is allocated. */
+    private fun decodeArt(bytes: ByteArray): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeStream(ByteArrayInputStream(bytes), null, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0 || bounds.outWidth > MAX_ART_DIMENSION ||
+            bounds.outHeight > MAX_ART_DIMENSION || bounds.outWidth.toLong() * bounds.outHeight > MAX_ART_BOUNDS_PIXELS) return null
+
+        var sample = 1L
+        while (sample <= Int.MAX_VALUE / 2L &&
+            (bounds.outWidth.toLong() / (sample * 2) >= ART_SIZE || bounds.outHeight.toLong() / (sample * 2) >= ART_SIZE)) {
+            sample *= 2
+        }
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = sample.toInt()
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inScaled = false
+        }
+        val bitmap = BitmapFactory.decodeStream(ByteArrayInputStream(bytes), null, options) ?: return null
+        if (bitmap.width.toLong() * bitmap.height > MAX_DECODED_ART_PIXELS) {
+            bitmap.recycle()
+            return null
+        }
+        val scale = minOf(ART_SIZE.toFloat() / bitmap.width, ART_SIZE.toFloat() / bitmap.height).coerceAtMost(1f)
+        val width = Math.round(bitmap.width * scale).coerceIn(1, ART_SIZE)
+        val height = Math.round(bitmap.height * scale).coerceIn(1, ART_SIZE)
+        val scaled = if (width == bitmap.width && height == bitmap.height) bitmap
+        else Bitmap.createScaledBitmap(bitmap, width, height, true)
+        if (scaled !== bitmap) bitmap.recycle()
+        return scaled
     }
 
     /** Some players (Chrome, for one) put the cover only on their media notification, as its large icon. */
@@ -379,6 +542,7 @@ class NotchListener : NotificationListenerService() {
     }.getOrNull()
 
     fun mediaAction(action: String, position: Long?) {
+        if (NotchBridge.isDeviceLocked(this)) return
         val t = controller?.transportControls ?: return
         when (action) {
             "play" -> t.play()
@@ -396,6 +560,15 @@ class NotchListener : NotificationListenerService() {
 
         /** Notification.FLAG_PROMOTED_ONGOING (Android 16). */
         const val FLAG_PROMOTED_ONGOING = 0x00040000
+
+        private const val ART_SIZE = 256
+        private const val MAX_ART_BYTES = 8 * 1024 * 1024L
+        private const val ART_IO_TIMEOUT_MS = 8_000
+        private const val ART_TIMEOUT_MS = 12_000L
+        private const val MAX_ART_REDIRECTS = 3
+        private const val MAX_ART_DIMENSION = 32_768
+        private const val MAX_ART_BOUNDS_PIXELS = 1_000_000_000L
+        private const val MAX_DECODED_ART_PIXELS = 4L * ART_SIZE * ART_SIZE
 
         fun png(drawable: Drawable, size: Int): ByteArray {
             val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)

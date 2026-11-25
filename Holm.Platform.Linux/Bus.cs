@@ -46,6 +46,33 @@ sealed class Bus
         }
     }
 
+    /// <summary>
+    /// A dedicated binary D-Bus monitor connection. Unlike dbus-monitor text output, message boundaries and string
+    /// contents come from the wire parser and cannot be forged with embedded newlines.
+    /// </summary>
+    public async Task<IDisposable?> MonitorAsync(Action<Exception?, DisposableMessage> handler, IEnumerable<MatchRule> rules)
+    {
+        DBusConnection? connection = null;
+        try
+        {
+            if (_address() is not { Length: > 0 } address) return null;
+            connection = new DBusConnection(address);
+            await connection.ConnectAsync().ConfigureAwait(false);
+            await connection.BecomeMonitorAsync(handler, rules).ConfigureAwait(false);
+            return new MonitorSession(connection);
+        }
+        catch
+        {
+            connection?.Dispose();
+            return null;
+        }
+    }
+
+    sealed class MonitorSession(DBusConnection connection) : IDisposable
+    {
+        public void Dispose() => connection.Dispose();
+    }
+
     /// <summary>All properties of one interface of an object; empty when the object or the bus isn't there.</summary>
     public async Task<Dictionary<string, VariantValue>> GetAllAsync(string service, string path, string @interface)
     {

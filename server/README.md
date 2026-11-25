@@ -36,7 +36,24 @@ It creates the `holynotch` user, `/opt/holynotch`, `/var/lib/holynotch` (the SQL
 (settings, with a new random `ADMIN_KEY`), the `holynotch` systemd service, an nginx site with a Let's Encrypt
 certificate, and opens TCP 4001 in ufw. Running it again updates the code and keeps the database and settings.
 
-The admin key: `sudo grep ADMIN_KEY /etc/holynotch.env`. Logs: `journalctl -u holynotch -f`.
+The admin key: `sudo grep ADMIN_KEY /etc/holynotch.env`. Use a long random value. Logs: `journalctl -u holynotch -f`.
+
+## Security limits
+
+- Every HTTP route and WebSocket upgrade is rate-limited per address. Admin key failures have a separate ten-minute
+  throttle, fixed-length constant-time key comparison, generic errors and restrictive security headers.
+- JSON, form, note and document bodies are capped while streaming; `Content-Length` is only an early rejection hint.
+- Stored notes are capped by `MAX_NOTES` (default 250,000). A full store rejects new notes instead of evicting another
+  inbox's history. Expired notes and old admin counters are removed automatically.
+- Active followers are capped globally by `MAX_FOLLOWERS` (default 50,000) and per address by `FOLLOWERS_PER_IP`
+  (default 64). Extra followers are refused, never used to evict an established client.
+- Pending transit pairs are capped by `MAX_WAITING` (default 10,000) and `WAITING_PER_IP` (default 8). Active
+  pairs are capped by `MAX_TRANSIT_ACTIVE` (default 1,000) and `TRANSIT_ACTIVE_PER_IP` (default 32).
+- Inbox reads remain unauthenticated for compatibility with installed `WNF1.` clients. Notes and transfers stay
+  end-to-end encrypted; per-address/topic write quotas limit unauthenticated availability attacks.
+
+If nginx or another local proxy fronts the service, configure it to overwrite `X-Real-IP`; the server only trusts that
+header from a loopback peer.
 
 ## Moving to another name
 

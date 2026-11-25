@@ -1,4 +1,3 @@
-import 'package:characters/characters.dart';
 import 'package:flutter/services.dart' show MaxLengthEnforcement;
 import 'package:material_ui/material_ui.dart';
 import 'package:share_plus/share_plus.dart';

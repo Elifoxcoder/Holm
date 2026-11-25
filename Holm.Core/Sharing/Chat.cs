@@ -134,6 +134,18 @@ public static class ChatGif
     }
 
     /// <summary>
+    /// Whether a received link may be fetched without a click. Only the GIPHY/Tenor CDNs are allowed; other HTTPS
+    /// links can still travel in chat, but opening one is an explicit user action.
+    /// </summary>
+    public static bool MayAutoLoad(string? url)
+    {
+        if (Clean(url) is not { } clean) return false;
+        string host = new Uri(clean).Host.ToLowerInvariant();
+        return host is "giphy.com" or "www.giphy.com" or "tenor.com" or "www.tenor.com"
+            || host.EndsWith(".giphy.com", StringComparison.Ordinal) || host.EndsWith(".tenor.com", StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// Whether a typed or pasted text is a link to a GIF, so it goes as one: a link ending in .gif, or a page on
     /// GIPHY or Tenor (turned into the link of the picture where that is possible).
     /// </summary>
@@ -196,7 +208,7 @@ public sealed class ChatStore
     {
         _path = path;
         if (path == null || !File.Exists(path)) return;
-        try { _data = JsonSerializer.Deserialize<Data>(File.ReadAllText(path), Json) ?? new Data(); }
+        try { _data = JsonSerializer.Deserialize<Data>(PrivateStorage.ReadAllText(path), Json) ?? new Data(); }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
             Diag.Log("Chats unreadable, starting empty: " + ex.Message);
@@ -274,10 +286,7 @@ public sealed class ChatStore
         if (_path == null || AppSettings.ReadOnly) return;
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-            string temp = _path + ".tmp";
-            File.WriteAllText(temp, JsonSerializer.Serialize(_data, Json));
-            File.Move(temp, _path, overwrite: true);
+            PrivateStorage.WriteAllTextAtomic(_path, JsonSerializer.Serialize(_data, Json));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

@@ -13,7 +13,13 @@ namespace WinNotch;
 /// </summary>
 internal static class FolderPack
 {
-    public static string TempFolder => Path.Combine(Path.GetTempPath(), "Holm", "Beam");
+    public static string TempFolder => PrivateStorage.TempFolder("Beam");
+    internal static string LegacyTempFolder => Path.Combine(Path.GetTempPath(), "Holm", "Beam");
+
+    internal static void SecureLegacyTemp()
+    {
+        try { PrivateStorage.SecureDataFolder(LegacyTempFolder); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
 
     /// <summary>"Holiday photos.zip" for C:\…\Holiday photos, "E.zip" for a drive; "(2)" and on if taken.</summary>
     public static string ZipPathFor(string folder, string tempFolder)
@@ -59,7 +65,7 @@ internal static class FolderPack
     /// </summary>
     public static (string Zip, int Skipped) Pack(string folder, string tempFolder, IProgress<double>? progress, CancellationToken ct)
     {
-        Directory.CreateDirectory(tempFolder);
+        PrivateStorage.EnsureFolder(tempFolder);
         string zipPath = ZipPathFor(folder, tempFolder);
         var files = FilesOf(folder);
         long total = Math.Max(1, files.Sum(f => SafeLength(f.Path))), done = 0;
@@ -89,6 +95,7 @@ internal static class FolderPack
             try { File.Delete(zipPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             throw;
         }
+        PrivateStorage.SecureFile(zipPath);
         return (zipPath, skipped);
     }
 
@@ -101,10 +108,9 @@ internal static class FolderPack
     /// <summary>Deletes packed ZIPs; only ever files inside <paramref name="tempFolder"/>.</summary>
     public static void Forget(IEnumerable<string> zips, string tempFolder)
     {
-        string root = Path.GetFullPath(tempFolder).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         foreach (var zip in zips)
         {
-            if (!Path.GetFullPath(zip).StartsWith(root, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!PrivateStorage.IsInside(tempFolder, zip)) continue;
             try { File.Delete(zip); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
     }

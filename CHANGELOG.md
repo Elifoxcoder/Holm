@@ -7,6 +7,10 @@
 - **HolyNotch has its own server.** Sign-in and the synced settings, profile, friends and achievements, the friend inboxes (chat, requests, invites, presence) and file transfers now run on HolyNotch's own server (`server/`), no longer on Google's Firebase, Holm's relay and magic-wormhole's relay. HolyNotch for Android 1.3.1 too.
 - **Nothing to do for you.** An account at Holm moves over by itself, with its data, at the next sign-in or token refresh: signed-in apps stay signed in. Friends get your new friend code once; friends still on Holm reach you as before (HolyNotch keeps following Holm's relay), and files to and from Holm still go through magic-wormhole's relay.
 
+### Security
+
+- Addressed the 2026-11-25 security audit across the desktop app, Android app, relay and HolyNotch server: bounded network/image handling, safer received-file actions, replay and invite defenses, private local storage, lock-screen protection and least-privilege CI. Existing Holm protocols and installed-app compatibility are preserved; the remaining protocol-level limitations are recorded in [the audit follow-up](docs/security-audit-2026-11-25.md).
+
 ## 2.4.0 – unreleased
 
 ### Changed

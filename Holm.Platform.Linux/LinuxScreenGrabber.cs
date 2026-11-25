@@ -52,12 +52,23 @@ sealed unsafe class LinuxScreenGrabber : IScreenGrabber
 
     public ScreenImage? Grab()
     {
-        IntPtr image = XGetImage(_display, _root, _x, _y, (uint)_areaWidth, (uint)_areaHeight, ulong.MaxValue, ZPixmap);
-        if (image == IntPtr.Zero) return null;
+        IntPtr image = IntPtr.Zero, previousHandler = IntPtr.Zero;
         try
         {
+            // Xlib's default error handler exits the process. Monitor geometry can change between frames, so both
+            // geometry and capture run under a scoped handler and are clamped to the current root window.
+            previousHandler = XSetErrorHandler(IgnoreErrors);
+            if (XGetGeometry(_display, _root, out _, out _, out _, out uint rootWidth, out uint rootHeight, out _, out _) == 0)
+                return null;
+            if (!TryCaptureBounds(_x, _y, _areaWidth, _areaHeight, rootWidth, rootHeight,
+                    out int x0, out int y0, out int captureWidth, out int captureHeight)) return null;
+
+            image = XGetImage(_display, _root, x0, y0, (uint)captureWidth, (uint)captureHeight, ulong.MaxValue, ZPixmap);
+            if (image == IntPtr.Zero) return null;
             var info = (XImage*)image;
-            if (info->BitsPerPixel != 32 || info->ByteOrder != 0) return null; // a true-colour screen, blue first
+            if (info->BitsPerPixel != 32 || info->ByteOrder != 0 || info->Data == IntPtr.Zero
+                || info->Width < captureWidth || info->Height < captureHeight || info->BytesPerLine < captureWidth * 4) return null;
+
             var pixels = new byte[_width * _height * 4];
             byte* data = (byte*)info->Data;
             int stride = info->BytesPerLine;
@@ -65,15 +76,17 @@ sealed unsafe class LinuxScreenGrabber : IScreenGrabber
             {
                 for (int row = 0; row < _height; row++)
                 {
-                    int y0 = _rowStart[row], y1 = Math.Max(y0 + 1, _rowStart[row + 1]);
+                    int sy0 = Math.Min(captureHeight - 1, _rowStart[row]);
+                    int sy1 = Math.Clamp(_rowStart[row + 1], sy0 + 1, captureHeight);
                     for (int column = 0; column < _width; column++)
                     {
-                        int x0 = _columnStart[column], x1 = Math.Max(x0 + 1, _columnStart[column + 1]);
-                        int b = 0, g = 0, r = 0, n = (x1 - x0) * (y1 - y0);
-                        for (int sy = y0; sy < y1; sy++)
+                        int sx0 = Math.Min(captureWidth - 1, _columnStart[column]);
+                        int sx1 = Math.Clamp(_columnStart[column + 1], sx0 + 1, captureWidth);
+                        int b = 0, g = 0, r = 0, n = (sx1 - sx0) * (sy1 - sy0);
+                        for (int sy = sy0; sy < sy1; sy++)
                         {
-                            byte* p = data + sy * stride + x0 * 4;
-                            for (int sx = x0; sx < x1; sx++, p += 4) { b += p[0]; g += p[1]; r += p[2]; }
+                            byte* p = data + sy * stride + sx0 * 4;
+                            for (int sx = sx0; sx < sx1; sx++, p += 4) { b += p[0]; g += p[1]; r += p[2]; }
                         }
                         byte* q = target + (row * _width + column) * 4;
                         q[0] = (byte)(b / n); q[1] = (byte)(g / n); q[2] = (byte)(r / n); q[3] = 0xFF;
@@ -85,11 +98,30 @@ sealed unsafe class LinuxScreenGrabber : IScreenGrabber
         }
         finally
         {
-            var info = (XImage*)image;
-            if (info->Data != IntPtr.Zero) XFree(info->Data);
-            XFree(image);
+            if (image != IntPtr.Zero)
+            {
+                var info = (XImage*)image;
+                if (info->Data != IntPtr.Zero) XFree(info->Data);
+                XFree(image);
+            }
+            if (previousHandler != IntPtr.Zero) XSetErrorHandler(previousHandler);
         }
     }
+
+    internal static bool TryCaptureBounds(int x, int y, int areaWidth, int areaHeight, uint rootWidth, uint rootHeight,
+                                          out int left, out int top, out int width, out int height)
+    {
+        left = Math.Max(0, x);
+        top = Math.Max(0, y);
+        long right = Math.Min((long)rootWidth, (long)x + areaWidth);
+        long bottom = Math.Min((long)rootHeight, (long)y + areaHeight);
+        width = (int)Math.Max(0, right - left);
+        height = (int)Math.Max(0, bottom - top);
+        return width > 0 && height > 0;
+    }
+
+    internal static bool CanDrawCursor(ushort width, ushort height, IntPtr pixels)
+        => width > 0 && height > 0 && width <= 256 && height <= 256 && pixels != IntPtr.Zero;
 
     /// <summary>The pointer as XFixes has it (premultiplied ARGB in longs), shrunk like the windows' picture on Windows.</summary>
     void DrawPointer(byte* target)
@@ -98,6 +130,7 @@ sealed unsafe class LinuxScreenGrabber : IScreenGrabber
         if (cursor == null) return;
         try
         {
+            if (!CanDrawCursor(cursor->Width, cursor->Height, (IntPtr)cursor->Pixels)) return;
             double scale = _width / (double)_areaWidth;
             // As on Windows: a smaller picture gets a smaller pointer, never smaller than 12 pixels on a 32-pixel pointer.
             double size = scale < 1 ? Math.Max(12, 32 * scale) / 32 : 1;
@@ -152,8 +185,14 @@ sealed unsafe class LinuxScreenGrabber : IScreenGrabber
     [DllImport(X11)] static extern IntPtr XOpenDisplay(IntPtr name);
     [DllImport(X11)] static extern int XCloseDisplay(IntPtr display);
     [DllImport(X11)] static extern IntPtr XDefaultRootWindow(IntPtr display);
+    [DllImport(X11)] static extern int XGetGeometry(IntPtr display, IntPtr drawable, out IntPtr root, out int x, out int y, out uint width, out uint height, out uint border, out uint depth);
     [DllImport(X11)] static extern IntPtr XGetImage(IntPtr display, IntPtr drawable, int x, int y, uint width, uint height, ulong planeMask, int format);
     [DllImport(X11)] static extern int XFree(IntPtr data);
     [DllImport(XFixes)] static extern bool XFixesQueryExtension(IntPtr display, out int eventBase, out int errorBase);
     [DllImport(XFixes)] static extern XFixesCursorImage* XFixesGetCursorImage(IntPtr display);
+    [DllImport(X11)] static extern IntPtr XSetErrorHandler(ErrorHandler handler);
+    [DllImport(X11)] static extern IntPtr XSetErrorHandler(IntPtr handler);
+
+    static readonly ErrorHandler IgnoreErrors = (_, _) => 0;
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int ErrorHandler(IntPtr display, IntPtr error);
 }

@@ -10,16 +10,16 @@ class ClipboardPage extends StatelessWidget {
   final AppState state;
   const ClipboardPage(this.state, {super.key});
 
-  Future<SendTarget?> _pickDevice(BuildContext context, {String title = 'Send to'}) =>
-      pickTarget(context, state, title: title);
+  Future<SendTarget?> _pickDevice(BuildContext context, {String title = 'Send to', bool accountOnly = false}) =>
+      pickTarget(context, state, title: title, accountOnly: accountOnly);
 
   Future<void> _toggleSync(BuildContext context, bool on) async {
     if (!on) {
       state.setClipboardSync(false);
       return;
     }
-    final peer = await _pickDevice(context, title: 'Sync the clipboard with');
-    if (peer != null) state.setClipboardSync(true, peer.name);
+    final peer = await _pickDevice(context, title: 'Sync the clipboard with', accountOnly: true);
+    if (peer != null) state.setClipboardSync(true, peer);
   }
 
   @override
@@ -43,8 +43,8 @@ class ClipboardPage extends StatelessWidget {
                       const SizedBox(height: 2),
                       Text(
                         state.clipboardSync
-                            ? 'With ${state.syncTarget ?? 'a device'}: what you copy goes over when you open HolyNotch, texts that arrive are copied right away'
-                            : 'Copy on one, paste on the other',
+                            ? 'With ${state.syncTarget ?? 'your account device'}: what you copy goes over when you open HolyNotch, texts from that verified device are copied right away'
+                            : 'Automatic sync works only with devices signed in to your HolyNotch account. Nearby offers always ask.',
                         style: const TextStyle(color: HolmColors.dim, fontSize: 13),
                       ),
                     ]),

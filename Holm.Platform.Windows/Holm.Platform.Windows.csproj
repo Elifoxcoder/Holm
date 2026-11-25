@@ -17,6 +17,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Holm.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Holm.Platform\Holm.Platform.csproj" />
     <ProjectReference Include="..\Holm.Core\Holm.Core.csproj" />
   </ItemGroup>

@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 
 import 'app_state.dart';
@@ -11,7 +10,9 @@ import 'ui/account_page.dart';
 import 'ui/chat_page.dart';
 import 'ui/clipboard_page.dart';
 import 'ui/devices_page.dart';
+import 'ui/file_confirmation.dart';
 import 'ui/notch_page.dart';
+import 'ui/offer_confirmation.dart';
 import 'ui/notes_page.dart';
 import 'ui/theme.dart';
 import 'ui/widgets.dart';
@@ -61,6 +62,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     s.askOffer = _askOffer;
+    s.confirmFiles = (title, paths) => confirmOutgoingFiles(context, paths, title: title);
     s.toast = (text) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
     };
@@ -142,43 +144,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
     }
   }
 
-  Future<bool> _askOffer(ShareOffer offer) async {
-    if (!mounted) return false;
-    final single = offer.files.length == 1;
-    BuildContext? dialog;
-    // The sender doesn't wait forever (AppState counts no answer in a minute as no): the question goes with it.
-    final expire = Timer(const Duration(seconds: 58), () {
-      final open = dialog;
-      if (open != null && open.mounted) Navigator.of(open).pop(false);
-    });
-    final answer = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) {
-        dialog = context;
-        return AlertDialog(
-        icon: Avatar(offer.sender, size: 56, icon: Icons.laptop_rounded),
-        title: Text(offer.isText ? 'Text from ${offer.sender}' : '${offer.sender} wants to send you'),
-        content: Text(
-          offer.isText
-              ? 'Copy it to your clipboard?'
-              : single
-                  ? '${offer.files.first.name} · ${fileSize(offer.totalBytes)}'
-                  : '${offer.files.length} files · ${fileSize(offer.totalBytes)}',
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: HolmColors.dim),
-        ),
-        actionsAlignment: MainAxisAlignment.center,
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Decline')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: Text(offer.isText ? 'Copy' : 'Accept')),
-        ],
-      );
-      },
-    );
-    expire.cancel();
-    return answer ?? false;
-  }
+  Future<bool> _askOffer(ShareOffer offer) async => mounted ? confirmOffer(context, offer) : false;
 
   void _settings() {
     final name = TextEditingController(text: s.deviceName);

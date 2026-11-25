@@ -26,6 +26,20 @@ public sealed class FolderPackTests : IDisposable
     }
 
     [Fact]
+    public void Beam_ZIPs_use_the_private_runtime_folder_and_private_files()
+    {
+        Assert.True(PrivateStorage.IsInside(PrivateStorage.TempRootPath, FolderPack.TempFolder));
+        Assert.NotEqual(FolderPack.LegacyTempFolder, FolderPack.TempFolder);
+        string folder = MakeFolder("Private");
+        var (zip, _) = FolderPack.Pack(folder, Temp, null, CancellationToken.None);
+        if (OperatingSystem.IsLinux())
+        {
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(Temp));
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(zip));
+        }
+    }
+
+    [Fact]
     public void Packs_the_whole_folder_under_its_own_name()
     {
         string folder = MakeFolder("Holiday photos");

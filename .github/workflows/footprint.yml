@@ -6,9 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       variant:
-        description: "Extra MSBuild properties for a second build to compare (optional)"
+        description: "Space-separated supported boolean MSBuild properties for a second build (optional)"
         required: false
         default: ""
+
+permissions:
+  contents: read
 
 jobs:
   measure:
@@ -17,20 +20,31 @@ jobs:
     env:
       VARIANT: ${{ inputs.variant }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: "10.0.x"
 
       - name: Build
         shell: pwsh
         run: |
+          # Only known boolean build switches are accepted; arbitrary MSBuild properties can change what the build executes.
+          $variantArgs = @()
+          if ($env:VARIANT) {
+            if ($env:VARIANT -match '[\r\n\t]') { throw "Separate MSBuild properties with spaces." }
+            $variantArgs = @($env:VARIANT -split ' ' | Where-Object { $_ })
+            if ($variantArgs.Count -eq 0) { throw "The variant must contain at least one MSBuild property." }
+            $allowed = '^-p:(EnableCompressionInSingleFile|PublishReadyToRunComposite|TieredCompilation|TieredPGO|ConcurrentGarbageCollection|IncludeNativeLibrariesForSelfExtract|PublishSingleFile|PublishReadyToRun|SelfContained|PublishTrimmed|InvariantGlobalization)=(true|false)$'
+            foreach ($arg in $variantArgs) {
+              if ($arg -cnotmatch $allowed) { throw "Unsupported variant property '$arg'. Use supported -p:Name=true|false switches only." }
+            }
+          }
           # The same build the Release workflow ships.
           $common = @('-c', 'Release', '-r', 'win-x64', '-p:SelfContained=true', '-p:PublishSingleFile=true', '-p:PublishReadyToRun=true',
                       '-p:DebugType=none', '-p:IncludeNativeLibrariesForSelfExtract=true')
           dotnet publish Holm.App @common -o out/release
-          if ($env:VARIANT) { dotnet publish Holm.App @common @($env:VARIANT -split '\s+' | Where-Object { $_ }) -o out/variant }
+          if ($env:VARIANT) { dotnet publish Holm.App @common @variantArgs -o out/variant }
           Get-ChildItem out/*/Holm.App.exe | Format-Table FullName, Length
 
       - name: Measure

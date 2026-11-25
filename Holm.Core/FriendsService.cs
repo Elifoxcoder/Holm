@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
@@ -94,6 +95,9 @@ internal sealed partial class FriendsService
     public event Action? InvitesChanged;
 
     readonly WaveLimit _wavesOut = new(), _wavesIn = new();
+    readonly FriendProofAttempts _proofAttempts = new();
+    readonly HashSet<string> _seenIds = new(StringComparer.Ordinal);
+    long _lastSeenPrune;
     /// <summary>What friends told us they're doing, by key; only shown while they count as online.</summary>
     readonly Dictionary<string, FriendActivity?> _activities = new(StringComparer.Ordinal);
     readonly Dictionary<string, int> _trophies = new(StringComparer.Ordinal);
@@ -113,7 +117,11 @@ internal sealed partial class FriendsService
     readonly OwnDevices _devices = new();
 
     /// <summary>Tests run inboxes on this computer; Holm itself never has its inbox there.</summary>
-    internal static bool AllowLoopbackServers;
+    internal static bool AllowLoopbackServers
+    {
+        get => FriendIdentity.AllowInsecureServers;
+        set => FriendIdentity.AllowInsecureServers = value;
+    }
 
     /// <summary>An inbox on this computer (localhost, 127.x, ::1): a test's, never a real one other devices can reach.</summary>
     internal static bool IsLoopbackServer(string? url)
@@ -124,13 +132,13 @@ internal sealed partial class FriendsService
     {
         _settings = settings;
         _ui = ui;
-        // An inbox on this computer came from a test, not from you: nothing else reaches it. Holm's relay instead.
-        if (!AllowLoopbackServers && IsLoopbackServer(_settings.FriendsServer))
+        // An unsafe saved inbox is never contacted: HTTP, credentials and local/private destinations fall back to the relay.
+        if (_settings.FriendsServer != null && !FriendIdentity.TryNormalizeServer(_settings.FriendsServer, out _))
         {
             _settings.FriendsServer = null;
             _settings.FriendsRelay = true;
             _settings.Save();
-            Diag.Log("Friends: the inbox server was on this computer; back to Holm's relay");
+            Diag.Log("Friends: the inbox server was not a public HTTPS URL; back to Holm's relay");
         }
         int removed = RemoveDuplicateFriendCards(_settings.Friends);
         if (removed > 0)
@@ -150,16 +158,128 @@ internal sealed partial class FriendsService
 
     /// <summary>Invite codes are kept a day past their end, for requests that wait in our inbox while Holm is closed.</summary>
     const long InviteGrace = 24 * 60 * 60;
+    /// <summary>The existing allowance for a request that reached the server just around the code's expiry.</summary>
+    const long InviteArrivalGrace = 300;
     /// <summary>An unanswered request is forgotten after this long: the note it waits for is long gone from the server.</summary>
     const long PendingFor = 2 * 24 * 60 * 60;
+    /// <summary>Transport ids and authenticated note ids/hashes share the existing persisted list, with a hard bound.</summary>
+    internal const int SeenLimit = 20_000;
+    /// <summary>Past acceptance window plus slack for a note whose authenticated Sent was at the future-skew boundary.</summary>
+    internal const int SeenRetentionSeconds = FriendNotes.OldestSentSeconds + FriendNotes.MaxClockSkewSeconds;
+    const int SeenPruneIntervalSeconds = 60;
 
     bool Prune(long now)
-        => _settings.FriendInvites.RemoveAll(i => i.Expires + InviteGrace < now)
-         + _settings.PendingFriendRequests.RemoveAll(p => p.Sent + PendingFor < now)
-         + _settings.IncomingFriendRequests.RemoveAll(p => p.Sent + PendingFor < now) > 0;
+    {
+        bool changed = PruneSeen(now);
+        changed |= _settings.FriendInvites.RemoveAll(i => i.Expires + InviteGrace < now) > 0;
+        changed |= _settings.PendingFriendRequests.RemoveAll(p => p.Sent + PendingFor < now) > 0;
+        changed |= _settings.IncomingFriendRequests.RemoveAll(p => p.Sent + PendingFor < now) > 0;
+        return changed;
+    }
+
+    static bool IsSeenId([NotNullWhen(true)] string? id) => !string.IsNullOrWhiteSpace(id) && id.Length <= 256;
+
+    bool PruneSeen(long now)
+    {
+        _settings.FriendsSeen ??= new();
+        _settings.FriendsSeenTimes ??= new();
+        bool changed = false;
+        if (_settings.FriendsSeenTimes.Count < _settings.FriendsSeen.Count)
+        {
+            while (_settings.FriendsSeenTimes.Count < _settings.FriendsSeen.Count) _settings.FriendsSeenTimes.Add(now);
+            changed = true;
+        }
+        else if (_settings.FriendsSeenTimes.Count > _settings.FriendsSeen.Count)
+        {
+            _settings.FriendsSeenTimes.RemoveRange(_settings.FriendsSeen.Count, _settings.FriendsSeenTimes.Count - _settings.FriendsSeen.Count);
+            changed = true;
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var keptIds = new List<string>(_settings.FriendsSeen.Count);
+        var keptTimes = new List<long>(_settings.FriendsSeenTimes.Count);
+        long cutoff = now - SeenRetentionSeconds;
+        for (int i = _settings.FriendsSeen.Count - 1; i >= 0; i--)
+        {
+            string? id = _settings.FriendsSeen[i];
+            long at = _settings.FriendsSeenTimes[i];
+            if (!IsSeenId(id)) { changed = true; continue; }
+            // Missing/zero timestamps came from settings written before the parallel list existed. Treat them as
+            // unknown and retain them conservatively for one full window from migration; corrupt future times too.
+            if (at <= 0 || at > now + FriendNotes.MaxClockSkewSeconds)
+            {
+                at = now;
+                changed = true;
+            }
+            if (at < cutoff || !seen.Add(id)) { changed = true; continue; }
+            keptIds.Add(id);
+            keptTimes.Add(at);
+        }
+        if (keptIds.Count > SeenLimit)
+        {
+            // Newest first while walking backwards: drop the excess old end, then restore chronological order.
+            keptIds.RemoveRange(SeenLimit, keptIds.Count - SeenLimit);
+            keptTimes.RemoveRange(SeenLimit, keptTimes.Count - SeenLimit);
+            changed = true;
+        }
+        keptIds.Reverse();
+        keptTimes.Reverse();
+        if (changed)
+        {
+            _settings.FriendsSeen.Clear();
+            _settings.FriendsSeen.AddRange(keptIds);
+            _settings.FriendsSeenTimes.Clear();
+            _settings.FriendsSeenTimes.AddRange(keptTimes);
+        }
+        _seenIds.Clear();
+        foreach (string id in _settings.FriendsSeen) _seenIds.Add(id);
+        _lastSeenPrune = now;
+        return changed;
+    }
+
+    void RemoveSeenAt(int index)
+    {
+        _settings.FriendsSeen.RemoveAt(index);
+        _settings.FriendsSeenTimes.RemoveAt(index);
+    }
+
+    bool MaintainSeen(long now)
+        => _lastSeenPrune == 0 || now < _lastSeenPrune || now - _lastSeenPrune >= SeenPruneIntervalSeconds
+            ? PruneSeen(now)
+            : PruneSeenFromFront(now);
+
+    bool PruneSeenFromFront(long now)
+    {
+        bool changed = false;
+        long cutoff = now - SeenRetentionSeconds;
+        while (_settings.FriendsSeenTimes.Count > 0 && _settings.FriendsSeenTimes[0] < cutoff)
+        {
+            string id = _settings.FriendsSeen[0];
+            RemoveSeenAt(0);
+            _seenIds.Remove(id);
+            changed = true;
+        }
+        return changed;
+    }
+
+    bool RememberSeen(string? id, long now)
+    {
+        MaintainSeen(now);
+        if (!IsSeenId(id) || _seenIds.Contains(id)) return false;
+        while (_settings.FriendsSeen.Count >= SeenLimit)
+        {
+            string oldest = _settings.FriendsSeen[0];
+            RemoveSeenAt(0);
+            _seenIds.Remove(oldest);
+        }
+        _settings.FriendsSeen.Add(id);
+        _settings.FriendsSeenTimes.Add(now);
+        _seenIds.Add(id);
+        return true;
+    }
 
     /// <summary>Our invite codes that still work, newest last.</summary>
-    public IReadOnlyList<OwnInvite> Invites => _settings.FriendInvites.Where(i => i.Expires > Now).ToList();
+    public IReadOnlyList<OwnInvite> Invites => _settings.FriendInvites.Where(i => !i.Revoked && i.Expires > Now).ToList();
 
     /// <summary>Requests we sent that haven't been answered yet.</summary>
     public IReadOnlyList<PendingFriendRequest> Pending => _settings.PendingFriendRequests;
@@ -176,15 +296,33 @@ internal sealed partial class FriendsService
         var me = EnsureMe();
         long now = Now;
         Prune(now);
-        if (!fresh && _settings.FriendInvites.LastOrDefault(i => i.Expires - now > 3600) is { } current) return current;
+        if (!fresh && _settings.FriendInvites.LastOrDefault(i => !i.Revoked && i.Expires - now > 3600) is { } current) return current;
         string code = FriendInvite.New();
         long expires = now + (long)FriendInvite.Lifetime.TotalSeconds - 120; // a little before the server lets the card go
         await FriendInbox.PublishInviteAsync(FriendInvite.Topic(code), FriendInvite.Seal(code, me.FriendCode, expires), ct);
-        var invite = new OwnInvite { Code = code, Proof = FriendInvite.Proof(code), Expires = expires };
+        var invite = new OwnInvite { Code = code, Proof = FriendInvite.Proof(code), Expires = expires, SingleUse = true };
+        if (fresh)
+            foreach (var old in _settings.FriendInvites.Where(i => !i.Revoked && i.Expires > now))
+            {
+                old.Revoked = true;
+                old.RevokedAt = now;
+            }
         _settings.FriendInvites.Add(invite);
         _settings.Save();
         InvitesChanged?.Invoke();
         return invite;
+    }
+
+    /// <summary>Stops automatic acceptance here. Copies already fetched by older apps can still ask to be added.</summary>
+    public bool RevokeInvite(OwnInvite invite)
+    {
+        var saved = _settings.FriendInvites.FirstOrDefault(i => i.Code == invite.Code && i.Proof == invite.Proof);
+        if (saved == null || saved.Revoked) return false;
+        saved.Revoked = true;
+        saved.RevokedAt = Now;
+        _settings.Save();
+        InvitesChanged?.Invoke();
+        return true;
     }
 
     /// <summary>
@@ -275,6 +413,8 @@ internal sealed partial class FriendsService
         // Catch up from now on: a friend may write while Holm isn't running.
         _settings.FriendsSince = _settings.FriendsRelaySince = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         _settings.FriendsSeen.Clear();
+        _settings.FriendsSeenTimes.Clear();
+        _seenIds.Clear();
         _settings.IncomingFriendRequests.Clear();
         _settings.Save();
         _me = me;
@@ -367,7 +507,7 @@ internal sealed partial class FriendsService
         }
         finally { CryptographicOperations.ZeroMemory(pkcs8); }
         _settings.FriendsTopic = identity.Topic;
-        if (!AllowLoopbackServers && IsLoopbackServer(identity.Server))
+        if (identity.Server != null && !FriendIdentity.TryNormalizeServer(identity.Server, out _))
         {
             _settings.FriendsServer = null;
             _settings.FriendsRelay = true;
@@ -375,7 +515,8 @@ internal sealed partial class FriendsService
         else _settings.FriendsServer = identity.Server;
         _settings.FriendsSince = Now - 12 * 60 * 60;
         _settings.FriendsRelaySince = Now - 7 * 24 * 60 * 60; // what the relay keeps
-        _settings.FriendsSeen.Clear();
+        // Keep replay ids: account adoption can restore the same identity and replay its retained notes.
+        PruneSeen(Now);
         _settings.IncomingFriendRequests.Clear();
         _me = new FriendIdentity(MyName, identity.Topic, OwnServer, key);
         _loaded = true;
@@ -536,6 +677,7 @@ internal sealed partial class FriendsService
     /// </summary>
     public async Task<bool> AddAsync(Friend friend, bool tellThem)
     {
+        if (!FriendIdentity.IsValidFriend(friend)) throw new ArgumentException("That friend card is not valid.", nameof(friend));
         if (Find(friend.Key) != null) return true;
         var me = EnsureMe();
         _settings.Friends.Add(friend);
@@ -564,6 +706,7 @@ internal sealed partial class FriendsService
     /// </summary>
     public async Task<FriendRequestResult> RequestAddAsync(Friend friend, TimeSpan timeout, CancellationToken ct, string? invite = null)
     {
+        if (!FriendIdentity.IsValidFriend(friend)) throw new ArgumentException("That friend card is not valid.", nameof(friend));
         if (Find(friend.Key) is { } existing)
         {
             UpdateFriendCard(existing, friend);
@@ -772,7 +915,8 @@ internal sealed partial class FriendsService
         if (!_settings.Beam || Me is not { } me) return;
         var cts = new CancellationTokenSource();
         _follow = cts;
-        Func<string, long, string, Task> received = (id, age, text) => _ui(() => { if (_follow == cts) Handle(id, age, text); });
+        Func<string, long, string, Task> received = (id, arrived, text) =>
+            _ui(() => { if (_follow == cts) Handle(id, arrived, text); });
         // Our inbox on the server the settings name, or else on ntfy (where older friends write) and on the relay.
         _ = Task.Run(() => FriendInbox.FollowAsync(_settings.FriendsServer, me.Topic, _settings.FriendsSince, received,
             time => _ = _ui(() => { if (_follow == cts) { _settings.FriendsSince = time; _settings.Save(); } }),
@@ -859,19 +1003,45 @@ internal sealed partial class FriendsService
         if (_presence.Saw(friend.Key, DateTime.UtcNow)) FriendOnline?.Invoke(friend);
     }
 
-    void Handle(string id, long age, string text)
+    internal void Handle(string id, long arrived, long serverNow, string text)
+    {
+        _ = serverNow; // freshness comes from authenticated Sent; retained for deterministic replay/expiry tests
+        Handle(id, arrived, text);
+    }
+
+    internal void Handle(string id, long arrived, string text)
     {
         if (_me is not { } me) return;
-        // Catching up after a reconnect can repeat the last note.
-        if (_settings.FriendsSeen.Contains(id)) return;
-        _settings.FriendsSeen.Add(id);
-        if (_settings.FriendsSeen.Count > 200) _settings.FriendsSeen.RemoveRange(0, _settings.FriendsSeen.Count - 200);
+        long now = Now;
+        bool pruned = MaintainSeen(now);
+        // Catching up after a reconnect can repeat the last transport id.
+        if (IsSeenId(id) && _seenIds.Contains(id))
+        {
+            if (pruned) _settings.Save();
+            return;
+        }
+        bool changed = RememberSeen(id, now);
 
         if (FriendNotes.Open(me, text, out string sender) is not { } note)
         {
+            if (changed || pruned) _settings.Save();
             Diag.Log("Friends: a note that isn't for us");
             return;
         }
+        // A mirrored note has another transport id. Its authenticated id, or the sealed-text hash for old senders,
+        // catches that replay. Entries live for the full authenticated time range plus future-skew slack.
+        bool freshNote = RememberSeen(FriendNotes.ReplayId(text, note), now);
+        if (!FriendNotes.IsSentTimePlausible(note.Sent, now))
+        {
+            if (changed || freshNote || pruned) _settings.Save();
+            Diag.Log("Friends: ignored a note with an implausible sender timestamp");
+            return;
+        }
+        if (changed || freshNote || pruned) _settings.Save();
+        if (!freshNote) return;
+        // Freshness comes from the authenticated sender clock, never from a possibly malicious inbox timestamp.
+        // A future-dated note inside the allowed skew is fresh now rather than producing a negative age.
+        long age = Math.Max(0, now - note.Sent);
         if (sender == me.PublicKey)
         {
             HandleOwn(me, note, age);
@@ -901,21 +1071,27 @@ internal sealed partial class FriendsService
                 else AddedUs?.Invoke(card);
                 break;
             case FriendNoteKind.FriendRequest when FriendIdentity.ParseFriendCode(note.Code) is { } card && note.RequestId is { } requestId:
+                if (age > PendingFor) break;
                 if (friend != null)
                 {
                     // Repair an older one-sided relationship automatically when the other person requests us.
                     UpdateFriendCard(friend, card);
                     _ = ReplyToRequestAsync(me, card, requestId, accepted: true);
                 }
-                else if (age <= PendingFor && !_cancelledFriendRequests.Contains(requestId))
+                else if (!_cancelledFriendRequests.Contains(requestId))
                 {
                     bool isNew = !_settings.IncomingFriendRequests.Any(p => p.RequestId == requestId && p.Card.Key == sender);
                     if (!isNew) break;
-                    _settings.IncomingFriendRequests.Add(new PendingFriendRequest { Card = card, RequestId = requestId, Sent = Now - age });
+                    OwnInvite? invite = note.Invite is { } proof ? ActiveInvite(proof, arrived) : null;
+                    if (note.Invite != null && invite == null && !_proofAttempts.Allow(sender, now))
+                    {
+                        Diag.Log("Friends: throttled requests carrying an unknown, expired or revoked invite proof");
+                        break;
+                    }
+                    _settings.IncomingFriendRequests.Add(new PendingFriendRequest { Card = card, RequestId = requestId, Sent = note.Sent});
                     _settings.Save();
                     InvitesChanged?.Invoke();
-                    if (note.Invite is { } proof && _settings.FriendInvites.Any(i => i.Proof == proof && note.Sent <= i.Expires + 300))
-                        _ = AcceptInviteAsync(card, requestId);
+                    if (invite != null) _ = AcceptInviteAsync(card, requestId, invite);
                     else FriendRequested?.Invoke(card, requestId);
                 }
                 break;
@@ -1013,9 +1189,28 @@ internal sealed partial class FriendsService
         if (!had || before != activity || more) ActivityChanged?.Invoke(friend);
     }
 
+    // Server arrival preserves the compatible offline-expiry allowance without trusting backdated dto.T. A malicious
+    // inbox can still lie about this one timestamp; that is a documented mitigation, not server-time authentication.
+    OwnInvite? ActiveInvite(string proof, long arrived)
+        => _settings.FriendInvites.FirstOrDefault(i => !i.Revoked && i.Proof == proof && arrived > 0 && arrived <= i.Expires + InviteArrivalGrace);
+
     /// <summary>Someone who had our invite code asked: say yes and add them.</summary>
-    async Task AcceptInviteAsync(Friend card, string requestId)
+    async Task AcceptInviteAsync(Friend card, string requestId, OwnInvite invite)
     {
+        if (invite.SingleUse)
+        {
+            if (invite.Revoked)
+            {
+                FriendRequested?.Invoke(card, requestId);
+                return;
+            }
+            // Claim before the network await: two requests handled together cannot both spend a single-use code.
+            invite.Revoked = true;
+            invite.UsedBy = card.Key;
+            invite.RevokedAt = Now;
+            _settings.Save();
+            InvitesChanged?.Invoke();
+        }
         try
         {
             await RespondToFriendRequestAsync(card, requestId, accepted: true);
@@ -1038,6 +1233,37 @@ internal sealed partial class FriendsService
             await FriendInbox.PostAsync(card, FriendNotes.Seal(me, card, note), CancellationToken.None);
         }
         catch (IOException ex) { Diag.Log($"Couldn't confirm {card.Name}'s friend request: {ex.Message}"); }
+    }
+}
+
+/// <summary>An extra brake on guessing the 50-bit invite derivation. Correct proofs bypass this limiter.</summary>
+internal sealed class FriendProofAttempts
+{
+    internal const int PerSender = 5, PerGlobal = 60;
+    static readonly TimeSpan SenderWindow = TimeSpan.FromMinutes(10), GlobalWindow = TimeSpan.FromMinutes(1);
+    readonly object _gate = new();
+    readonly Dictionary<string, List<long>> _senders = new(StringComparer.Ordinal);
+    readonly List<long> _global = new();
+
+    public bool Allow(string sender, long now)
+    {
+        lock (_gate)
+        {
+            long senderCutoff = now - (long)SenderWindow.TotalSeconds;
+            long globalCutoff = now - (long)GlobalWindow.TotalSeconds;
+            _global.RemoveAll(t => t < globalCutoff);
+            if (_global.Count >= PerGlobal) return false;
+            foreach (var pair in _senders.ToList())
+            {
+                pair.Value.RemoveAll(t => t < senderCutoff);
+                if (pair.Value.Count == 0) _senders.Remove(pair.Key);
+            }
+            if (!_senders.TryGetValue(sender, out var attempts)) _senders[sender] = attempts = new();
+            if (attempts.Count >= PerSender) return false;
+            attempts.Add(now);
+            _global.Add(now);
+            return true;
+        }
     }
 }
 

@@ -127,6 +127,7 @@ public sealed class StreamHost : IAsyncDisposable
     }
 
     readonly List<Viewer> _viewers = new();
+    readonly HashSet<Task> _sends = new();
     readonly object _lock = new();
     readonly CancellationTokenSource _stop = new();
     bool _ended;
@@ -150,8 +151,9 @@ public sealed class StreamHost : IAsyncDisposable
             if (_ended) { channel.Dispose(); return; }
             if (paced) viewer.Busy = 1; // until it has been asked for receipts
             _viewers.Add(viewer);
+            // Start under the same lock as Publish/Dispose so its first send is tracked before teardown can snapshot.
+            if (paced) _ = PaceAsync(viewer);
         }
-        if (paced) _ = PaceAsync(viewer);
         ViewersChanged?.Invoke();
     }
 
@@ -194,22 +196,32 @@ public sealed class StreamHost : IAsyncDisposable
     {
         int hash = Hash(jpeg);
         byte[]? frame = null;
-        Viewer[] viewers;
-        lock (_lock) viewers = _viewers.ToArray();
         var now = DateTime.UtcNow;
-        foreach (var viewer in viewers)
+        lock (_lock)
         {
-            if (Volatile.Read(ref viewer.Busy) != 0)
+            if (_ended) return;
+            foreach (var viewer in _viewers.ToArray())
             {
-                continue; // still on the last one
+                if (Volatile.Read(ref viewer.Busy) != 0)
+                {
+                    continue; // still on the last one
+                }
+                bool same = hash == viewer.LastHash;
+                if (same && now - viewer.LastSent < StreamProtocol.AliveEvery) continue;
+                if (Interlocked.CompareExchange(ref viewer.Busy, 1, 0) != 0) continue;
+                viewer.LastHash = hash;
+                viewer.LastSent = now;
+                TrackSend(SendAsync(viewer, same ? new[] { StreamProtocol.Alive } : frame ??= StreamProtocol.FrameMessage(jpeg),
+                                   waitForReceipt: !same && viewer.Paced));
             }
-            bool same = hash == viewer.LastHash;
-            if (same && now - viewer.LastSent < StreamProtocol.AliveEvery) continue;
-            if (Interlocked.CompareExchange(ref viewer.Busy, 1, 0) != 0) continue;
-            viewer.LastHash = hash;
-            viewer.LastSent = now;
-            _ = SendAsync(viewer, same ? new[] { StreamProtocol.Alive } : frame ??= StreamProtocol.FrameMessage(jpeg), waitForReceipt: !same && viewer.Paced);
         }
+    }
+
+    void TrackSend(Task send)
+    {
+        _sends.Add(send); // callers hold _lock, so Dispose cannot miss a send it must drain
+        _ = send.ContinueWith(t => { _ = t.Exception; lock (_lock) _sends.Remove(t); }, CancellationToken.None,
+                              TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
     async Task SendAsync(Viewer viewer, byte[] message, bool waitForReceipt)
@@ -233,7 +245,9 @@ public sealed class StreamHost : IAsyncDisposable
     {
         try
         {
-            await viewer.Channel.SendAsync(new[] { StreamProtocol.Paced }, _stop.Token).ConfigureAwait(false);
+            var send = viewer.Channel.SendAsync(new[] { StreamProtocol.Paced }, _stop.Token);
+            TrackSend(send);
+            await send.ConfigureAwait(false);
             Interlocked.Exchange(ref viewer.Busy, 0);
             while (true)
             {
@@ -265,14 +279,21 @@ public sealed class StreamHost : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Viewer[] viewers;
+        Task[] sends;
         lock (_lock)
         {
             if (_ended) return;
             _ended = true;
             viewers = _viewers.ToArray();
+            sends = _sends.ToArray();
             _viewers.Clear();
         }
         _stop.Cancel();
+        if (sends.Length > 0)
+        {
+            try { await Task.WhenAll(sends).WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
+            catch { } // a broken stream may ignore cancellation; SecureChannel still keeps End from interleaving bytes
+        }
         foreach (var viewer in viewers)
         {
             try

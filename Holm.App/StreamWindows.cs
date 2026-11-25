@@ -127,8 +127,8 @@ internal sealed class StreamViewerWindow : Window
         if (Interlocked.CompareExchange(ref _decoding, 1, 0) != 0) return;
         try
         {
-            var frame = new Bitmap(new MemoryStream(jpeg));
-            if (frame.PixelSize.Width > MaxSide || frame.PixelSize.Height > MaxSide) { frame.Dispose(); return; }
+            var frame = ImageSecurity.StreamFrame(jpeg);
+            if (frame == null || frame.PixelSize.Width > MaxSide || frame.PixelSize.Height > MaxSide) { frame?.Dispose(); return; }
             Dispatcher.UIThread.Post(() =>
             {
                 if (_closed.IsCancellationRequested) { frame.Dispose(); return; }

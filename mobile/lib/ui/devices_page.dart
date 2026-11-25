@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../app_state.dart';
 import 'account_page.dart';
+import 'file_safety.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -56,7 +57,7 @@ class _DevicesPageState extends State<DevicesPage> {
   Future<void> _sendFiles(SendTarget peer) async {
     final picked = await FilePicker.pickFiles();
     final paths = picked.map((f) => f.path).whereType<String>().toList();
-    if (paths.isEmpty) return;
+    if (paths.isEmpty || !mounted) return;
     await s.sendFiles(peer, paths);
   }
 
@@ -108,12 +109,14 @@ class _DevicesPageState extends State<DevicesPage> {
   Widget build(BuildContext context) => ListenableBuilder(
         listenable: s,
         builder: (context, _) {
-          final peers = s.nearby.peers;
-          final nearbyNames = {for (final p in peers) p.name};
-          final devices = s.ownDevices.where((d) => !nearbyNames.contains(d.name)).toList();
+          final targets = s.targets;
+          final devices = targets.where((t) => t.authenticated).toList();
+          final peers = targets.where((t) => !t.authenticated).toList();
           Widget card(SendTarget t) => _PeerCard(
                 target: t,
-                syncing: s.clipboardSync && s.syncTarget == t.name,
+                syncing: s.clipboardSync &&
+                    t.authenticated &&
+                    (s.syncTargetId != null ? s.syncTargetId == t.deviceId : s.syncTarget == t.name),
                 onFiles: () => _sendFiles(t),
                 onClipboard: () => _sendClipboard(t),
               );
@@ -136,7 +139,7 @@ class _DevicesPageState extends State<DevicesPage> {
                   EmptyState(Icons.devices_rounded, 'No device of yours is online',
                       s.accountError ?? 'Open HolyNotch on a PC signed in to ${s.account!.email}. It shows up here, on any network.')
                 else
-                  for (final d in devices) card(SendTarget.device(d)),
+                  for (final t in devices) card(t),
                 SectionLabel('On this Wi-Fi', trailing: TextButton.icon(
                   onPressed: _addAddress,
                   icon: const Icon(Icons.add_rounded, size: 18),
@@ -145,7 +148,7 @@ class _DevicesPageState extends State<DevicesPage> {
                 if (peers.isEmpty)
                   const EmptyState(Icons.wifi_find_rounded, 'Looking for HolyNotch…',
                       'Open HolyNotch on your laptop (with Beam on) or this app on another phone, on the same Wi-Fi.'),
-                for (final peer in peers) card(SendTarget.nearby(peer)),
+                for (final t in peers) card(t),
                 if (s.received.isNotEmpty) ...[
                   const SectionLabel('Received'),
                   for (final file in s.received.take(30)) _ReceivedTile(file: file, state: s),
@@ -267,7 +270,7 @@ class _PeerCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final name = target.name;
     final phone = RegExp('phone|pixel|galaxy|android|iphone', caseSensitive: false).hasMatch(name);
-    final where = target.peer?.address.address ?? 'Anywhere · HolyNotch account';
+    final where = target.authenticated ? 'Verified account device · Anywhere' : 'Unauthenticated nearby · ${target.peer!.address.address}';
     return HolmCard(
       padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -299,13 +302,18 @@ class _ReceivedTile extends StatelessWidget {
   final AppState state;
   const _ReceivedTile({required this.file, required this.state});
 
+  Future<void> _open(BuildContext context) async {
+    if (!await confirmOpenReceivedFile(context, file)) return;
+    if (context.mounted) await OpenFilex.open(file.path);
+  }
+
   @override
   Widget build(BuildContext context) {
     final f = File(file.path);
     final size = f.existsSync() ? fileSize(f.lengthSync()) : 'gone';
     return HolmCard(
       padding: const EdgeInsets.fromLTRB(16, 10, 6, 10),
-      onTap: () => OpenFilex.open(file.path),
+      onTap: () => _open(context),
       child: Row(children: [
         const Icon(Icons.insert_drive_file_outlined, color: HolmColors.dim),
         const SizedBox(width: 12),

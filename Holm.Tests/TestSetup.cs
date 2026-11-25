@@ -15,7 +15,11 @@ static class TestSetup
     [ModuleInitializer]
     internal static void Init()
     {
-        Diag.Folder = Path.Combine(Path.GetTempPath(), "HolmTests", Environment.ProcessId.ToString());
+        PrivateStorage.RuntimeDirectoryOwner = Holm.Platform.UnixIdentityPlatform.IsOwnedByCurrentUser;
+        string folder = Path.Combine(Path.GetTempPath(), $"HolmTests-{Environment.ProcessId}-{Guid.NewGuid():N}");
+        PrivateStorage.EnsureFolder(folder);
+        PrivateStorage.EnsureFolder(Path.Combine(folder, "tmp"));
+        Diag.Folder = folder;
         FriendsService.AllowLoopbackServers = true;
     }
 }

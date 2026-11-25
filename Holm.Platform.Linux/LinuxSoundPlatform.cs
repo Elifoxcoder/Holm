@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using Holm.Platform;
+using WinNotch;
 
 namespace Holm.Platform.Linux;
 
@@ -60,20 +61,45 @@ public sealed class LinuxSoundPlatform : ISoundPlatform
     {
         try
         {
-            // The players want a file: the app's sound is written once to the temp folder.
+            // The players want a file: keep one random, exclusive file in Holm's private per-user folder.
             if (!ReferenceEquals(wav, _wavFor) || _wavFile == null || !File.Exists(_wavFile))
             {
-                _wavFile = Path.Combine(Path.GetTempPath(), $"holm-sound-{Environment.UserName}-{wav.Length}.wav");
-                File.WriteAllBytes(_wavFile, wav);
+                _wavFile = CreateWav(wav);
                 _wavFor = wav;
             }
-            Play(_wavFile, oggOnly: false);
+            if (!Play(_wavFile, oggOnly: false, deleteAfter: true))
+            {
+                try { File.Delete(_wavFile); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                _wavFile = null;
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
+    internal static string CreateWav(byte[] wav)
+    {
+        const UnixFileMode PrivateDirectory = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        const UnixFileMode PrivateFile = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        string folder = Path.Combine(Diag.Folder, "tmp");
+        if (OperatingSystem.IsLinux())
+        {
+            Directory.CreateDirectory(folder, PrivateDirectory);
+            File.SetUnixFileMode(folder, PrivateDirectory);
+        }
+        else Directory.CreateDirectory(folder);
+        string file = Path.Combine(folder, "sound-" + Guid.NewGuid().ToString("N") + ".wav");
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None, BufferSize = 4096,
+        };
+        if (OperatingSystem.IsLinux()) options.UnixCreateMode = PrivateFile;
+        using (var stream = new FileStream(file, options)) stream.Write(wav, 0, wav.Length);
+        if (OperatingSystem.IsLinux()) File.SetUnixFileMode(file, PrivateFile);
+        return file;
+    }
+
     /// <summary>The first player that is installed; aplay can't play Ogg, so it is skipped for those.</summary>
-    static bool Play(string file, bool oggOnly)
+    static bool Play(string file, bool oggOnly, bool deleteAfter = false)
     {
         foreach (string player in Players)
         {
@@ -84,15 +110,28 @@ public sealed class LinuxSoundPlatform : ISoundPlatform
                 var start = new ProcessStartInfo(exe) { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true };
                 if (player == "aplay") start.ArgumentList.Add("-q");
                 start.ArgumentList.Add(file);
-                using var process = Process.Start(start);
+                var process = Process.Start(start);
                 if (process == null) continue;
                 _ = process.StandardOutput.ReadToEndAsync();
                 _ = process.StandardError.ReadToEndAsync();
+                if (deleteAfter) _ = DeleteAfterAsync(process, file);
+                else process.Dispose();
                 return true; // it plays on by itself
             }
             catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { }
         }
         return false;
+    }
+
+    static async System.Threading.Tasks.Task DeleteAfterAsync(System.Diagnostics.Process process, string file)
+    {
+        try { await process.WaitForExitAsync(); }
+        catch (Exception ex) when (ex is System.InvalidOperationException or System.ComponentModel.Win32Exception) { }
+        finally
+        {
+            process.Dispose();
+            try { File.Delete(file); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
     }
 
     static string? Find(string name)

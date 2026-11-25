@@ -31,6 +31,22 @@ const MIGRATE_KEY = env.MIGRATE_FIREBASE_KEY ?? ""; // Holm's public Firebase we
 const MIGRATE_PROJECT = env.MIGRATE_FIREBASE_PROJECT ?? "holm-accounts";
 const PAGE = fs.readFileSync(new URL("./admin.html", import.meta.url), "utf8");
 
+// The admin page uses inline script/styles and Google Fonts. Everything else stays denied, and it cannot be framed.
+const ADMIN_HEADERS = Object.freeze({
+  "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "referrer-policy": "no-referrer",
+});
+const HTTP_RATE = 300, SOCKET_RATE = 30, ADMIN_ATTEMPTS = 5;
+const positiveInt = (value, fallback) => {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n > 0 ? n : fallback;
+};
+const MAX_NOTES = positiveInt(env.MAX_NOTES, 250_000);
+const MAX_FOLLOWERS = positiveInt(env.MAX_FOLLOWERS, 50_000), FOLLOWERS_PER_IP = positiveInt(env.FOLLOWERS_PER_IP, 64);
+const MAX_OPEN_INBOXES_PER_DAY = positiveInt(env.MAX_OPEN_INBOXES_PER_DAY, 50_000);
+
 fs.mkdirSync(DATA, { recursive: true });
 const db = new DatabaseSync(path.join(DATA, "holynotch.db"));
 db.exec(`
@@ -49,6 +65,49 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS events_time ON events (time);
 `);
 
+// Older servers wrote one row per request. Rebuild once, transactionally, into unique buckets (one identified open per inbox/day).
+if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'events_bucket'").get()) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`
+      DROP TABLE IF EXISTS events_bucket_migration;
+      CREATE TABLE events_bucket_migration (time INTEGER NOT NULL, kind TEXT NOT NULL, inbox TEXT NOT NULL DEFAULT '', n INTEGER NOT NULL DEFAULT 1);
+    `);
+    const migrateEvents = db.prepare(`
+      WITH buckets AS (
+        SELECT (time / 60) * 60 AS minute, kind,
+               CASE WHEN kind = 'open' THEN inbox ELSE '' END AS inbox, COALESCE(SUM(n), 0) AS n
+        FROM events GROUP BY (time / 60) * 60, kind, CASE WHEN kind = 'open' THEN inbox ELSE '' END
+      ), open_ranked AS (
+        SELECT MAX(minute) AS time, (minute / 86400) * 86400 AS day, inbox, SUM(n) AS n,
+               ROW_NUMBER() OVER (PARTITION BY (minute / 86400) * 86400 ORDER BY inbox) AS rn
+        FROM buckets WHERE kind = 'open' AND inbox != '' GROUP BY (minute / 86400) * 86400, inbox
+      ), normalized AS (
+        SELECT minute AS time, kind, inbox, n FROM buckets WHERE kind != 'open'
+        UNION ALL
+        SELECT time, 'open', inbox, n FROM open_ranked WHERE rn <= ?
+        UNION ALL
+        SELECT MAX(time), 'open', '', SUM(n) FROM open_ranked WHERE rn > ? GROUP BY day
+        UNION ALL
+        SELECT minute, 'open', '', n FROM buckets WHERE kind = 'open' AND inbox = ''
+      )
+      INSERT INTO events_bucket_migration (time, kind, inbox, n)
+        SELECT time, kind, inbox, SUM(n) FROM normalized GROUP BY time, kind, inbox
+    `);
+    migrateEvents.run(MAX_OPEN_INBOXES_PER_DAY, MAX_OPEN_INBOXES_PER_DAY);
+    db.exec(`
+      DROP TABLE events;
+      ALTER TABLE events_bucket_migration RENAME TO events;
+      CREATE INDEX events_time ON events (time);
+      CREATE UNIQUE INDEX events_bucket ON events (time, kind, inbox);
+    `);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
 const now = () => Math.floor(Date.now() / 1000);
 const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
 const randomText = (n, alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") =>
@@ -57,13 +116,33 @@ const log = (...a) => console.log(new Date().toISOString(), ...a);
 
 // ─────────────────────────── counts (admin) ───────────────────────────
 
-const addEvent = db.prepare("INSERT INTO events (time, kind, inbox, n) VALUES (?, ?, ?, ?)");
+const addEvent = db.prepare(`INSERT INTO events (time, kind, inbox, n) VALUES (?, ?, ?, ?)
+  ON CONFLICT(time, kind, inbox) DO UPDATE SET n = events.n + excluded.n`);
+let openEventDay = Math.floor(now() / 86400);
+const openEventInboxes = new Set(db.prepare("SELECT DISTINCT inbox FROM events WHERE kind = 'open' AND inbox != '' AND time >= ? AND time < ?")
+  .all(openEventDay * 86400, (openEventDay + 1) * 86400).map((row) => row.inbox)); // survive restarts within the same UTC day
 function track(kind, topic = "", n = 1) {
-  try { addEvent.run(now(), kind, topic.startsWith("wnf-") ? sha(topic).slice(0, 12) : "", n); } catch { /* never breaks a request */ }
+  try {
+    const t = now(), minute = Math.floor(t / 60) * 60, day = Math.floor(t / 86400);
+    let inbox = "", newHash = null;
+    // Only the first open for an inbox each day needs its identity, for the admin page's distinct active counts.
+    if (kind === "open" && topic.startsWith("wnf-")) {
+      if (openEventDay !== day) { openEventDay = day; openEventInboxes.clear(); }
+      const hash = sha(topic).slice(0, 12);
+      if (!openEventInboxes.has(hash) && openEventInboxes.size < MAX_OPEN_INBOXES_PER_DAY) {
+        newHash = hash;
+        inbox = hash;
+      }
+    }
+    addEvent.run(minute, kind, inbox, n);
+    if (newHash) openEventInboxes.add(newHash);
+  } catch { /* never breaks a request */ }
 }
 
+let storedNotes = db.prepare("SELECT count(*) AS n FROM notes").get().n;
 const followers = new Map(); // topic -> Set<WebSocket>
-let transitOpen = 0;
+const followerCounts = new Map(); // IP -> active WebSocket count
+let activeFollowers = 0, transitOpen = 0;
 
 function stats() {
   const t = now();
@@ -92,16 +171,20 @@ function stats() {
 }
 
 function sameKey(a, b) {
-  const x = Buffer.from(a ?? ""), y = Buffer.from(b ?? "");
-  return x.length === y.length && x.length > 0 && crypto.timingSafeEqual(x, y);
+  // Hashing first keeps the compared values fixed-length; neither key length nor a matching prefix is observable.
+  const digest = (value) => crypto.createHash("sha256").update(Buffer.from(value ?? "")).digest();
+  return crypto.timingSafeEqual(digest(a), digest(b));
 }
 
 // ─────────────────────────── HTTP helpers ───────────────────────────
 
 function send(res, status, body, headers = {}) {
   const text = typeof body === "string" ? body : JSON.stringify(body);
+  let path = (res.req?.url ?? "").split("?", 1)[0];
+  try { path = new URL(res.req?.url ?? "/", "http://holynotch").pathname; } catch { /* use the raw path */ }
+  const admin = path === "/admin" || path.startsWith("/admin/");
   res.writeHead(status, { "content-type": typeof body === "string" ? "text/plain; charset=utf-8" : "application/json; charset=utf-8",
-                          "cache-control": "no-store", ...headers });
+                          "cache-control": "no-store", ...headers, ...(admin ? ADMIN_HEADERS : {}) });
   res.end(text);
 }
 
@@ -109,30 +192,65 @@ const MAX_BODY = 1_200_000; // a synced section is at most 900 000 characters
 function readBody(req, limit = MAX_BODY) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    let size = 0;
-    req.on("data", (c) => {
+    let size = 0, settled = false;
+    const fail = (e) => { if (!settled) { settled = true; reject(e); } };
+    const onData = (c) => {
       size += c.length;
-      if (size > limit) { reject(Object.assign(new Error("too large"), { status: 413 })); req.destroy(); return; }
+      if (size > limit) {
+        // Stop buffering immediately. Drain without retaining data so the 413 can still reach the client.
+        req.off("data", onData);
+        req.off("end", onEnd);
+        req.resume();
+        fail(Object.assign(new Error("too large"), { status: 413 }));
+        return;
+      }
       chunks.push(c);
-    });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
+    };
+    const onEnd = () => { if (!settled) { settled = true; resolve(Buffer.concat(chunks, size).toString("utf8")); } };
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("error", fail);
   });
 }
 
-const clientIp = (req) => (req.headers["x-real-ip"] ?? req.socket.remoteAddress ?? "?").toString();
+const clientIp = (req) => {
+  const remote = req.socket.remoteAddress ?? "?";
+  const localProxy = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+  const forwarded = Array.isArray(req.headers["x-real-ip"]) ? req.headers["x-real-ip"][0] : req.headers["x-real-ip"];
+  return localProxy && typeof forwarded === "string" && net.isIP(forwarded.trim()) ? forwarded.trim() : remote;
+};
 
-/** At most `limit` hits per key in `seconds`. */
-function limiter(limit, seconds) {
+/** At most `limit` hits per key in `seconds`, with a hard bound on remembered keys. */
+function limiter(limit, seconds, maxKeys = 10_000) {
   const hits = new Map();
-  setInterval(() => { const t = now(); for (const [k, v] of hits) if (v.every((x) => x <= t - seconds)) hits.delete(k); }, 60_000).unref();
-  return (key) => {
-    const t = now(), list = (hits.get(key) ?? []).filter((x) => x > t - seconds);
-    if (list.length >= limit) { hits.set(key, list); return false; }
+  const clock = () => Date.now();
+  setInterval(() => {
+    const cutoff = clock() - seconds * 1000;
+    for (const [k, list] of hits) {
+      const kept = list.filter((x) => x > cutoff);
+      if (kept.length) hits.set(k, kept); else hits.delete(k);
+    }
+  }, 60_000).unref();
+  const listFor = (key, t) => (hits.get(key) ?? []).filter((x) => x > t - seconds * 1000);
+  const check = (key) => {
+    const t = clock(), list = listFor(key, t);
+    if (list.length) { hits.set(key, list); return list.length < limit; }
+    hits.delete(key);
+    return hits.size < maxKeys;
+  };
+  const hit = (key) => {
+    const t = clock(), list = listFor(key, t);
+    if (list.length >= limit || (!list.length && hits.size >= maxKeys)) return false;
     list.push(t); hits.set(key, list);
     return true;
   };
+  const consume = (key) => check(key) && hit(key);
+  consume.check = check;
+  consume.hit = hit;
+  return consume;
 }
+
+const httpLimit = limiter(HTTP_RATE, 60), socketLimit = limiter(SOCKET_RATE, 60), adminLimit = limiter(ADMIN_ATTEMPTS, 600);
 
 // ─────────────────────────── account (Firebase-compatible) ───────────────────────────
 
@@ -364,9 +482,19 @@ async function documents(req, res, url, docPath) {
 const INBOX = /^wnf-[a-z2-7]{26}$/, INVITE = /^holm-inv-[a-z2-7]{20}$/;
 const NOTE = /^wnf1 [A-Za-z0-9_-]{40,200} [A-Za-z0-9_-]{30,}$/, CARD = /^hinv1 [A-Za-z0-9_-]{30,}$/;
 const MAX_NOTE = 4096, INBOX_TTL = 7 * 86400, INVITE_TTL = 12 * 3600, INBOX_KEEP = 300, INVITE_KEEP = 20, SOCKETS = 8;
+const MAX_INBOXES = 50_000, NEW_INBOXES_PER_IP = 20, WRITES_PER_IP_TOPIC = 20;
 const isTopic = (t) => INBOX.test(t) || INVITE.test(t);
 const isInvite = (t) => INVITE.test(t);
-const postLimit = limiter(120, 60), topicLimit = limiter(60, 60);
+const postLimit = limiter(120, 60), topicLimit = limiter(60, 60, 20_000);
+const ipTopicLimit = limiter(WRITES_PER_IP_TOPIC, 60, 20_000), newTopicLimit = limiter(NEW_INBOXES_PER_IP, 3600);
+
+/** Null when a retained note may create this topic; reads and live-only notes create no SQLite inbox state. */
+function newInboxStatus(req, topic) {
+  if (db.prepare("SELECT 1 FROM notes WHERE topic = ? LIMIT 1").get(topic)) return null;
+  const count = db.prepare("SELECT count(DISTINCT topic) AS n FROM notes").get().n;
+  if (count >= MAX_INBOXES) return 503;
+  return newTopicLimit(clientIp(req)) ? null : 429;
+}
 
 function parseSince(value, t = now()) {
   if (value == null || value === "") return null;
@@ -378,25 +506,48 @@ function parseSince(value, t = now()) {
 
 const kept = (topic, since) => since == null ? []
   : db.prepare("SELECT id, time, message FROM notes WHERE topic = ? AND time >= ? AND expires > ? ORDER BY seq").all(topic, since, now());
+const insertNote = db.prepare("INSERT INTO notes (topic, id, time, expires, message) VALUES (?, ?, ?, ?, ?)");
+const trimNotes = db.prepare("DELETE FROM notes WHERE topic = ? AND seq <= (SELECT seq FROM notes WHERE topic = ? ORDER BY seq DESC LIMIT 1 OFFSET ?)");
 
 async function post(req, res, topic) {
-  if (Number(req.headers["content-length"] ?? 0) > MAX_NOTE * 2) { track("refused"); return send(res, 413, { code: 413, error: "note too large" }); }
-  if (!postLimit(clientIp(req))) { track("refused"); return send(res, 429, { code: 429, error: "too many notes, wait a minute" }); }
+  const declared = Number(req.headers["content-length"] ?? 0);
+  if (Number.isFinite(declared) && declared > MAX_NOTE * 2) {
+    req.resume(); // discard any arriving bytes without buffering them
+    track("refused");
+    return send(res, 413, { code: 413, error: "note too large" });
+  }
+  const ip = clientIp(req);
+  if (!postLimit(ip)) { track("refused"); return send(res, 429, { code: 429, error: "too many notes, wait a minute" }); }
   let text;
   try { text = await readBody(req, MAX_NOTE * 2); } catch { track("refused"); return send(res, 413, { code: 413, error: "note too large" }); }
   if (text.length > MAX_NOTE || !(isInvite(topic) ? CARD : NOTE).test(text)) { track("refused"); return send(res, 400, { code: 400, error: "not a HolyNotch note" }); }
-  if (!topicLimit(topic)) { track("refused"); return send(res, 429, { code: 429, error: "this inbox takes no more notes this minute" }); }
   const keep = !/^no$/i.test((req.headers["cache"] ?? req.headers["x-cache"] ?? "").toString());
+  if (keep && storedNotes >= MAX_NOTES) { track("refused"); return send(res, 503, { code: 503, error: "note storage is full" }); }
+  if (keep) {
+    const status = newInboxStatus(req, topic);
+    if (status) { track("refused"); return send(res, status, { code: status, error: status === 429 ? "too many new inboxes, wait an hour" : "too many active inboxes" }); }
+  }
+  if (!ipTopicLimit(`${ip}\0${topic}`)) { track("refused"); return send(res, 429, { code: 429, error: "this address sends no more notes to this inbox this minute" }); }
+  if (!topicLimit(topic)) { track("refused"); return send(res, 429, { code: 429, error: "this inbox takes no more notes this minute" }); }
   const t = now(), note = { id: randomText(12), time: t, event: "message", topic, message: text };
+  if (keep) {
+    // The check, insert and same-topic ring trim are synchronous and transactional: the global cap cannot be exceeded,
+    // and another topic's notes are never removed to make room.
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      insertNote.run(topic, note.id, t, t + (isInvite(topic) ? INVITE_TTL : INBOX_TTL), text);
+      storedNotes++;
+      const removed = trimNotes.run(topic, topic, isInvite(topic) ? INVITE_KEEP : INBOX_KEEP);
+      storedNotes -= Number(removed.changes);
+      db.exec("COMMIT");
+    } catch (e) {
+      db.exec("ROLLBACK");
+      storedNotes = db.prepare("SELECT count(*) AS n FROM notes").get().n;
+      throw e;
+    }
+  }
   const line = JSON.stringify(note);
   for (const ws of followers.get(topic) ?? []) { try { ws.send(line); } catch { /* closing */ } }
-  if (keep) {
-    const { seq } = db.prepare("INSERT INTO notes (topic, id, time, expires, message) VALUES (?, ?, ?, ?, ?) RETURNING seq")
-      .get(topic, note.id, t, t + (isInvite(topic) ? INVITE_TTL : INBOX_TTL), text);
-    const limit = isInvite(topic) ? INVITE_KEEP : INBOX_KEEP;
-    db.prepare("DELETE FROM notes WHERE topic = ? AND seq <= (SELECT seq FROM notes WHERE topic = ? ORDER BY seq DESC LIMIT 1 OFFSET ?)").run(topic, topic, limit);
-    void seq;
-  }
   track(isInvite(topic) ? "invite" : keep ? "note" : "live", topic);
   send(res, 200, note);
 }
@@ -410,24 +561,50 @@ function poll(res, url, topic) {
 }
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
+function rejectUpgrade(socket, status, error) {
+  const body = JSON.stringify({ code: status, error });
+  socket.end(`HTTP/1.1 ${status} ${http.STATUS_CODES[status]}\r\nConnection: close\r\nContent-Type: application/json\r\n` +
+             `Content-Length: ${Buffer.byteLength(body)}\r\nCache-Control: no-store\r\n\r\n${body}`);
+}
 function follow(req, socket, head, url, topic) {
+  const ip = clientIp(req), current = followers.get(topic);
+  if (current?.size >= SOCKETS) return rejectUpgrade(socket, 503, "too many followers");
+  if ((followerCounts.get(ip) ?? 0) >= FOLLOWERS_PER_IP) return rejectUpgrade(socket, 503, "too many active followers from this address");
+  if (activeFollowers >= MAX_FOLLOWERS) return rejectUpgrade(socket, 503, "too many active followers");
+  // Following an empty topic creates only this bounded active connection, never a SQLite inbox or note row.
   wss.handleUpgrade(req, socket, head, (ws) => {
     let set = followers.get(topic);
+    // Recheck the latest counts before creating a set, so a rejected newcomer cannot leave an empty topic behind.
+    if ((set?.size ?? 0) >= SOCKETS || (followerCounts.get(ip) ?? 0) >= FOLLOWERS_PER_IP || activeFollowers >= MAX_FOLLOWERS) {
+      ws.on("error", () => {});
+      ws.close(1013, "too many followers");
+      return;
+    }
     if (!set) followers.set(topic, set = new Set());
-    if (set.size >= SOCKETS) { const [oldest] = set; try { oldest.close(1013, "too many followers"); } catch { /* gone */ } set.delete(oldest); }
+    let counted = true;
+    const release = () => {
+      if (!counted) return;
+      counted = false;
+      set.delete(ws);
+      if (set.size === 0) followers.delete(topic);
+      activeFollowers--;
+      const count = followerCounts.get(ip) ?? 0;
+      if (count <= 1) followerCounts.delete(ip); else followerCounts.set(ip, count - 1);
+      track("close", topic);
+    };
     set.add(ws);
+    activeFollowers++;
+    followerCounts.set(ip, (followerCounts.get(ip) ?? 0) + 1);
     track("open", topic);
     ws.isAlive = true;
     ws.on("pong", () => { ws.isAlive = true; });
     ws.on("message", () => { /* followers only listen */ });
-    ws.on("close", () => {
-      set.delete(ws);
-      if (set.size === 0) followers.delete(topic);
-      track("close", topic);
-    });
-    ws.on("error", () => ws.terminate());
-    ws.send(JSON.stringify({ id: randomText(12), time: now(), event: "open", topic }));
-    for (const n of kept(topic, parseSince(url.searchParams.get("since")))) ws.send(JSON.stringify({ ...n, event: "message", topic }));
+    ws.on("close", release);
+    ws.on("error", () => { release(); ws.terminate(); });
+    try {
+      ws.send(JSON.stringify({ id: randomText(12), time: now(), event: "open", topic }));
+      for (const n of kept(topic, parseSince(url.searchParams.get("since")))) ws.send(JSON.stringify({ ...n, event: "message", topic }));
+    } catch { ws.terminate(); }
   });
 }
 
@@ -443,14 +620,17 @@ setInterval(() => {
 // Expired notes, ID tokens and old counts go every ten minutes.
 setInterval(() => {
   const t = now();
-  db.prepare("DELETE FROM notes WHERE expires <= ?").run(t);
+  const expired = db.prepare("DELETE FROM notes WHERE expires <= ?").run(t);
+  storedNotes -= Number(expired.changes);
   db.prepare("DELETE FROM tokens WHERE expires <= ?").run(t);
-  db.prepare("DELETE FROM events WHERE time <= ?").run(t - 92 * 86400);
+  // Active-inbox counts need 30 days; charts and quotas need 14. Nothing reads the old 92-day history.
+  db.prepare("DELETE FROM events WHERE (kind = 'open' AND time <= ?) OR (kind != 'open' AND time <= ?)").run(t - 31 * 86400, t - 14 * 86400);
 }, 600_000).unref();
 
 // ─────────────────────────── HTTP server ───────────────────────────
 
 const server = http.createServer(async (req, res) => {
+  if (!httpLimit(clientIp(req))) return send(res, 429, { code: 429, error: "too many requests, wait a minute" });
   try {
     const url = new URL(req.url, "http://holynotch");
     const p = url.pathname;
@@ -460,13 +640,20 @@ const server = http.createServer(async (req, res) => {
     if (p === "/admin" || p === "/admin/") return send(res, 200, PAGE, { "content-type": "text/html; charset=utf-8" });
     if (p === "/admin/stats") {
       if (!ADMIN_KEY) return send(res, 503, { error: "ADMIN_KEY isn't set on the server" });
-      if (!sameKey((req.headers.authorization ?? "").replace(/^Bearer /, ""), ADMIN_KEY)) return send(res, 401, { error: "wrong key" });
-      return send(res, 200, stats());
+      const ip = clientIp(req);
+      if (!adminLimit.check(ip)) return send(res, 429, { error: "too many attempts, wait ten minutes" }, { "retry-after": "600" });
+      if (!sameKey((req.headers.authorization ?? "").replace(/^Bearer /, ""), ADMIN_KEY)) {
+        adminLimit.hit(ip);
+        return send(res, 401, { error: "wrong key" });
+      }
+      try { return send(res, 200, stats()); }
+      catch (e) { log("admin stats failed:", e?.message ?? e); return send(res, 500, { error: "internal error" }); }
     }
 
     if (req.method === "POST" && p.startsWith("/v1/accounts:")) {
       let body;
-      try { body = JSON.parse(await readBody(req, 16_384)); } catch { return authError(res, "INVALID_JSON"); }
+      try { body = JSON.parse(await readBody(req, 16_384)); }
+      catch (e) { return authError(res, e?.status === 413 ? "REQUEST_TOO_LARGE" : "INVALID_JSON", e?.status ?? 400); }
       switch (p.slice("/v1/accounts:".length)) {
         case "signInWithPassword": return await signIn(req, res, body);
         case "signUp": return await signUp(req, res, body);
@@ -474,7 +661,12 @@ const server = http.createServer(async (req, res) => {
         default: return authError(res, "OPERATION_NOT_ALLOWED", 404);
       }
     }
-    if (req.method === "POST" && p === "/v1/token") return await refresh(req, res, await readBody(req, 16_384));
+    if (req.method === "POST" && p === "/v1/token") {
+      let form;
+      try { form = await readBody(req, 16_384); }
+      catch (e) { return authError(res, e?.status === 413 ? "REQUEST_TOO_LARGE" : "INVALID_JSON", e?.status ?? 400); }
+      return await refresh(req, res, form);
+    }
     const doc = /^\/v1\/projects\/[^/]+\/databases\/\(default\)\/documents\/(.+)$/.exec(decodeURIComponent(p));
     if (doc) return await documents(req, res, url, doc[1]);
 
@@ -488,24 +680,50 @@ const server = http.createServer(async (req, res) => {
     send(res, 405, { code: 405, error: "not here" });
   } catch (e) {
     log("error:", e?.stack ?? e);
-    if (!res.headersSent) send(res, e?.status ?? 500, { error: { code: 500, message: "INTERNAL", status: "INTERNAL" } });
+    if (!res.headersSent) {
+      const status = e?.status === 413 ? 413 : 500;
+      send(res, status, { error: { code: status, message: status === 413 ? "PAYLOAD_TOO_LARGE" : "INTERNAL", status: status === 413 ? "PAYLOAD_TOO_LARGE" : "INTERNAL" } });
+    }
   }
 });
 
 server.on("upgrade", (req, socket, head) => {
+  const ip = clientIp(req);
+  if (!httpLimit(ip)) return rejectUpgrade(socket, 429, "too many requests, wait a minute");
+  if (!socketLimit(ip)) return rejectUpgrade(socket, 429, "too many WebSocket connections, wait a minute");
   const url = new URL(req.url, "http://holynotch");
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length === 2 && parts[1] === "ws" && isTopic(parts[0])) return follow(req, socket, head, url, parts[0]);
   socket.destroy();
 });
 
+server.headersTimeout = 10_000;
+server.requestTimeout = 30_000;
+server.keepAliveTimeout = 5_000;
 server.listen(HTTP_PORT, HTTP_HOST, () => log(`HolyNotch server on http://${HTTP_HOST}:${HTTP_PORT}`));
 
 // ─────────────────────────── transit relay (file transfers) ───────────────────────────
 
-const waiting = new Map(); // token -> { side, socket }
+const waiting = new Map(); // token -> { side, socket, ip, rest, paired }
+const waitingByIp = new Map();
 const TRANSIT_WAIT = 10 * 60 * 1000, TRANSIT_IDLE = 5 * 60 * 1000;
+const MAX_WAITING = positiveInt(env.MAX_WAITING, 10_000), WAITING_PER_IP = positiveInt(env.WAITING_PER_IP, 8);
+const MAX_TRANSIT_ACTIVE = positiveInt(env.MAX_TRANSIT_ACTIVE, 1_000), TRANSIT_ACTIVE_PER_IP = positiveInt(env.TRANSIT_ACTIVE_PER_IP, 32);
+const activeTransitByIp = new Map();
 const transitIpLimit = limiter(120, 60);
+
+function releaseWaiting(token) {
+  const entry = waiting.get(token);
+  if (!entry) return;
+  waiting.delete(token);
+  const count = waitingByIp.get(entry.ip) ?? 0;
+  if (count <= 1) waitingByIp.delete(entry.ip); else waitingByIp.set(entry.ip, count - 1);
+}
+
+function reserveWaiting(token, entry) {
+  waiting.set(token, entry);
+  waitingByIp.set(entry.ip, (waitingByIp.get(entry.ip) ?? 0) + 1);
+}
 
 const transit = net.createServer((socket) => {
   socket.setNoDelay(true);
@@ -517,7 +735,7 @@ const transit = net.createServer((socket) => {
   socket.on("error", () => socket.destroy());
   socket.on("close", () => {
     clearTimeout(giveUp);
-    if (!paired && token && waiting.get(token)?.socket === socket) waiting.delete(token);
+    if (!paired && token && waiting.get(token)?.socket === socket) releaseWaiting(token);
   });
   const onData = (chunk) => {
     buffer = Buffer.concat([buffer, chunk]);
@@ -530,27 +748,46 @@ const transit = net.createServer((socket) => {
     token = m[1];
     const side = m[2], other = waiting.get(token);
     if (!other || other.side === side) {
-      if (other) other.socket.destroy();
+      // Replacing a token releases its old slot first, so the established replacement behavior needs no extra capacity.
+      const globalAfter = waiting.size - (other ? 1 : 0);
+      const ipAfter = (waitingByIp.get(ip) ?? 0) - (other?.ip === ip ? 1 : 0);
+      if (globalAfter >= MAX_WAITING || ipAfter >= WAITING_PER_IP) { socket.end("error relay busy\n"); return; }
+      if (other) { releaseWaiting(token); other.socket.destroy(); }
       // Told when its partner arrives: from then on the pair's own timeouts apply.
-      waiting.set(token, { side, socket, rest, paired: () => { paired = true; clearTimeout(giveUp); } });
+      reserveWaiting(token, { side, socket, ip, rest, paired: () => { paired = true; clearTimeout(giveUp); } });
       return;
     }
-    waiting.delete(token);
+    releaseWaiting(token);
     paired = true;
     clearTimeout(giveUp);
     other.paired();
-    pair(other.socket, other.rest, socket, rest);
+    pair(other.socket, other.rest, socket, rest, other.ip, ip);
   };
   socket.on("data", onData);
 });
 
-function pair(a, aRest, b, bRest) {
+function pair(a, aRest, b, bRest, aIp, bIp) {
+  const ips = new Set([aIp, bIp]);
+  if (transitOpen >= MAX_TRANSIT_ACTIVE || [...ips].some((ip) => (activeTransitByIp.get(ip) ?? 0) >= TRANSIT_ACTIVE_PER_IP)) {
+    a.end("error relay busy\n");
+    b.end("error relay busy\n");
+    return;
+  }
   transitOpen++;
+  for (const ip of ips) activeTransitByIp.set(ip, (activeTransitByIp.get(ip) ?? 0) + 1);
   track("transfer");
   let bytes = 0, closed = 0;
   // One side closing (the receiver right after its "received") must not cut what is still on its way to the other:
   // the other side gets everything, then the end. Only an idle line or an error ends both at once.
-  const counted = () => { if (++closed === 2) { transitOpen--; track("transferBytes", "", bytes); } };
+  const counted = () => {
+    if (++closed !== 2) return;
+    transitOpen--;
+    for (const ip of ips) {
+      const count = activeTransitByIp.get(ip) ?? 0;
+      if (count <= 1) activeTransitByIp.delete(ip); else activeTransitByIp.set(ip, count - 1);
+    }
+    track("transferBytes", "", bytes);
+  };
   const kill = () => { a.destroy(); b.destroy(); };
   for (const [s, other] of [[a, b], [b, a]]) {
     s.setTimeout(TRANSIT_IDLE, kill);

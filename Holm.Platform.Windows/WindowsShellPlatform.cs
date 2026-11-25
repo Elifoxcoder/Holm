@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using Holm.Platform;
 using WinNotch;
@@ -23,7 +24,7 @@ public sealed class WindowsShellPlatform : IShellPlatform
         try
         {
             AllowSetForegroundWindow(-1);
-            Process.Start(new ProcessStartInfo("explorer.exe", @"shell:AppsFolder\" + appId) { UseShellExecute = true })?.Dispose();
+            Process.Start(new ProcessStartInfo(ExplorerPath, @"shell:AppsFolder\" + appId) { UseShellExecute = true })?.Dispose();
             return true;
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { return false; }
@@ -33,7 +34,15 @@ public sealed class WindowsShellPlatform : IShellPlatform
     {
         AllowSetForegroundWindow(-1);
         // Explorer wants exactly /select,"path" (quotes around the path only).
-        Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\""))?.Dispose();
+        Process.Start(new ProcessStartInfo(ExplorerPath, $"/select,\"{path}\""))?.Dispose();
+    }
+
+    static string ExplorerPath => ResolveExplorer(Environment.GetFolderPath(Environment.SpecialFolder.Windows));
+
+    internal static string ResolveExplorer(string windowsFolder)
+    {
+        if (string.IsNullOrWhiteSpace(windowsFolder)) throw new InvalidOperationException("The Windows folder is unavailable.");
+        return Path.Combine(windowsFolder, "explorer.exe");
     }
 
     public string SystemDrive() => System.IO.Path.GetPathRoot(Environment.SystemDirectory) ?? @"C:\";

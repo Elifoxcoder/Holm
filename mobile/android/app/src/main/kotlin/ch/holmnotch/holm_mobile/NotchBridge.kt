@@ -2,6 +2,7 @@ package ch.holmnotch.holm_mobile
 
 import android.content.ComponentName
 import android.Manifest
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.hardware.display.DisplayManager
@@ -26,13 +27,34 @@ object NotchBridge {
     private const val PREFS = "holm_notch"
 
     private var group: FlutterEngineGroup? = null
+    private var appContext: Context? = null
     val handler = Handler(Looper.getMainLooper())
+
+    // While the device is locked the overlay is hidden as well as these events being withheld from its engine.
+    private val safeLockEvents = setOf("battery", "volume", "orientation", "torch", "dnd", "wifi", "vpn", "outside")
+    internal val lockedNotchMethods = setOf(
+        "media", "open", "openApp", "notificationAction", "shade", "reply", "clear", "call", "muteCall", "keyboard",
+        "gesture", "phoneStatus", "beamScreenshot", "overview", "offerAnswer", "mute", "setVolume", "volumes",
+    )
+    private val lockedMainMethods = setOf(
+        "notchSettings", "holmEvent", "dismissNotification", "takeShared", "saveToDownloads", "copyUri", "apps",
+        "notifyUpdate", "installUpdate", "shizukuUnlock", "hidePopups", "open", "beamFile", "offerAnswer",
+        "phoneStatus", "mute", "media",
+    )
 
     /** The notch's Dart side, once it said it's ready. */
     var notch: MethodChannel? = null
         set(value) {
             field = value
-            if (value != null) while (pending.isNotEmpty()) value.invokeMethod("event", pending.removeFirst())
+            if (value != null) {
+                val locked = appContext?.let { isDeviceLocked(it) } == true
+                while (pending.isNotEmpty()) {
+                    val event = pending.removeFirst()
+                    val type = event["type"] as? String
+                    if (locked && type !in safeLockEvents) continue
+                    value.invokeMethod("event", event)
+                }
+            }
         }
 
     /** The app's Dart side (Holm). */
@@ -43,8 +65,10 @@ object NotchBridge {
     var shared: Map<String, Any?>? = null
     private val pending = ArrayDeque<Map<String, Any?>>()
 
-    fun group(context: Context): FlutterEngineGroup =
-        group ?: FlutterEngineGroup(context.applicationContext).also { group = it }
+    fun group(context: Context): FlutterEngineGroup {
+        appContext = context.applicationContext
+        return group ?: FlutterEngineGroup(context.applicationContext).also { group = it }
+    }
 
     /**
      * The app's engine, made once and kept: the activity shows it while open, and Holm keeps following its inbox and
@@ -68,6 +92,12 @@ object NotchBridge {
     /** An event for the notch; kept (the last 60) until the notch is ready. */
     fun toNotch(event: Map<String, Any?>) {
         handler.post {
+            val locked = appContext?.let { isDeviceLocked(it) } == true
+            val type = event["type"] as? String
+            if (locked) {
+                pending.clear() // nothing queued before the keyguard returned may flash after it
+                if (type !in safeLockEvents) return@post
+            }
             val channel = notch
             if (channel != null) channel.invokeMethod("event", event)
             else {
@@ -77,12 +107,30 @@ object NotchBridge {
         }
     }
 
-    fun toMain(method: String, args: Any?) = handler.post { main?.invokeMethod(method, args) }
+    /** Drop events queued before the keyguard returned, so they cannot flash after an unlock. */
+    fun clearPending() = pending.clear()
+
+    fun toMain(method: String, args: Any?) = handler.post {
+        val locked = appContext?.let { isDeviceLocked(it) } == true
+        if (locked && method in lockedMainMethods) return@post
+        main?.invokeMethod(method, args)
+    }
 
     fun settings(context: Context): String? =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("settings", null)
 
+    /** Locked or with the screen off: neither state may expose private notch data or accept private actions. */
+    fun isDeviceLocked(context: Context): Boolean {
+        val keyguard = context.getSystemService(KeyguardManager::class.java)?.isDeviceLocked == true
+        val screenOff = context.getSystemService(android.os.PowerManager::class.java)?.isInteractive == false
+        return keyguard || screenOff
+    }
+
     private fun onMainCall(context: Context, method: String, args: Any?, result: MethodChannel.Result) {
+        if (isDeviceLocked(context) && method in lockedMainMethods) {
+            result.error("device_locked", "Unlock the device before using Holm", null)
+            return
+        }
         when (method) {
             "notchSettings" -> {
                 val json = args as String
@@ -119,6 +167,7 @@ object NotchBridge {
             }
             "saveToDownloads" -> Thread {
                 val ok = runCatching {
+                    if (isDeviceLocked(context)) return@runCatching false
                     val file = java.io.File(args as String)
                     val values = android.content.ContentValues().apply {
                         put(android.provider.MediaStore.Downloads.DISPLAY_NAME, file.name)
@@ -133,20 +182,26 @@ object NotchBridge {
                     resolver.update(uri, values, null, null)
                     true
                 }.getOrDefault(false)
-                handler.post { result.success(ok) }
+                handler.post { result.success(if (isDeviceLocked(context)) false else ok) }
             }.start()
-            "copyUri" -> Thread {
-                val path = runCatching {
-                    val uri = android.net.Uri.parse(args as String)
-                    val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
-                        ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "Screenshot.png"
-                    val dir = java.io.File(context.cacheDir, "beam").apply { mkdirs() }
-                    val out = java.io.File(dir, name.replace(Regex("[\\\\/:*?\"<>|]"), "_"))
-                    context.contentResolver.openInputStream(uri)!!.use { input -> out.outputStream().use { input.copyTo(it) } }
-                    out.path
-                }.getOrNull()
-                handler.post { result.success(path) }
-            }.start()
+            "copyUri" -> {
+                val uri = runCatching { android.net.Uri.parse(args as String) }.getOrNull()
+                if (uri == null || !UriSecurity.isAllowedContentUri(context, uri)) {
+                    result.success(null)
+                } else Thread {
+                    val path = runCatching {
+                        // Revalidate at the point of use; no file:// or Holm-owned provider is ever opened.
+                        if (isDeviceLocked(context) || !UriSecurity.isAllowedContentUri(context, uri)) return@runCatching null
+                        val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+                            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "Screenshot.png"
+                        val dir = java.io.File(context.cacheDir, "beam").apply { mkdirs() }
+                        val out = java.io.File(dir, name.replace(Regex("[\\\\/:*?\"<>|]"), "_"))
+                        context.contentResolver.openInputStream(uri)!!.use { input -> out.outputStream().use { input.copyTo(it) } }
+                        out.path
+                    }.getOrNull()
+                    handler.post { result.success(if (isDeviceLocked(context)) null else path) }
+                }.start()
+            }
             "apps" -> Thread {
                 val pm = context.packageManager
                 val launcher = android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(android.content.Intent.CATEGORY_LAUNCHER)
@@ -159,7 +214,7 @@ object NotchBridge {
                             "icon" to runCatching { NotchListener.png(pm.getApplicationIcon(info), 64) }.getOrNull(),
                         )
                     }.sortedBy { (it["name"] as String).lowercase() }
-                handler.post { result.success(list) }
+                handler.post { result.success(if (isDeviceLocked(context)) emptyList<Map<String, Any?>>() else list) }
             }.start()
             "appVersion" -> result.success(Updates.currentVersion(context).toInt())
             "appVersionName" -> result.success(context.packageManager.getPackageInfo(context.packageName, 0).versionName)

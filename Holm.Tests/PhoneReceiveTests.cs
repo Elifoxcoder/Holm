@@ -78,7 +78,7 @@ public class PhoneReceiveTests : IDisposable
     [Fact]
     public async Task A_yes_is_for_that_phone_only_and_someone_else_with_the_code_is_asked_again()
     {
-        Assert.Equal(HttpStatusCode.OK, await Ask(Phone));
+        Assert.Equal(HttpStatusCode.OK, await Ask(Phone, name: "mine.jpg"));
         Assert.Equal(HttpStatusCode.Forbidden, (await Upload("x.jpg", "x"u8.ToArray(), session: Stranger)).StatusCode);
         _yes = false;
         Assert.Equal(HttpStatusCode.Forbidden, await Ask(Stranger));
@@ -104,6 +104,9 @@ public class PhoneReceiveTests : IDisposable
     {
         var request = new HttpRequestMessage(HttpMethod.Post, _share.Url + "ask");
         request.Headers.Add("X-Session", Phone);
+        request.Headers.Add("X-Name", Uri.EscapeDataString("photo.jpg"));
+        request.Headers.Add("X-Count", "1");
+        request.Headers.Add("X-Size", "1");
         request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) Mobile/15E148 Safari/604.1");
         Assert.Equal(HttpStatusCode.OK, (await _http.SendAsync(request)).StatusCode);
         Assert.Equal("iPhone", Assert.Single(_asked).Device);
@@ -128,13 +131,47 @@ public class PhoneReceiveTests : IDisposable
     }
 
     [Fact]
+    public async Task Silent_pre_token_clients_from_one_address_are_capped()
+    {
+        var url = new Uri(_share.Url);
+        var clients = new System.Collections.Generic.List<TcpClient>();
+        var reads = new System.Collections.Generic.List<Task<int>>();
+        try
+        {
+            for (int i = 0; i < PhoneShare.MaxClientsPerIp * 2; i++)
+            {
+                var client = new TcpClient();
+                await client.ConnectAsync(IPAddress.Loopback, url.Port);
+                clients.Add(client);
+                reads.Add(client.GetStream().ReadAsync(new byte[1]).AsTask()); // no request line: still pre-token
+            }
+            var closed = new System.Collections.Generic.List<Task<int>>();
+            for (int i = 0; i < PhoneShare.MaxClientsPerIp; i++)
+            {
+                var done = await Task.WhenAny(reads).WaitAsync(TimeSpan.FromSeconds(2));
+                reads.Remove(done);
+                closed.Add(done);
+            }
+            Assert.All(closed, read => Assert.Equal(0, read.Result));
+        }
+        finally
+        {
+            foreach (var client in clients) client.Dispose();
+            try { await Task.WhenAll(reads); } catch { }
+        }
+
+        await Task.Delay(100); // let ServeAsync return the permits of the closed clients
+        Assert.Contains("Send to your computer", await _http.GetStringAsync(_share.Url));
+    }
+
+    [Fact]
     public async Task A_photo_arrives_whole_under_its_own_name_and_never_overwrites()
     {
         var bytes = new byte[700_000];
         new Random(7).NextBytes(bytes);
         string? received = null;
         _share.Received += path => received = path;
-        Assert.Equal(HttpStatusCode.OK, await Ask());
+        Assert.Equal(HttpStatusCode.OK, await Ask(count: 2, size: bytes.Length + "second"u8.Length, name: "Ferien äöü.jpg"));
 
         Assert.Equal(HttpStatusCode.OK, (await Upload("Ferien äöü.jpg", bytes)).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await Upload("Ferien äöü.jpg", "second"u8.ToArray())).StatusCode);
@@ -148,7 +185,7 @@ public class PhoneReceiveTests : IDisposable
     [Fact]
     public async Task A_name_cannot_leave_the_folder()
     {
-        Assert.Equal(HttpStatusCode.OK, await Ask());
+        Assert.Equal(HttpStatusCode.OK, await Ask(name: "../../evil.txt"));
         Assert.Equal(HttpStatusCode.OK, (await Upload("../../evil.txt", "x"u8.ToArray())).StatusCode);
         Assert.True(File.Exists(Path.Combine(_folder, "evil.txt")));
         Assert.False(File.Exists(Path.Combine(_folder, "..", "evil.txt")));
@@ -167,7 +204,7 @@ public class PhoneReceiveTests : IDisposable
     [Fact]
     public async Task A_file_cut_off_halfway_is_not_kept()
     {
-        Assert.Equal(HttpStatusCode.OK, await Ask());
+        Assert.Equal(HttpStatusCode.OK, await Ask(size: 100_000, name: "half.bin"));
         var url = new Uri(_share.Url);
         using (var client = new TcpClient())
         {
@@ -184,6 +221,78 @@ public class PhoneReceiveTests : IDisposable
         for (int i = 0; i < 50 && Directory.Exists(_folder) && Directory.EnumerateFiles(_folder).Any(); i++) await Task.Delay(100);
         Assert.False(Directory.Exists(_folder) && Directory.EnumerateFiles(_folder).Any());
         Assert.Empty(_share.ReceivedFiles);
+
+        // The failed request returned its reservation, so the same approved session can retry the file.
+        Assert.Equal(HttpStatusCode.OK, (await Upload("half.bin", "whole"u8.ToArray())).StatusCode);
+        Assert.Equal("whole", File.ReadAllText(Path.Combine(_folder, "half.bin")));
+        Assert.Single(_share.ReceivedFiles);
+    }
+
+    [Fact]
+    public async Task Approved_file_count_and_cumulative_bytes_are_enforced()
+    {
+        Assert.Equal(HttpStatusCode.OK, await Ask(count: 2, size: 5, name: "first.bin"));
+        Assert.Equal(HttpStatusCode.OK, (await Upload("first.bin", new byte[3])).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Upload("too-big.bin", new byte[3])).StatusCode); // only 2 bytes left
+        Assert.Equal(HttpStatusCode.OK, (await Upload("second.bin", new byte[2])).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Upload("third.bin", new byte[1])).StatusCode); // session retired
+        Assert.Equal(new[] { "first.bin", "second.bin" }, Directory.EnumerateFiles(_folder).Select(Path.GetFileName).Order());
+    }
+
+    [Fact]
+    public async Task The_first_upload_matches_the_name_that_was_approved()
+    {
+        Assert.Equal(HttpStatusCode.OK, await Ask(count: 2, size: 2, name: "Photo.JPG"));
+        Assert.Equal(HttpStatusCode.Forbidden, (await Upload("other.jpg", "x"u8.ToArray())).StatusCode);
+        var caseStatus = (await Upload("photo.jpg", "x"u8.ToArray())).StatusCode;
+        Assert.Equal(OperatingSystem.IsWindows() ? HttpStatusCode.OK : HttpStatusCode.Forbidden, caseStatus);
+        if (caseStatus != HttpStatusCode.OK)
+            Assert.Equal(HttpStatusCode.OK, (await Upload("Photo.JPG", "x"u8.ToArray())).StatusCode);
+
+        // Once the first reservation is taken, later files may have different names and are listed on completion.
+        Assert.Equal(HttpStatusCode.OK, (await Upload("different.jpg", "y"u8.ToArray())).StatusCode);
+        Assert.Equal(2, _share.ReceivedFiles.Count);
+    }
+
+    [Fact]
+    public async Task Parallel_uploads_cannot_oversubscribe_the_approved_quota()
+    {
+        Assert.Equal(HttpStatusCode.OK, await Ask(count: 2, size: 4, name: "a.bin"));
+        var first = Upload("a.bin", new byte[4]);
+        var second = Upload("b.bin", new byte[4]);
+        var statuses = (await Task.WhenAll(first, second)).Select(r => r.StatusCode).OrderBy(s => s).ToArray();
+        Assert.Equal(new[] { HttpStatusCode.OK, HttpStatusCode.Forbidden }, statuses);
+        Assert.Single(Directory.EnumerateFiles(_folder));
+    }
+
+    [Fact]
+    public async Task A_session_cannot_be_used_from_another_address()
+    {
+        Assert.Equal(HttpStatusCode.OK, await Ask(name: "stolen.jpg"));
+        var url = new Uri(_share.Url);
+        using var client = new HttpClient(new SocketsHttpHandler
+        {
+            ConnectCallback = async (endpoint, ct) =>
+            {
+                var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+                socket.Bind(new IPEndPoint(IPAddress.Parse("127.0.0.2"), 0));
+                await socket.ConnectAsync(endpoint.DnsEndPoint, ct);
+                return new NetworkStream(socket, ownsSocket: true);
+            },
+        });
+        var upload = new HttpRequestMessage(HttpMethod.Post, _share.Url + "u") { Content = new ByteArrayContent("x"u8.ToArray()) };
+        upload.Headers.Add("X-Session", Phone);
+        upload.Headers.Add("X-Name", Uri.EscapeDataString("stolen.jpg"));
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.SendAsync(upload)).StatusCode);
+
+        var ask = new HttpRequestMessage(HttpMethod.Post, _share.Url + "ask");
+        ask.Headers.Add("X-Session", Phone);
+        ask.Headers.Add("X-Name", Uri.EscapeDataString("stolen.jpg"));
+        ask.Headers.Add("X-Count", "1");
+        ask.Headers.Add("X-Size", "1");
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.SendAsync(ask)).StatusCode);
+        Assert.Single(_asked);
+        Assert.True(NothingSaved);
     }
 
     [Fact]

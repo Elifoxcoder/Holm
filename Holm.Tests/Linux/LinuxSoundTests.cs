@@ -1,9 +1,37 @@
+using System;
+using System.IO;
 using Holm.Platform.Linux;
+using WinNotch;
 
 namespace Holm.Tests.Linux;
 
 public class LinuxSoundTests
 {
+    [Fact]
+    public void Temporary_WAVs_are_random_exclusive_and_private()
+    {
+        byte[] wav = LinuxSoundPlatform.Tone(880, 0.01, 0.01, 1);
+        string first = LinuxSoundPlatform.CreateWav(wav);
+        try
+        {
+            string second = LinuxSoundPlatform.CreateWav(wav);
+            try
+            {
+                Assert.NotEqual(first, second);
+                Assert.Equal(wav, File.ReadAllBytes(first));
+                if (OperatingSystem.IsLinux())
+                {
+                    var mode = File.GetUnixFileMode(first);
+                    Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, mode);
+                    Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute,
+                        File.GetUnixFileMode(Path.GetDirectoryName(first)!));
+                }
+            }
+            finally { File.Delete(second); }
+        }
+        finally { File.Delete(first); }
+    }
+
     [Fact]
     public void The_fallback_beeps_are_a_playable_wav()
     {

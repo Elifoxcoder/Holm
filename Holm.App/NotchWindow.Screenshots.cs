@@ -104,11 +104,10 @@ public sealed partial class NotchWindow
         if (image == null) return;
         try
         {
-            string folder = Path.Combine(Path.GetTempPath(), "Holm", "Screenshots");
-            Directory.CreateDirectory(folder);
+            string folder = PrivateStorage.TempFolder("Screenshots");
             ForgetOldShots(folder);
-            string path = Path.Combine(folder, $"Screenshot {DateTime.Now:yyyy-MM-dd HHmmss}.png");
-            using (var file = File.Create(path)) image.Save(file, new PngBitmapEncoderOptions());
+            string path = Path.Combine(folder, $"Screenshot {DateTime.Now:yyyy-MM-dd HHmmss}-{Guid.NewGuid():N}.png");
+            using (var file = PrivateStorage.CreateFile(path)) image.Save(file, new PngBitmapEncoderOptions());
             ShowScreenshot(path, saved: false);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
@@ -123,6 +122,7 @@ public sealed partial class NotchWindow
     {
         foreach (var file in new DirectoryInfo(folder).EnumerateFiles("Screenshot *.png"))
         {
+            if (PrivateStorage.IsLink(file.FullName)) continue;
             if (DateTime.UtcNow - file.LastWriteTimeUtc < TimeSpan.FromDays(2)) continue;
             if (_settings.Shelf.Contains(file.FullName, StringComparer.OrdinalIgnoreCase)) continue;
             try { file.Delete(); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }

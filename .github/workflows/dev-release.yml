@@ -10,7 +10,7 @@ on:
     paths: ["docs/cross-platform/dev-release-version.txt"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -24,10 +24,12 @@ jobs:
             rid: linux-x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    env:
+      RID: ${{ matrix.rid }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: "10.0.x"
 
@@ -35,7 +37,7 @@ jobs:
         shell: bash
         run: |
           filter="Category!=Local&Category!=Online&Category!=Manual"
-          if [ "${{ runner.os }}" != "Windows" ]; then filter="$filter&FullyQualifiedName!~UpdateInstallerTests"; fi
+          if [ "$RUNNER_OS" != "Windows" ]; then filter="$filter&FullyQualifiedName!~UpdateInstallerTests"; fi
           dotnet test Holm.Tests -c Release --filter "$filter"
 
       # Self-contained, one file (AGENTS.md); test builds are named Holm-<version>-test-build.<n>, never Holm.exe.
@@ -43,10 +45,11 @@ jobs:
         shell: bash
         run: |
           tag=$(tr -d '[:space:]' < docs/cross-platform/dev-release-version.txt)   # 1.13.0.1
+          [[ "$tag" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::dev-release-version.txt must contain x.y.z.n"; exit 1; }
           version="${tag%.*}"; build="${tag##*.}"
-          dotnet publish Holm.App -c Release -r ${{ matrix.rid }} --self-contained -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:DebugType=none -o out
+          dotnet publish Holm.App -c Release -r "$RID" --self-contained -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:DebugType=none -o out
           mkdir release
-          if [ "${{ matrix.rid }}" = "win-x64" ]; then
+          if [ "$RID" = "win-x64" ]; then
             mv out/Holm.App.exe "release/Holm-$version-test-build.$build.exe"
           else
             mv out/Holm.App "release/Holm-$version-test-build.$build-linux-x64"
@@ -54,7 +57,7 @@ jobs:
           fi
           ls -l release
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-${{ matrix.rid }}
           path: release/
@@ -62,10 +65,12 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: release-*
           path: release
@@ -76,6 +81,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag=$(tr -d '[:space:]' < docs/cross-platform/dev-release-version.txt)
+          [[ "$tag" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::dev-release-version.txt must contain x.y.z.n"; exit 1; }
           version="${tag%.*}"; build="${tag##*.}"
           # Every build is for Windows and Linux (AGENTS.md): without both files nothing is published.
           for f in "Holm-$version-test-build.$build.exe" "Holm-$version-test-build.$build-linux-x64"; do

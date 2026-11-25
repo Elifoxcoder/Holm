@@ -52,11 +52,24 @@ public sealed class WindowsDictationPlatform : IDictationPlatform
 
     public async Task<bool> InstallAsync(CancellationToken ct)
     {
-        var (url, sha256) = await HandyBridge.FindInstallerUrlAsync(HandyHttp, ct) ?? throw new IOException("Handy's release has no Windows installer");
+        var (url, sha256) = await HandyBridge.FindInstallerUrlAsync(HandyHttp, ct) ?? throw new IOException("Handy's release has no Windows installer with a SHA-256 digest");
         string file = await HandyBridge.DownloadInstallerAsync(HandyHttp, url, sha256, ct);
-        // The person goes through Handy's own installer; once it closes, Holm looks again.
-        var installer = Process.Start(new ProcessStartInfo(file) { UseShellExecute = true });
-        if (installer != null) await installer.WaitForExitAsync(ct);
-        return true;
+        try
+        {
+            await HandyBridge.VerifyInstallerAsync(file, sha256, ct);
+            // The person goes through Handy's own installer; once it closes, Holm looks again.
+            using var installer = Process.Start(new ProcessStartInfo(file) { UseShellExecute = true });
+            if (installer != null) await installer.WaitForExitAsync(ct);
+            return true;
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(file);
+                if (Path.GetDirectoryName(file) is { } folder) Directory.Delete(folder, recursive: false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
     }
 }

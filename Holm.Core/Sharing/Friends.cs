@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Formats.Asn1;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
@@ -114,6 +117,9 @@ public sealed class FriendIdentity : IDisposable
 {
     /// <summary>The inbox server a card without one means: ntfy.sh, for every Holm before the relay (settable for tests).</summary>
     public static string DefaultServer { get; internal set; } = "https://ntfy.sh";
+    /// <summary>Test-only escape hatch for local fake inboxes. There is no setting or UI that enables this in Holm.</summary>
+    internal static bool AllowInsecureServers { get; set; }
+    const string EcPublicKeyOid = "1.2.840.10045.2.1", P256CurveOid = "1.2.840.10045.3.1.7";
     /// <summary>
     /// Holm's own inbox server (relay/: a Cloudflare Worker). It takes ntfy's POST, so any Holm can leave notes there;
     /// Holm 1.18+ follows its inbox there and on <see cref="DefaultServer"/>, where older friends still write.
@@ -155,7 +161,32 @@ public sealed class FriendIdentity : IDisposable
     public FriendIdentity WithName(string name) => new(name, Topic, Server, Key);
 
     public static string NormalizeServer(string? server)
-        => string.IsNullOrWhiteSpace(server) ? DefaultServer : server.Trim().TrimEnd('/');
+        => TryNormalizeServer(server, out string normalized)
+            ? normalized
+            : throw new ArgumentException("The friend inbox must be a public HTTPS server without credentials, a query or a fragment.", nameof(server));
+
+    /// <summary>The URL policy shared by friend cards, saved cards and every inbox connection.</summary>
+    internal static bool TryNormalizeServer(string? server, out string normalized)
+    {
+        string candidate = string.IsNullOrWhiteSpace(server) ? DefaultServer : server.Trim().TrimEnd('/');
+        normalized = candidate;
+        if (candidate.Length is < 8 or > 2048 || candidate.Any(c => char.IsWhiteSpace(c) || char.IsControl(c))) return false;
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var uri) || string.IsNullOrEmpty(uri.Host)) return false;
+        if (candidate.Contains('@') || !string.IsNullOrEmpty(uri.UserInfo) || uri.OriginalString.Contains('?') || uri.OriginalString.Contains('#')) return false;
+        if (AllowInsecureServers)
+        {
+            if (uri.Scheme is not ("https" or "http")) return false;
+        }
+        else if (uri.Scheme != "https" || !NetSecurity.IsPublicHost(uri.Host)) return false;
+        normalized = candidate;
+        return true;
+    }
+
+    /// <summary>A saved or newly offered card is safe to use before any request is put on the network.</summary>
+    internal static bool IsValidFriend(Friend? friend)
+        => friend != null && !string.IsNullOrWhiteSpace(friend.Topic)
+            && Regex.IsMatch(friend.Topic, "^[A-Za-z0-9_-]{1,64}$")
+            && IsP256Key(friend.Key) && TryNormalizeServer(friend.Server, out _);
 
     /// <summary>What you give a friend so they can add you: "WNF1." and base64url(JSON).</summary>
     public string FriendCode => CodePrefix + Base64Url(JsonSerializer.SerializeToUtf8Bytes(Card(), CodeJson));
@@ -174,23 +205,49 @@ public sealed class FriendIdentity : IDisposable
     {
         if (FindFriendCode(text) is not { } code) return null;
         try { return FromCard(JsonSerializer.Deserialize<CodeCard>(FromBase64Url(code[CodePrefix.Length..]), CodeJson)); }
-        catch (Exception ex) when (ex is JsonException or FormatException or CryptographicException) { return null; }
+        catch (Exception ex) when (ex is JsonException or FormatException or CryptographicException or ArgumentException or AsnContentException) { return null; }
     }
 
     static Friend? FromCard(CodeCard? card)
     {
         if (card == null || string.IsNullOrWhiteSpace(card.T) || string.IsNullOrWhiteSpace(card.K)) return null;
-        if (!Regex.IsMatch(card.T, "^[A-Za-z0-9_-]{1,64}$")) return null;
-        using (var check = ECDiffieHellman.Create())
-        {
-            check.ImportSubjectPublicKeyInfo(FromBase64Url(card.K), out _);
-            if (check.KeySize != 256) return null;
-        }
-        string? server = card.S == null ? null : NormalizeServer(card.S);
-        if (server != null && !(Uri.TryCreate(server, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http")) return null;
+        if (!Regex.IsMatch(card.T, "^[A-Za-z0-9_-]{1,64}$") || !IsP256Key(card.K)) return null;
+        string? server = card.S;
+        if (server != null && !TryNormalizeServer(server, out server)) return null;
         string name = new string((card.N ?? "").Where(c => !char.IsControl(c)).ToArray()).Trim();
         if (name.Length == 0) name = "Friend";
         return new Friend { Name = name.Length > 40 ? name[..40] : name, Topic = card.T, Key = card.K, Server = server };
+    }
+
+    /// <summary>Rejects lookalike 256-bit curves as well as P-384: the SPKI must name P-256 exactly.</summary>
+    static bool IsP256Key(string? text)
+    {
+        try { using var key = ImportP256PublicKey(text); return key.KeySize == 256; }
+        catch (Exception ex) when (ex is CryptographicException or FormatException or ArgumentException or AsnContentException) { return false; }
+    }
+
+    internal static ECDiffieHellman ImportP256PublicKey(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) throw new ArgumentException("A friend key is missing.", nameof(text));
+        byte[] spki = FromBase64Url(text);
+        var reader = new AsnReader(spki, AsnEncodingRules.DER);
+        var spkiReader = reader.ReadSequence();
+        var algorithm = spkiReader.ReadSequence();
+        if (algorithm.ReadObjectIdentifier() != EcPublicKeyOid || algorithm.ReadObjectIdentifier() != P256CurveOid)
+            throw new CryptographicException("The friend key does not name the P-256 curve.");
+        // SubjectPublicKeyInfo normally encodes ecPublicKey parameters as the curve OID followed by ASN.1 NULL.
+        if (algorithm.HasData) algorithm.ReadNull();
+        if (algorithm.HasData) throw new CryptographicException("The friend key has unexpected curve parameters.");
+        // ImportSubjectPublicKeyInfo below validates the remaining BIT STRING and full SPKI structure.
+        reader.ThrowIfNotEmpty();
+        var key = ECDiffieHellman.Create();
+        try
+        {
+            key.ImportSubjectPublicKeyInfo(spki, out _);
+            if (key.KeySize != 256) throw new CryptographicException("The friend key is not P-256.");
+            return key;
+        }
+        catch { key.Dispose(); throw; }
     }
 
     public void Dispose() => Key.Dispose();
@@ -230,11 +287,12 @@ public sealed class FriendIdentity : IDisposable
 /// <param name="MessageId">For <see cref="FriendNoteKind.Chat"/>: the message's id, so a repeat isn't shown twice. For
 /// <see cref="FriendNoteKind.Reaction"/>: the message reacted to.</param>
 /// <param name="Gif">For <see cref="FriendNoteKind.Chat"/>: the message is this GIF (<paramref name="Text"/> holds the link too).</param>
+/// <param name="NoteId">Authenticated replay id inside the sealed payload. Older notes have none and use their sealed-text hash.</param>
 public sealed record FriendNote(FriendNoteKind Kind, string From, long Sent, byte[]? Secret = null, string? Code = null,
                                 string? RequestId = null, bool? Accepted = null, FriendProfile? Profile = null,
                                 string? Text = null, string? MessageId = null, FriendActivity? Activity = null, int? Trophies = null,
                                 string? Gif = null, string? Invite = null, string? Device = null, string? ForDevice = null, bool? Query = null,
-                                PhoneStatus? Phone = null);
+                                PhoneStatus? Phone = null, string? NoteId = null);
 
 /// <summary>
 /// What a friend is doing, as their notch shows it to friends who ask: listening to music, in a call, playing a game,
@@ -341,17 +399,23 @@ public static class FriendNotes
         public string? N { get; set; }
         /// <summary>In "device": "and who else is there?" – the others answer with their own.</summary>
         public bool? H { get; set; }
+        /// <summary>A unique id for replay protection. Older Holm ignores it; old notes have no id and use a hash fallback.</summary>
+        public string? J { get; set; }
     }
 
     /// <summary>The key two friends share: SHA-256 over a label and their ECDH secret.</summary>
     static byte[] SharedKey(ECDiffieHellman mine, string theirPublicKey)
     {
-        using var theirs = ECDiffieHellman.Create();
-        theirs.ImportSubjectPublicKeyInfo(FriendIdentity.FromBase64Url(theirPublicKey), out _);
+        using var theirs = FriendIdentity.ImportP256PublicKey(theirPublicKey);
         return mine.DeriveKeyFromHash(theirs.PublicKey, HashAlgorithmName.SHA256, KeyLabel, null);
     }
 
-    public static string Seal(FriendIdentity me, Friend to, FriendNote note)
+    public static string Seal(FriendIdentity me, Friend to, FriendNote note) => Seal(me, to, note, withId: true);
+
+    /// <summary>Compatibility tests and older senders: the same wnf1 payload without the optional authenticated id.</summary>
+    internal static string SealWithoutNoteId(FriendIdentity me, Friend to, FriendNote note) => Seal(me, to, note, withId: false);
+
+    static string Seal(FriendIdentity me, Friend to, FriendNote note, bool withId)
     {
         var dto = new NoteDto
         {
@@ -397,9 +461,37 @@ public static class FriendNotes
             D = note.Device,
             N = note.ForDevice,
             H = note.Query == true ? true : null,
+            J = withId ? IsNoteId(note.NoteId) ? note.NoteId : NewNoteId() : null,
         };
         return SealDto(me, to, dto);
     }
+
+    /// <summary>128 random bits, authenticated by the note's GCM tag. The wnf1 prefix and outer layout do not change.</summary>
+    internal static string NewNoteId() => FriendIdentity.Base64Url(RandomNumberGenerator.GetBytes(16));
+
+    static bool IsNoteId(string? id)
+    {
+        if (id is not { Length: 22 } || id.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('-' or '_'))) return false;
+        try { return FriendIdentity.FromBase64Url(id).Length == 16; } catch (FormatException) { return false; }
+    }
+
+    /// <summary>The persisted replay key: an authenticated id when present, otherwise a hash of canonical sealed bytes.</summary>
+    internal static string ReplayId(string text, FriendNote note)
+    {
+        if (note.NoteId is { } id) return "note:" + id;
+        // Open accepts optional base64 padding. Canonicalize both outer fields so adding '=' cannot evade the old-note fallback.
+        var parts = text[Prefix.Length..].Split(' ');
+        string canonical = Prefix + FriendIdentity.Base64Url(FriendIdentity.FromBase64Url(parts[0])) + " "
+                           + FriendIdentity.Base64Url(FriendIdentity.FromBase64Url(parts[1]));
+        return "hash:" + FriendIdentity.Base64Url(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+    }
+
+    internal const int MaxClockSkewSeconds = 300, MaxPastSeconds = 7 * 24 * 60 * 60;
+    internal const int OldestSentSeconds = MaxPastSeconds + MaxClockSkewSeconds;
+
+    /// <summary>Future clock skew is tight; the past allowance covers the relay's week of retained notes plus skew.</summary>
+    internal static bool IsSentTimePlausible(long sent, long now)
+        => sent >= now - OldestSentSeconds && sent <= now + MaxClockSkewSeconds;
 
     static int? Trophies(int? count) => count is >= 0 and <= 10_000 ? count : null;
 
@@ -489,11 +581,12 @@ public static class FriendNotes
             if (note != null)
             {
                 senderKey = parts[0];
-                note = note with { Device = OwnDevice.IsId(dto.D) ? dto.D : null, ForDevice = OwnDevice.IsId(dto.N) ? dto.N : null };
+                note = note with { Device = OwnDevice.IsId(dto.D) ? dto.D : null, ForDevice = OwnDevice.IsId(dto.N) ? dto.N : null,
+                                   NoteId = IsNoteId(dto.J) ? dto.J : null };
             }
             return note;
         }
-        catch (Exception ex) when (ex is CryptographicException or FormatException or JsonException) { return null; }
+        catch (Exception ex) when (ex is CryptographicException or FormatException or JsonException or ArgumentException or AsnContentException) { return null; }
     }
 }
 
@@ -503,23 +596,55 @@ public static class FriendNotes
 /// </summary>
 public static class FriendInbox
 {
-    static readonly HttpClient Http = new(new SocketsHttpHandler
-    {
-        ConnectTimeout = TimeSpan.FromSeconds(15),
-        PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
-    })
+    const int MaxPollBytes = 256 * 1024, MaxLineChars = 64 * 1024;
+    static readonly HttpClient Http = new(InboxHandler())
     {
         Timeout = Timeout.InfiniteTimeSpan, // our inbox is one long request; posting has its own token
         DefaultRequestHeaders = { { "User-Agent", "Holm-Friends/1" } },
     };
+    static readonly HttpMessageInvoker WebSocketHttp = new(InboxHandler());
 
-    static string InboxUrl(string? server, string topic) => $"{FriendIdentity.NormalizeServer(server)}/{Uri.EscapeDataString(topic)}";
+    static SocketsHttpHandler InboxHandler()
+    {
+        var handler = NetSecurity.PublicHandler();
+        var secureConnect = handler.ConnectCallback!;
+        handler.ConnectTimeout = TimeSpan.FromSeconds(15);
+        handler.PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2);
+        // The test-only branch is selected dynamically so security tests can exercise the production path even
+        // after another test has used a local fake inbox. Holm itself never enables it.
+        handler.ConnectCallback = async (endpoint, ct) => FriendIdentity.AllowInsecureServers
+            ? await ConnectForTestAsync(endpoint, ct).ConfigureAwait(false)
+            : await secureConnect(endpoint, ct).ConfigureAwait(false);
+        return handler;
+    }
+
+    static async ValueTask<NetworkStream> ConnectForTestAsync(SocketsHttpConnectionContext context, CancellationToken ct)
+    {
+        var endpoint = context.DnsEndPoint;
+        var socket = IPAddress.TryParse(endpoint.Host, out var literal)
+            ? new Socket(literal.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
+            : new Socket(AddressFamily.InterNetworkV6, SocketType.Stream, ProtocolType.Tcp) { DualMode = true };
+        try
+        {
+            await socket.ConnectAsync(endpoint.Host, endpoint.Port, ct).ConfigureAwait(false);
+            return new NetworkStream(socket, ownsSocket: true);
+        }
+        catch { socket.Dispose(); throw; }
+    }
+
+    static string InboxUrl(string? server, string topic)
+    {
+        if (!FriendIdentity.TryNormalizeServer(server, out string normalized)) throw new IOException("The friend inbox URL is not allowed.");
+        return $"{normalized}/{Uri.EscapeDataString(topic)}";
+    }
 
     static string Host(string? server)
-        => Uri.TryCreate(FriendIdentity.NormalizeServer(server), UriKind.Absolute, out var uri) ? uri.Host : "the server";
+        => FriendIdentity.TryNormalizeServer(server, out string normalized) && Uri.TryCreate(normalized, UriKind.Absolute, out var uri)
+            ? uri.Host : "the server";
 
     static bool IsRelay(string? server)
-        => FriendIdentity.NormalizeServer(server) is var s && (s == FriendIdentity.RelayServer || s == FriendIdentity.HolmRelayServer);
+        => FriendIdentity.TryNormalizeServer(server, out string normalized)
+            && (normalized == FriendIdentity.RelayServer || normalized == FriendIdentity.HolmRelayServer);
 
     /// <summary>
     /// Leaves a note in a friend's inbox. A note for the relay that it doesn't take (down, over its daily limit) goes to
@@ -545,7 +670,7 @@ public static class FriendInbox
             timeout.CancelAfter(TimeSpan.FromSeconds(20));
             using var request = new HttpRequestMessage(HttpMethod.Post, InboxUrl(server, topic)) { Content = new StringContent(note, Encoding.UTF8, "text/plain") };
             if (!keep) request.Headers.Add("Cache", "no");
-            response = await Http.SendAsync(request, timeout.Token).ConfigureAwait(false);
+            response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException && !ct.IsCancellationRequested)
         {
@@ -559,21 +684,22 @@ public static class FriendInbox
     }
 
     /// <summary>
-    /// Leaves a sealed invite card at an invite code's inbox, where it waits 12 hours: on the relay, and on ntfy for
-    /// friends whose Holm is older than the relay. Either one is enough.
+    /// Leaves a sealed invite card at the first-party relay, where it waits 12 hours, and on Holm's legacy relay for
+    /// older Holm apps. New invites are deliberately not mirrored to ntfy.sh: a public third-party copy makes the
+    /// unstretched 50-bit code derivation much easier to attack. Fetching still checks ntfy for already-issued old codes.
     /// </summary>
-    /// <exception cref="IOException">Neither server took it.</exception>
+    /// <exception cref="IOException">The primary relay did not take it.</exception>
     public static async Task PublishInviteAsync(string topic, string card, CancellationToken ct)
     {
-        var relay = PostToAsync(FriendIdentity.RelayServer, topic, card, true, ct);
-        var legacy = PostToAsync(FriendIdentity.DefaultServer, topic, card, true, ct);
+        await PostToAsync(FriendIdentity.RelayServer, topic, card, true, ct).ConfigureAwait(false);
         // Holm's relay as well, for a friend on Holm who types the code; a failure there changes nothing.
-        var holm = FriendIdentity.HolmRelayServer is { } h ? PostToAsync(h, topic, card, true, ct) : Task.CompletedTask;
-        await EitherAsync(relay, legacy).ConfigureAwait(false);
-        try { await holm.ConfigureAwait(false); } catch (IOException) { }
+        if (FriendIdentity.HolmRelayServer is { } h)
+        {
+            try { await PostToAsync(h, topic, card, true, ct).ConfigureAwait(false); } catch (IOException) { }
+        }
     }
 
-    /// <summary>The invite cards waiting at an invite code's inbox on the relay and on ntfy, newest first.</summary>
+    /// <summary>Invite cards on the first-party relays, plus ntfy only for compatibility with codes issued before mirroring stopped.</summary>
     /// <exception cref="IOException">Neither server could be reached.</exception>
     public static async Task<List<string>> FetchInviteAsync(string topic, CancellationToken ct)
     {
@@ -606,9 +732,11 @@ public static class FriendInbox
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(20));
             string url = InboxUrl(server, topic) + "/json?poll=1&since=12h";
-            using var response = await Http.GetAsync(url, timeout.Token).ConfigureAwait(false);
+            using var response = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode) throw new IOException($"{Host(server)} answered {(int)response.StatusCode}");
-            string body = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+            await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+            byte[] bytes = await BoundedIo.ReadAllBytesAsync(stream, MaxPollBytes, timeout.Token).ConfigureAwait(false);
+            string body = Encoding.UTF8.GetString(bytes);
             foreach (string line in body.Split('\n'))
                 if (TryParse(line, out bool isMessage, out _, out _, out string? text) && isMessage && text != null
                     && text.StartsWith(FriendInvite.Prefix, StringComparison.Ordinal))
@@ -623,14 +751,14 @@ public static class FriendInbox
 
     /// <summary>
     /// Follows our inbox on an ntfy server until <paramref name="ct"/> fires, reconnecting as needed. <paramref name="received"/>
-    /// gets each note's id, its age in seconds by the server's clock (so a PC clock that is off doesn't matter) and its text.
+    /// gets each note's id and its server arrival time (never the sender's backdated timestamp), and its text.
     /// <paramref name="since"/> is a Unix time to catch up from (null: only new notes); <paramref name="handled"/> reports
     /// the time of each message, so a restart can pick up what came meanwhile (ntfy keeps messages for 12 hours).
     /// Catching up by time can repeat the last message, so the caller skips ids it has already seen. (By id it would be
     /// exact, but for an id that has expired ntfy replays everything it still has.)
     /// </summary>
     public static async Task FollowAsync(string? server, string topic, long? since, Func<string, long, string, Task> received, Action<long> handled,
-                                         Action<string>? log, CancellationToken ct)
+                                          Action<string>? log, CancellationToken ct)
     {
         var delay = TimeSpan.FromSeconds(2);
         while (!ct.IsCancellationRequested)
@@ -638,20 +766,28 @@ public static class FriendInbox
             try
             {
                 string url = InboxUrl(server, topic) + "/json" + (since != null ? "?since=" + since : "");
-                using var response = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
-                using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false));
-                log?.Invoke("Friends inbox connected: " + Host(server));
-                delay = TimeSpan.FromSeconds(2);
-                var events = new InboxEvents(received, handled);
-                while (true)
+                HttpResponseMessage response;
+                using (var headers = CancellationTokenSource.CreateLinkedTokenSource(ct))
                 {
-                    // ntfy sends a keepalive every 45 s; silence means the connection died (sleep, a new Wi-Fi).
-                    using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    idle.CancelAfter(TimeSpan.FromSeconds(100));
-                    string? line = await reader.ReadLineAsync(idle.Token).ConfigureAwait(false);
-                    if (line == null) break;
-                    if (await events.LineAsync(line).ConfigureAwait(false) is > 0 and long time) since = time; // keepalives move the catch-up point on too
+                    headers.CancelAfter(TimeSpan.FromSeconds(20));
+                    response = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, headers.Token).ConfigureAwait(false);
+                }
+                using (response)
+                {
+                    response.EnsureSuccessStatusCode();
+                    using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false));
+                    log?.Invoke("Friends inbox connected: " + Host(server));
+                    delay = TimeSpan.FromSeconds(2);
+                    var events = new InboxEvents(received, handled);
+                    while (true)
+                    {
+                        // ntfy sends a keepalive every 45 s; silence means the connection died (sleep, a new Wi-Fi).
+                        using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        idle.CancelAfter(TimeSpan.FromSeconds(100));
+                        string? line = await ReadLineBoundedAsync(reader, idle.Token).ConfigureAwait(false);
+                        if (line == null) break;
+                        if (await events.LineAsync(line).ConfigureAwait(false) is > 0 and long time) since = time; // keepalives move the catch-up point on too
+                    }
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
@@ -659,6 +795,23 @@ public static class FriendInbox
 
             try { await Task.Delay(delay, ct).ConfigureAwait(false); } catch (OperationCanceledException) { return; }
             delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, TimeSpan.FromMinutes(2).Ticks));
+        }
+    }
+
+    static async Task<string?> ReadLineBoundedAsync(StreamReader reader, CancellationToken ct)
+    {
+        var chars = new List<char>(256);
+        char[] buffer = new char[256];
+        while (true)
+        {
+            int read = await reader.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false);
+            if (read == 0) return chars.Count == 0 ? null : new string(chars.ToArray());
+            for (int i = 0; i < read; i++)
+            {
+                if (buffer[i] == '\n') return new string(chars.ToArray());
+                if (chars.Count >= MaxLineChars) throw new IOException("A line from the friend inbox is too large.");
+                chars.Add(buffer[i]);
+            }
         }
     }
 
@@ -686,7 +839,7 @@ public static class FriendInbox
                 using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
                 {
                     timeout.CancelAfter(TimeSpan.FromSeconds(20));
-                    await ws.ConnectAsync(new Uri(url), timeout.Token).ConfigureAwait(false);
+                    await ws.ConnectAsync(new Uri(url), WebSocketHttp, timeout.Token).ConfigureAwait(false);
                 }
                 log?.Invoke("Friends inbox connected: " + Host(server));
                 delay = TimeSpan.FromSeconds(2);
@@ -717,7 +870,6 @@ public static class FriendInbox
     /// <summary>The events of one connection to our inbox, ntfy's or the relay's: both come as the same JSON lines.</summary>
     sealed class InboxEvents(Func<string, long, string, Task> received, Action<long> handled)
     {
-        long _serverNow; // a connection opens with the server's current time, before any catching up
         public bool LastWasMessage { get; private set; }
 
         /// <summary>Handles one line; its time, or null for a line that isn't an event.</summary>
@@ -725,11 +877,10 @@ public static class FriendInbox
         {
             LastWasMessage = false;
             if (line.Length == 0 || !TryParse(line, out bool isMessage, out long time, out string? id, out string? text)) return null;
-            _serverNow = Math.Max(_serverNow, time);
             if (!isMessage || id == null) return time;
             LastWasMessage = true;
             if (text != null && text.StartsWith(FriendNotes.Prefix, StringComparison.Ordinal))
-                await received(id, Math.Max(0, _serverNow - time), text).ConfigureAwait(false);
+                await received(id, time, text).ConfigureAwait(false);
             handled(time);
             return time;
         }

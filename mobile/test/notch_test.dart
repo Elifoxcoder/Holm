@@ -173,7 +173,10 @@ void main() {
     c.handle(notification('a'));
     c.handle({'type': 'holm.offer', 'id': '1', 'sender': 'Office PC', 'summary': 'photo.jpg', 'text': false});
     expect(c.expanded, isTrue);
-    expect(c.visible.any((a) => a.isOffer), isTrue);
+    final offer = c.visible.firstWhere((a) => a.isOffer);
+    expect(offer.offerAuthenticated, isFalse); // old events and nearby LAN offers are unverified by default
+    c.handle({'type': 'holm.offer', 'id': '2', 'sender': 'Office PC', 'summary': 'photo.jpg', 'text': false, 'authenticated': true});
+    expect(c.visible.firstWhere((a) => a.offerId == '2').offerAuthenticated, isTrue);
     String? answered;
     c.action = (method, args) async => answered = '$method ${(args as Map)['accept']}';
     c.answerOffer(c.visible.firstWhere((a) => a.isOffer), true);

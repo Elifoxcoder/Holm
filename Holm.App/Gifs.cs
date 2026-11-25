@@ -267,7 +267,7 @@ internal static class GifCache
     const long KeepBytes = 96L * 1024 * 1024;
     static readonly SemaphoreSlim Decoding = new(2);
 
-    static readonly HttpClient Http = new(new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(10), AllowAutoRedirect = true, MaxAutomaticRedirections = 3 })
+    static readonly HttpClient Http = new(NetSecurity.PublicHandler())
     {
         Timeout = TimeSpan.FromSeconds(25),
         DefaultRequestHeaders = { { "User-Agent", "Holm-Chat/1" } },
@@ -358,7 +358,8 @@ internal static class GifCache
 
     static async Task<byte[]?> BytesAsync(string url)
     {
-        if (ChatGif.Clean(url) is not { } clean || Offline) return null;
+        if (ChatGif.MayAutoLoad(url) is false || Offline) return null;
+        if (ChatGif.Clean(url) is not { } clean || !NetSecurity.IsPublicHost(new Uri(clean).Host)) return null;
         string file = FileFor(clean);
         try
         {
@@ -570,7 +571,8 @@ internal static class GifSearch
     public static readonly string BuiltInKey = typeof(GifSearch).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
         .FirstOrDefault(a => a.Key == "GiphyKey")?.Value?.Trim() ?? "";
 
-    static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(12), DefaultRequestHeaders = { { "User-Agent", "Holm-Chat/1" } } };
+    const int MaxJsonBytes = 4 * 1024 * 1024;
+    static readonly HttpClient Http = new(NetSecurity.PublicHandler()) { Timeout = TimeSpan.FromSeconds(12), DefaultRequestHeaders = { { "User-Agent", "Holm-Chat/1" } } };
 
     public static string? Key(AppSettings settings)
         => !string.IsNullOrWhiteSpace(settings.GifSearchKey) ? settings.GifSearchKey.Trim() : BuiltInKey.Length > 0 ? BuiltInKey : null;
@@ -583,12 +585,14 @@ internal static class GifSearch
             : $"https://api.giphy.com/v1/gifs/search?api_key={Uri.EscapeDataString(key)}&q={Uri.EscapeDataString(q)}&limit=24&rating=pg-13";
         try
         {
-            using var response = await Http.GetAsync(url, ct);
+            using var response = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
             if ((int)response.StatusCode is 401 or 403) throw new IOException("GIPHY didn't accept the key");
             if (!response.IsSuccessStatusCode) throw new IOException($"GIPHY answered {(int)response.StatusCode}");
-            return Parse(await response.Content.ReadAsStringAsync(ct));
+            if (response.Content.Headers.ContentLength > MaxJsonBytes) throw new IOException("GIPHY's answer is too large");
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            return Parse(Encoding.UTF8.GetString(await BoundedIo.ReadAllBytesAsync(stream, MaxJsonBytes, ct)));
         }
-        catch (HttpRequestException ex) { throw new IOException("GIPHY can't be reached", ex); }
+        catch (Exception ex) when (ex is HttpRequestException or IOException) { throw new IOException("GIPHY can't be reached", ex); }
         catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new IOException("GIPHY took too long", ex); }
     }
 

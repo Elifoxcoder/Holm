@@ -29,6 +29,10 @@ public static class FileTransfer
     public const int MaxFiles = 1000;
     public const long MaxTotalBytes = 100L * 1024 * 1024 * 1024;
 
+    /// <summary>A peer has this long to send its first Offer, and this long between accepted file frames.</summary>
+    public static readonly TimeSpan InitialOfferTimeout = TimeSpan.FromSeconds(15);
+    public static readonly TimeSpan IdleFrameTimeout = TimeSpan.FromSeconds(30);
+
     /// <summary>A beamed text is at most this big; anything larger is an ordinary file.</summary>
     public const long MaxTextBytes = 1024 * 1024;
 
@@ -49,11 +53,15 @@ public static class FileTransfer
     {
         if (paths.Count == 0 || paths.Count > MaxFiles) throw new ArgumentException("Send between 1 and 1000 files.", nameof(paths));
         var files = paths.Select(p => new FileDto(Path.GetFileName(p), new FileInfo(p).Length)).ToList();
-        long total = files.Sum(f => f.Size);
-        if (total > MaxTotalBytes) throw new IOException("That's more than 100 GB.");
+        long total = 0;
+        foreach (var file in files)
+        {
+            total = checked(total + file.Size);
+            if (total > MaxTotalBytes) throw new IOException("That's more than 100 GB.");
+        }
 
         if (text && (files.Count != 1 || total > MaxTextBytes)) throw new ArgumentException("A text is one small file.", nameof(paths));
-        var offer = JsonSerializer.SerializeToUtf8Bytes(new OfferDto(Trim(sender, 64), files, text ? true : null),
+        var offer = JsonSerializer.SerializeToUtf8Bytes(new OfferDto(CleanDisplayName(sender, 64), files, text ? true : null),
                                                         new JsonSerializerOptions { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull });
         await channel.SendAsync(Prefix(Offer, offer), ct).ConfigureAwait(false);
 
@@ -109,17 +117,23 @@ public static class FileTransfer
 
     public static Task<IReadOnlyList<string>?> ReceiveAsync(SecureChannel channel,
                                                             Func<ShareOffer, CancellationToken, Task<bool>> decide,
-                                                            string folder, IProgress<double>? progress, CancellationToken ct)
-        => ReceiveAsync(channel, decide, _ => folder, progress, ct);
+                                                            string folder, IProgress<double>? progress, CancellationToken ct,
+                                                             TimeSpan? initialOfferTimeout = null, TimeSpan? frameIdleTimeout = null)
+        => ReceiveAsync(channel, decide, _ => folder, progress, ct, initialOfferTimeout, frameIdleTimeout);
 
     /// <summary>As above, with the folder chosen once the offer is known (a beamed text needn't land in Downloads).</summary>
     public static async Task<IReadOnlyList<string>?> ReceiveAsync(SecureChannel channel,
                                                                   Func<ShareOffer, CancellationToken, Task<bool>> decide,
-                                                                  Func<ShareOffer, string> folderFor, IProgress<double>? progress, CancellationToken ct)
+                                                                  Func<ShareOffer, string> folderFor, IProgress<double>? progress, CancellationToken ct,
+                                                                   TimeSpan? initialOfferTimeout = null, TimeSpan? frameIdleTimeout = null)
     {
-        var first = await channel.ReceiveAsync(ct).ConfigureAwait(false);
-        if (first.Length < 2 || first[0] != Offer) throw new InvalidDataException("Expected an offer.");
-        var offer = ParseOffer(first.AsSpan(1));
+        TimeSpan offerWait = initialOfferTimeout ?? InitialOfferTimeout;
+        TimeSpan frameWait = frameIdleTimeout ?? IdleFrameTimeout;
+        if (offerWait <= TimeSpan.Zero || frameWait <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(initialOfferTimeout), "Transfer timeouts must be positive.");
+
+        var first = await AwaitFrame(channel.ReceiveAsync(ct), offerWait, ct).ConfigureAwait(false);
+        var offer = ParseOfferFrame(first);
         string folder = folderFor(offer);
 
         // While the person decides, the sender may cancel: one read stays open for that. It is never cancelled
@@ -175,7 +189,7 @@ public static class FileTransfer
                 {
                     while (remaining > 0)
                     {
-                        var frame = await Next().ConfigureAwait(false);
+                        var frame = await AwaitFrame(Next(), frameWait, ct).ConfigureAwait(false);
                         if (IsCancellation(frame)) throw new SenderCancelledException();
                         if (frame.Length < 2 || frame[0] != Data) throw new InvalidDataException("Expected file data.");
                         int length = frame.Length - 1;
@@ -191,7 +205,7 @@ public static class FileTransfer
                 current = null;
             }
 
-            var done = await Next().ConfigureAwait(false);
+            var done = await AwaitFrame(Next(), frameWait, ct).ConfigureAwait(false);
             if (IsCancellation(done)) throw new SenderCancelledException();
             if (done.Length != 1 || done[0] != Done) throw new InvalidDataException("Expected the end of the transfer.");
             await channel.SendAsync(new[] { Received }, ct).ConfigureAwait(false);
@@ -212,7 +226,20 @@ public static class FileTransfer
     /// <summary>A read nobody waits for any more: it ends when the connection closes, and its error is no news.</summary>
     static void Forget(Task<byte[]>? read) => read?.ContinueWith(t => _ = t.Exception, TaskScheduler.Default);
 
-    static ShareOffer ParseOffer(ReadOnlySpan<byte> json)
+    /// <summary>Bounds one frame wait without relying on a started socket read honouring cancellation.</summary>
+    static async Task<byte[]> AwaitFrame(Task<byte[]> read, TimeSpan timeout, CancellationToken ct)
+    {
+        try { return await read.WaitAsync(timeout, ct).ConfigureAwait(false); }
+        catch { Forget(read); throw; }
+    }
+
+    internal static ShareOffer ParseOfferFrame(byte[] frame)
+    {
+        if (frame.Length < 2 || frame[0] != Offer) throw new InvalidDataException("Expected an offer.");
+        return ParseOffer(frame.AsSpan(1));
+    }
+
+    internal static ShareOffer ParseOffer(ReadOnlySpan<byte> json)
     {
         OfferDto? dto;
         try { dto = JsonSerializer.Deserialize<OfferDto>(json); }
@@ -222,13 +249,16 @@ public static class FileTransfer
         long total = 0;
         foreach (var f in dto.Files)
         {
-            total += f.Size;
+            try { total = checked(total + f.Size); }
+            catch (OverflowException) { throw new InvalidDataException("Offer too large."); }
             if (total > MaxTotalBytes) throw new InvalidDataException("Offer too large.");
         }
         var files = dto.Files.Select(f => new ShareFile(SafeFileName(f.Name), f.Size)).ToList();
-        string sender = Trim(dto.Sender, 64);
-        // Only one small file can be a text; anything else is saved as the files it is.
+        string sender = CleanDisplayName(dto.Sender, 64);
+        // Only one small file can be a text; anything else is saved as the files it is. A text always lands as .txt,
+        // including when Beamed text is off or the clipboard is busy: a peer must not turn copied text into a program.
         bool text = dto.Text == true && files.Count == 1 && total <= MaxTextBytes;
+        if (text) files[0] = files[0] with { Name = TextFileName(files[0].Name) };
         return new ShareOffer(sender.Length > 0 ? sender : "Someone", files, text);
     }
 
@@ -262,6 +292,41 @@ public static class FileTransfer
         }
         return name;
     }
+
+    internal static string TextFileName(string name)
+    {
+        string stem = Path.GetFileNameWithoutExtension(name);
+        if (string.IsNullOrWhiteSpace(stem)) stem = "Beamed text";
+        return SafeFileName(stem + ".txt");
+    }
+
+    /// <summary>
+    /// Files Holm must never hand to the shell's Open action. They stay saved and can still be revealed, but an
+    /// executable, script, shortcut or desktop entry could run before the person has inspected it. Checked by the
+    /// final extension so double extensions and mixed case do not bypass it.
+    /// </summary>
+    public static bool IsDangerousToOpen(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        string extension = Path.GetExtension(name.TrimEnd(' ', '.'));
+        return extension.Length > 0 && DangerousExtensions.Contains(extension);
+    }
+
+    static readonly HashSet<string> DangerousExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Windows programs, installers and shell handlers.
+        ".exe", ".com", ".bat", ".cmd", ".msi", ".msp", ".msc", ".scr", ".pif", ".cpl", ".hta",
+        ".jar", ".jnlp", ".appref-ms", ".gadget", ".application", ".appx", ".msix", ".dll", ".ocx", ".sys", ".drv",
+        ".ps1", ".psm1", ".psd1", ".psc1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".wsc", ".sct",
+        ".scf", ".shb", ".job", ".reg", ".inf", ".ins", ".isp", ".chm", ".url", ".lnk",
+        ".py", ".pyw", ".pyc", ".pl", ".pm", ".rb", ".lua", ".tcl", ".ahk", ".au3", ".php", ".phtml",
+        // Linux programs, packages, shortcuts and executable service/desktop entries.
+        ".desktop", ".sh", ".bash", ".zsh", ".ksh", ".csh", ".fish", ".run", ".bin", ".appimage",
+        ".deb", ".rpm", ".apk", ".pkg", ".snap", ".flatpak", ".service", ".socket", ".timer", ".target",
+        ".mount", ".automount", ".swap", ".path",
+        // Other common shortcut/launcher formats a received file can travel through.
+        ".webloc", ".website",
+    };
 
     /// <summary>
     /// What Windows forbids in a file name, written out instead of asked from the system this runs on: Linux and
@@ -305,9 +370,9 @@ public static class FileTransfer
         catch { return true; }
     }
 
-    static string Trim(string? text, int max)
+    internal static string CleanDisplayName(string? text, int max)
     {
-        text = new string((text ?? "").Where(c => !char.IsControl(c)).ToArray()).Trim();
+        text = new string((text ?? "").Where(c => !char.IsControl(c) && !IsDirectionMark(c)).ToArray()).Trim();
         return text.Length > max ? text[..max] : text;
     }
 

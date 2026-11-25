@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -203,7 +202,8 @@ public sealed class MediaService
     {
         try
         {
-            using var source = SKBitmap.Decode(bytes);
+            if (bytes.Length > ImageSecurity.MaxImageBytes) return default;
+            using var source = ImageSecurity.DecodeScaled(bytes, ImageSecurity.MaxCoverSide, ImageSecurity.MaxCoverPixels, 160);
             if (source == null || source.Width <= 0 || source.Height <= 0) return default;
 
             var backdropPixels = Pixels(source, CoverMath.BackdropSize, CoverMath.BackdropSize);
@@ -213,8 +213,7 @@ public sealed class MediaService
             int smallHeight = Math.Max(1, (int)Math.Round(16.0 * source.Height / source.Width));
             var (r, g, b) = CoverMath.Accent(Pixels(source, 16, smallHeight));
 
-            Bitmap art;
-            using (var stream = new MemoryStream(bytes)) art = Bitmap.DecodeToWidth(stream, 160);
+            var art = ImageSecurity.ToWriteable(source);
             return new Cover(art, Color.FromRgb(r, g, b), backdrop, CoverMath.ShadeFor(luminance));
         }
         catch { return default; }

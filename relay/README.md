@@ -13,14 +13,23 @@ free tier allows about 250 notes a day per address, which Holm outgrew (`ntfy.sh
 - Takes only Holm notes (`wnf1 …` for inboxes `wnf-…`, `hinv1 …` for invite codes `holm-inv-…`), 4 KB at most.
 - Keeps an inbox's last 300 notes for 7 days (invite cards: 20, 12 hours). An alarm deletes expired notes; an empty
   inbox is deleted entirely. `Cache: no` (presence) is passed on live and never stored.
-- Limits: 60 notes a minute per inbox, 120 a minute per address (Cloudflare's rate limiter, approximate).
-- Sees only ciphertext: notes are sealed end to end by Holm (`Friends.cs`, `FriendInvite.cs`).
+- Limits: 60 notes a minute per inbox, 120 a minute per address, 20 notes per address/topic, 20 new topics per
+  address/hour, 300 HTTP requests per address/minute and 30 WebSocket upgrades per address/minute. Cloudflare's edge
+  limiter is an additional approximate control; the Worker's own bounded counters work without it.
+- An inbox accepts at most eight followers. A ninth is refused instead of displacing an established listener.
+- Request bodies are read under a streaming byte cap; `Content-Length` is only an early rejection hint. Reads alone
+  never create a notes table, so random polling cannot leave orphaned inbox schemas behind.
+- Sees only ciphertext: notes are sealed end to end by Holm (`Friends.cs`, `FriendInvite.cs`). Inbox reads remain
+  unauthenticated for compatibility with installed `WNF1.` clients; write quotas and follower limits reduce abuse.
 
 ## Admin page
 
 `https://relay.holmnotch.ch/admin` shows anonymous counts: about how many Holms are online, active inboxes per day,
 week and month, notes per day and how much of the Free plan's daily quota is used. Each request writes one Analytics
 Engine data point (its kind and 12 hex characters of the inbox's SHA-256; no address, no note, kept 3 months).
+
+Every `/admin` response includes a restrictive Content-Security-Policy, anti-framing, nosniff and no-referrer headers.
+Failed key attempts are limited per address; key comparison hashes both values to a fixed length first.
 
 Two secrets, set once in your own terminal (`relay/`), each asks for the value:
 - `npx wrangler secret put ADMIN_KEY`: a long password of your choice; the page asks for it.
@@ -32,7 +41,7 @@ Two secrets, set once in your own terminal (`relay/`), each asks for the value:
 ```
 cd relay
 npm install
-npm test              # starts wrangler dev and checks the protocol
+npm test              # protocol, rate/body limits, admin headers and GET-only storage checks
 npm run dev           # then, in another terminal, Holm's client against it:
 $env:HOLM_RELAY_URL = "http://127.0.0.1:8787"; dotnet test Holm.Tests -c Release --filter "FullyQualifiedName~RelayWorkerTests"
 ```

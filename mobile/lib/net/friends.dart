@@ -1,12 +1,15 @@
 // Holm.Core/Sharing/Friends.cs and FriendInvite.cs in Dart: friend codes, notes sealed end to end, the inbox on
-// Holm's relay (with ntfy.sh as the fallback every Holm also follows), and short invite codes.
+// HolyNotch's and Holm's relays, and short invite codes. ntfy.sh is read only for old friend cards and old invites;
+// new invite cards are never mirrored to that public third-party server.
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'bounded_io.dart';
 import 'crypto.dart';
+import 'net_security.dart';
 import 'server.dart';
 
 /// HolyNotch's own server, where our inbox is (server.dart).
@@ -22,11 +25,11 @@ class Friend {
   String name;
   final String topic;
   final String key; // base64url SubjectPublicKeyInfo
-  final String? server; // null: ntfy.sh, as a card without a server means
+  final String? server; // null: an old card that meant ntfy.sh
 
   Friend({required this.name, required this.topic, required this.key, this.server});
 
-  String get serverUrl => server ?? legacyServer;
+  String get serverUrl => normalizeHttpsServer(server ?? legacyServer)!;
 
   Map<String, dynamic> toJson() => {'name': name, 'topic': topic, 'key': key, 'server': server};
   factory Friend.fromJson(Map<String, dynamic> j) =>
@@ -61,6 +64,130 @@ class Identity {
       Identity(j['name'] as String, j['topic'] as String, EcKey.fromPrivate(BigInt.parse(j['d'] as String, radix: 16)));
 }
 
+int _unixNow() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+/// A persisted, time-bounded set. Transport ids and authenticated note replay ids share one hard cap. Timestamps are
+/// stored in parallel (legacy settings without them are migrated conservatively for one full retention window).
+class BoundedIds {
+  static const defaultLimit = 20000;
+  static const defaultRetention = Duration(days: 7, minutes: 10); // Holm's past window plus two clock-skew allowances
+  static const _clockSkew = 300;
+  static const _fullPruneInterval = 60;
+
+  final int limit, maxLength;
+  final Duration retention;
+  int Function() _now;
+  final List<String> _values = [];
+  final List<int> _times = [];
+  int _lastPrune = 0;
+
+  BoundedIds({this.limit = defaultLimit, this.maxLength = 256, this.retention = defaultRetention, int? now})
+      : assert(limit > 0),
+        _now = _unixNow {
+    final fixed = now;
+    if (fixed != null) _now = () => fixed;
+  }
+
+  factory BoundedIds.restore(
+      {required int limit, required int maxLength, Iterable<String> values = const [], Iterable<int> times = const [], int? now}) {
+    final store = BoundedIds(limit: limit, maxLength: maxLength, now: now);
+    store.restore(values, times: times, at: now);
+    return store;
+  }
+
+  bool _valid(String value) => value.trim().isNotEmpty && value.length <= maxLength;
+
+  void restore(Iterable<String> values, {Iterable<int> times = const [], int? at}) {
+    final source = values.toList(), storedTimes = times.toList(), now = at ?? _now();
+    final last = <String, int>{};
+    for (var i = 0; i < source.length; i++) {
+      if (_valid(source[i])) last[source[i]] = i;
+    }
+    final entries = <({String value, int time, int order})>[];
+    final cutoff = now - retention.inSeconds;
+    for (var i = 0; i < source.length; i++) {
+      final value = source[i];
+      if (!_valid(value) || last[value] != i) continue;
+      var time = i < storedTimes.length ? storedTimes[i] : 0;
+      if (time <= 0 || time > now + _clockSkew) time = now; // legacy or corrupt: retain conservatively
+      if (time <= cutoff) continue;
+      entries.add((value: value, time: time, order: i));
+    }
+    entries.sort((a, b) => a.time != b.time ? a.time.compareTo(b.time) : a.order.compareTo(b.order));
+    _values
+      ..clear()
+      ..addAll([for (final e in entries) e.value]);
+    _times
+      ..clear()
+      ..addAll([for (final e in entries) e.time]);
+    _trimCount();
+    _lastPrune = now;
+  }
+
+  void _trimCount() {
+    if (_values.length > limit) _values.removeRange(0, _values.length - limit);
+    if (_times.length > limit) _times.removeRange(0, _times.length - limit);
+  }
+
+  void _removeAt(int index) {
+    _values.removeAt(index);
+    _times.removeAt(index);
+  }
+
+  void _pruneAll(int now) {
+    restore(_values, times: _times, at: now);
+  }
+
+  void _maintain(int now) {
+    if (_lastPrune == 0 || now < _lastPrune || now - _lastPrune >= _fullPruneInterval) {
+      _pruneAll(now);
+      return;
+    }
+    final cutoff = now - retention.inSeconds;
+    var removed = 0;
+    while (removed < _times.length && _times[removed] <= cutoff) {
+      removed++;
+    }
+    if (removed > 0) {
+      _values.removeRange(0, removed);
+      _times.removeRange(0, removed);
+    }
+  }
+
+  bool contains(String value) {
+    _maintain(_now());
+    return _values.contains(value);
+  }
+
+  bool remember(String? value, {int? now}) {
+    final at = now ?? _now();
+    _maintain(at);
+    if (value == null || !_valid(value) || _values.contains(value)) return false;
+    while (_values.length >= limit) {
+      _removeAt(0);
+    }
+    _values.add(value);
+    _times.add(at);
+    return true;
+  }
+
+  void clear() {
+    _values.clear();
+    _times.clear();
+    _lastPrune = 0;
+  }
+
+  List<String> toJson({int? now}) {
+    _maintain(now ?? _now());
+    return List.unmodifiable(_values);
+  }
+
+  List<int> timesToJson({int? now}) {
+    _maintain(now ?? _now());
+    return List.unmodifiable(_times);
+  }
+}
+
 final _codeInText = RegExp(r'WNF1\.[A-Za-z0-9_-]{40,2000}');
 
 /// Reads a friend code anywhere in the text; null if there is none or it is damaged.
@@ -73,13 +200,10 @@ Friend? parseFriendCode(String? text) {
     final t = card['t'] as String?, k = card['k'] as String?;
     if (t == null || k == null || !RegExp(r'^[A-Za-z0-9_-]{1,64}$').hasMatch(t)) return null;
     parseSpki(fromBase64Url(k));
-    String? server = (card['s'] as String?)?.trim();
-    if (server != null) {
-      server = server.replaceAll(RegExp(r'/+$'), '');
-      final uri = Uri.tryParse(server);
-      if (uri == null || !(uri.scheme == 'https' || uri.scheme == 'http')) return null;
-      if (server == legacyServer) server = null;
-    }
+    final suppliedServer = card['s'];
+    if (suppliedServer != null && suppliedServer is! String) return null;
+    final server = normalizeHttpsServer(suppliedServer as String?);
+    if (suppliedServer != null && server == null) return null;
     var name = ((card['n'] as String?) ?? '').runes.where((r) => r >= 0x20).map(String.fromCharCode).join().trim();
     if (name.isEmpty) name = 'Friend';
     if (name.length > 40) name = name.substring(0, 40);
@@ -110,11 +234,25 @@ class Note {
   String? get messageId => fields['I'] as String?;
   String? get requestId => fields['R'] as String?;
   String? get code => fields['C'] as String?;
+  String? get noteId => fields['J'] as String?;
   bool? get accepted => fields['A'] as bool?;
   bool get isGif => fields['G'] == true;
 }
 
 int unixNow() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+/// Freshness comes only from the sender's authenticated Sent time and our local UTC clock, never the inbox server's.
+int authenticatedNoteAge(Note note, int now) => (now - note.sent).clamp(0, 1 << 31);
+
+/// Own-device notes can cause real-time actions. A fresh server event time must never make an old sealed note live.
+bool isFreshOwnDeviceNote(Note note, int now) {
+  final age = authenticatedNoteAge(note, now);
+  return switch (note.kind) {
+    'device' => age <= 30,
+    'phone' || 'files' => age <= 60,
+    _ => true,
+  };
+}
 
 class Notes {
   static const prefix = 'wnf1 ';
@@ -124,8 +262,16 @@ class Notes {
       mine.deriveKeyFromHash(parseSpki(fromBase64Url(theirKey)), _label);
 
   /// Seals a note for [to]. [from] is the name in it: our name for friends, the device's name between our devices.
-  static String seal(Identity me, Friend to, String kind, Map<String, dynamic> fields, {String? from}) {
-    final dto = <String, dynamic>{'K': kind, 'F': from ?? me.name, 'T': unixNow(), ...fields}..removeWhere((_, v) => v == null);
+  /// The optional authenticated id is inside the sealed JSON; the wnf1 outer format and its nonce do not change.
+  static String seal(Identity me, Friend to, String kind, Map<String, dynamic> fields,
+      {String? from, bool withNoteId = true}) {
+    final dto = <String, dynamic>{
+      'K': kind,
+      'F': from ?? me.name,
+      'T': unixNow(),
+      ...fields,
+      if (withNoteId) 'J': isNoteId(fields['J'] as String?) ? fields['J'] : base64Url(randomBytes(16)),
+    }..removeWhere((_, v) => v == null);
     final plain = utf8.encode(jsonEncode(dto));
     final nonce = randomBytes(12);
     final sealed = aesGcm(true, Uint8List.fromList(_sharedKey(me.key, to.key)), nonce, Uint8List.fromList(plain), utf8.encode(to.topic));
@@ -133,6 +279,30 @@ class Notes {
     final ct = sealed.sublist(0, sealed.length - 16), tag = sealed.sublist(sealed.length - 16);
     return '$prefix${me.publicKey} ${base64Url(concat([nonce, tag, ct]))}';
   }
+
+  static bool isNoteId(String? id) {
+    if (id == null || !RegExp(r'^[A-Za-z0-9_-]{22}$').hasMatch(id)) return false;
+    try {
+      return fromBase64Url(id).length == 16;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Mirrored notes have different transport ids. New notes carry an authenticated id; old notes without one use a
+  /// hash of their canonical sealed text. Both forms are persisted by the receiver.
+  static String replayId(String text, Note note) {
+    final id = note.noteId;
+    if (id != null && isNoteId(id)) return 'note:$id';
+    // Open accepts optional base64 padding. Canonicalize both outer fields so adding '=' cannot evade the old fallback.
+    final parts = text.substring(prefix.length).split(' ');
+    final canonical = '$prefix${base64Url(fromBase64Url(parts[0]))} ${base64Url(fromBase64Url(parts[1]))}';
+    return 'hash:${base64Url(sha256(utf8.encode(canonical)))}';
+  }
+
+  /// Future clock skew is tight; the past allowance covers the relay's week of retained notes plus skew.
+  static bool isSentTimePlausible(int sent, int now) =>
+      sent >= now - (7 * 24 * 60 * 60 + 300) && sent <= now + 300;
 
   static String chatText(String text) => base64Encode(utf8.encode(text));
 
@@ -150,7 +320,10 @@ class Notes {
       final from = ((dto['F'] as String?) ?? '').runes.where((r) => r >= 0x20).take(40).map(String.fromCharCode).join().trim();
       final kind = dto['K'] as String?;
       if (kind == null) return null;
-      return (Note(kind, from, (dto['T'] as num?)?.toInt() ?? 0, dto), parts[0]);
+      final noteId = dto['J'];
+      final fields = Map<String, dynamic>.from(dto);
+      if (noteId is! String || !isNoteId(noteId)) fields.remove('J');
+      return (Note(kind, from, (dto['T'] as num?)?.toInt() ?? 0, fields), parts[0]);
     } catch (_) {
       return null;
     }
@@ -210,54 +383,89 @@ class Invite {
   }
 }
 
-/// Leaving notes in inboxes and following our own.
+/// Leaving notes in inboxes and following our own. Every request is HTTPS, HTTP redirects are refused, and the socket
+/// is pinned to a resolved public IP while TLS still verifies the original host name.
 class Inbox {
+  static const maxPollBytes = 4 * 1024 * 1024;
   static final HttpClient _http = HttpClient()
     ..userAgent = _userAgent
-    ..connectionTimeout = const Duration(seconds: 15);
+    ..connectionTimeout = const Duration(seconds: 15)
+    ..findProxy = (_) {
+      return 'DIRECT';
+    }
+    ..connectionFactory = (uri, proxyHost, proxyPort) {
+      if (proxyHost != null || proxyPort != null) throw const HttpException('Inbox proxies are not supported.');
+      return connectPublic(uri);
+    };
+
+  static Uri _endpoint(String server, String topic, [String suffix = '']) {
+    final normalized = normalizeHttpsServer(server);
+    if (normalized == null) throw const HttpException('The friend inbox URL is not allowed.');
+    return Uri.parse('$normalized/${Uri.encodeComponent(topic)}$suffix');
+  }
+
+  static String _host(String server) => Uri.tryParse(normalizeHttpsServer(server) ?? '')?.host ?? 'the server';
 
   static Future<void> post(Friend to, String note, {bool keep = true}) async {
     try {
       await _postTo(to.serverUrl, to.topic, note, keep);
     } on IOException {
       if (to.serverUrl != relayServer && to.serverUrl != holmRelayServer) rethrow;
-      await _postTo(legacyServer, to.topic, note, keep); // a Holm that follows the relay follows ntfy too
+      await _postTo(legacyServer, to.topic, note, keep); // old Holm followers still read ordinary notes there
     }
   }
 
   static Future<void> _postTo(String server, String topic, String note, bool keep) async {
     try {
-      final req = await _http.postUrl(Uri.parse('$server/${Uri.encodeComponent(topic)}'));
+      final req = await _http.postUrl(_endpoint(server, topic))..followRedirects = false;
       req.headers.contentType = ContentType('text', 'plain', charset: 'utf-8');
       if (!keep) req.headers.set('Cache', 'no');
       req.add(utf8.encode(note));
       final res = await req.close().timeout(const Duration(seconds: 20));
       await res.drain<void>();
       if (res.statusCode < 200 || res.statusCode > 299) {
-        throw HttpException('${Uri.parse(server).host} refused the note (${res.statusCode})');
+        throw HttpException('${_host(server)} refused the note (${res.statusCode})');
       }
     } on TimeoutException {
-      throw HttpException("Couldn't reach ${Uri.parse(server).host}");
+      throw HttpException("Couldn't reach ${_host(server)}");
     } on SocketException {
-      throw HttpException("Couldn't reach ${Uri.parse(server).host}");
+      throw HttpException("Couldn't reach ${_host(server)}");
     }
   }
 
   /// The JSON lines kept in an inbox since [since] (a Unix time or "12h").
   static Future<List<InboxEvent>> poll(String server, String topic, String since) async {
-    final req = await _http.getUrl(Uri.parse('$server/${Uri.encodeComponent(topic)}/json?poll=1&since=$since'));
+    final url = _endpoint(server, topic, '/json?poll=1&since=${Uri.encodeComponent(since)}');
+    final req = await _http.getUrl(url)..followRedirects = false;
     final res = await req.close().timeout(const Duration(seconds: 20));
-    final body = await res.transform(utf8.decoder).join();
-    if (res.statusCode != 200) throw HttpException('${Uri.parse(server).host} answered ${res.statusCode}');
+    final body = await readBoundedUtf8(res, maxBytes: maxPollBytes);
+    if (res.statusCode != 200) throw HttpException('${_host(server)} answered ${res.statusCode}');
     return body.split('\n').map(InboxEvent.tryParse).whereType<InboxEvent>().toList();
   }
 
   /// Follows our inbox on the relay with a WebSocket: kept notes since [since], then each new one.
-  static Future<WebSocket> follow(String topic, int? since, {String server = relayServer}) => WebSocket.connect(
-        '${server.replaceFirst('https', 'wss')}/${Uri.encodeComponent(topic)}/ws${since != null ? '?since=$since' : ''}',
-        headers: {'User-Agent': _userAgent},
-      ).timeout(const Duration(seconds: 20));
+  static Future<WebSocket> follow(String topic, int? since, {String server = relayServer}) {
+    final normalized = normalizeHttpsServer(server);
+    if (normalized == null) throw const HttpException('The friend inbox URL is not allowed.');
+    return WebSocket.connect(
+      '${normalized.replaceFirst('https://', 'wss://')}/${Uri.encodeComponent(topic)}/ws${since != null ? '?since=$since' : ''}',
+      headers: {'User-Agent': _userAgent},
+      customClient: _http,
+    ).timeout(const Duration(seconds: 20));
+  }
 
+  /// New invite cards go only to the first-party relays. In particular they are never mirrored to ntfy.sh: a public
+  /// copy of the 50-bit code's derivation makes the invite much easier to attack.
+  static Future<void> publishInvite(String topic, String card) async {
+    await _postTo(relayServer, topic, card, true);
+    try {
+      await _postTo(holmRelayServer, topic, card, true);
+    } on IOException {
+      // Holm's relay is for older Holm friends; the first-party relay is authoritative.
+    }
+  }
+
+  /// ntfy is read only for invite codes issued before mirroring stopped. New codes are fetched from the two relays.
   static Future<Friend?> fetchInvite(String code) async {
     final topic = Invite.topic(code);
     final results = await Future.wait([

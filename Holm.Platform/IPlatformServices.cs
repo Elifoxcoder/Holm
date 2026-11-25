@@ -1,3 +1,5 @@
+using System;
+
 namespace Holm.Platform;
 
 /// <summary>Everything the shared app asks of the system it runs on. One implementation per OS.</summary>
@@ -53,5 +55,5 @@ public sealed class NoPlatformServices : IPlatformServices
     public IMediaKeysPlatform MediaKeys { get; } = new NoMediaKeysPlatform();
     public ILocationPlatform Location { get; } = new NoLocationPlatform();
     public ISoundPlatform Sound { get; } = new NoSoundPlatform();
-    public IIdentityPlatform Identity { get; } = new UnixIdentityPlatform(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Holm"));
+    public IIdentityPlatform Identity { get; } = new UnixIdentityPlatform(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Holm"));
 }

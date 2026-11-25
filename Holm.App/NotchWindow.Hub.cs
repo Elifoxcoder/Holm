@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Threading;
@@ -146,6 +147,11 @@ public sealed partial class NotchWindow
         if (!_settings.Beam) return (null, "Turn on Beam in Settings to add friends");
         try { return (await _friends.InviteAsync(fresh, CancellationToken.None), null); }
         catch (IOException ex) { return (null, ex.Message); }
+        catch (Exception ex) when (ex is CryptographicException or ArgumentException)
+        {
+            Diag.Log("Couldn't make a friend invite: " + ex.Message);
+            return (null, "Your friend identity couldn't be used. Try again or add a new long friend code.");
+        }
     }
 
     /// <summary>Adds the friend behind a typed or pasted code: an invite code, or an old long friend code.</summary>
@@ -182,6 +188,11 @@ public sealed partial class NotchWindow
             }
         }
         catch (IOException ex) { return (false, ex.Message + ". Check your connection and try again."); }
+        catch (Exception ex) when (ex is CryptographicException or ArgumentException)
+        {
+            Diag.Log("Couldn't use a friend code: " + ex.Message);
+            return (false, "That friend code has an unsupported key or inbox address. Ask for a new code.");
+        }
         return (false, "That isn't a HolyNotch code. Codes look like HOLM-7KQ2X-9XF4M.");
     }
 

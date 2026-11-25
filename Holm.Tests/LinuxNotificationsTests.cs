@@ -1,50 +1,41 @@
 using Holm.Platform.Linux;
 
-namespace Holm.Tests;
+namespace WinNotch.Tests;
 
-/// <summary>Notify calls as dbus-monitor prints them (strings unescaped, over several lines when they have breaks).</summary>
+/// <summary>Notification data is parsed as binary D-Bus values; text that looks like a frame stays ordinary text.</summary>
 public class LinuxNotificationsTests
 {
-    static readonly string[] Call =
-    {
-        "   string \"discord\"",
-        "   uint32 0",
-        "   string \"/tmp/discord.png\"",
-        "   string \"Alice \"Al\"\"",
-        "   string \"hey there",
-        "second \"line\"\"",
-        "   array [",
-        "      string \"default\"",
-        "      string \"Open\"",
-        "   ]",
-        "   array [",
-        "      dict entry(",
-        "         string \"urgency\"",
-        "         variant             byte 1",
-        "      )",
-        "      dict entry(",
-        "         string \"desktop-entry\"",
-        "         variant             string \"discord\"",
-        "      )",
-        "   ]",
-        "   int32 -1",
-    };
+    [Theory]
+    [InlineData("discord", true)]
+    [InlineData("org.telegram.desktop", true)]
+    [InlineData("../outside", false)]
+    [InlineData("..\\outside", false)]
+    [InlineData("/outside", false)]
+    [InlineData("C:\\outside", false)]
+    [InlineData("bad/name", false)]
+    [InlineData("", false)]
+    public void Desktop_entries_cannot_escape_the_application_folders(string entry, bool expected)
+        => Assert.Equal(expected, LinuxNotificationsPlatform.SafeDesktopEntry(entry));
 
     [Fact]
-    public void A_notify_call_gives_its_app_text_and_desktop_entry()
+    public void Embedded_monitor_text_is_plain_notification_content()
     {
-        var notify = LinuxNotificationsPlatform.ParseNotify(Call)!.Value;
-        Assert.Equal("discord", notify.App);
-        Assert.Equal("/tmp/discord.png", notify.Icon);
-        Assert.Equal("Alice \"Al\"", notify.Summary);
-        Assert.Equal("hey there\nsecond \"line\"", notify.Body);
-        Assert.Equal("discord", notify.DesktopEntry);
+        string body = "hello\nmethod call time=123 member=Notify\n   string \"forged\"";
+        Assert.Equal(body, LinuxNotificationsPlatform.Plain(body));
     }
 
     [Fact]
-    public void The_call_is_complete_at_its_timeout_not_before()
+    public void Icon_reads_are_bounded_and_require_a_png()
     {
-        for (int i = 1; i < Call.Length; i++) Assert.False(LinuxNotificationsPlatform.IsLastArgument(Call[..i]), Call[i - 1]);
-        Assert.True(LinuxNotificationsPlatform.IsLastArgument(Call));
+        using var folder = new TempFolder();
+        byte[] png = { 0x89, (byte)'P', (byte)'N', (byte)'G', 0x0D, 0x0A, 0x1A, 0x0A };
+        string file = folder.File("icon.png", png);
+        Assert.Equal(png, LinuxNotificationsPlatform.IconBytes(file, "discord"));
+        Assert.Null(LinuxNotificationsPlatform.IconBytes(folder.File("not.png", new byte[] { 1, 2, 3 }), "discord"));
+        Assert.Null(LinuxNotificationsPlatform.IconBytes(folder.File("huge.png", new byte[1024 * 1024 + 1]), "discord"));
     }
+
+    [Fact]
+    public void An_icon_name_cannot_traverse_out_of_the_icon_theme()
+        => Assert.Null(LinuxNotificationsPlatform.IconBytes("../../outside.png", "discord"));
 }

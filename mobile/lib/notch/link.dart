@@ -66,13 +66,13 @@ class NotchLink {
   static void preview(bool on, {bool open = false}) => send({'type': 'preview', 'on': on, 'open': open});
 
   /// Asks in the notch (the app isn't open); false after a minute without an answer, or without a notch.
-  static Future<bool> ask(String sender, String summary, bool text) async {
+  static Future<bool> ask(String sender, String summary, bool text, {bool authenticated = false}) async {
     final status = await NotchLink.status();
     if (status['running'] != true) return false;
     final id = DateTime.now().microsecondsSinceEpoch.toString();
     final answer = Completer<bool>();
     _answers[id] = answer;
-    send({'type': 'holm.offer', 'id': id, 'sender': sender, 'summary': summary, 'text': text});
+    send({'type': 'holm.offer', 'id': id, 'sender': sender, 'summary': summary, 'text': text, 'authenticated': authenticated});
     return answer.future.timeout(const Duration(seconds: 60), onTimeout: () {
       _answers.remove(id);
       send({'type': 'holm.offerGone', 'id': id});

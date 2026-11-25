@@ -1,37 +1,36 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Holm.Platform;
 using Tmds.DBus.Protocol;
+using WinNotch;
 using WinNotch.Notify;
 
 namespace Holm.Platform.Linux;
 
 /// <summary>
 /// Notifications as they are sent to the desktop's notification server on the session bus (org.freedesktop.
-/// Notifications), seen through dbus-monitor, which works with both dbus-daemon and dbus-broker and needs no
-/// consent; and the numbers apps put on their launcher icons (com.canonical.Unity.LauncherEntry, used by
-/// Telegram, Signal and others). Nothing is changed or answered.
+/// Notifications), read through a binary D-Bus monitor so embedded newlines cannot forge message frames; and the
+/// numbers apps put on their launcher icons (com.canonical.Unity.LauncherEntry). Nothing is changed or answered.
 /// </summary>
 public sealed class LinuxNotificationsPlatform : INotificationsPlatform
 {
-    const int Keep = 60; // notifications remembered (the newest)
+    const int Keep = 60;
+    const int KeepLogos = 128;
+    const long MaxLogoBytes = 1024 * 1024;
+    const long MaxDesktopBytes = 64 * 1024;
+    const int MaxText = 4096;
 
-    static readonly Regex Header = new(@"^(method call|method return|signal|error) time=", RegexOptions.Compiled);
-    static readonly Regex Value = new(@"^(\s+)(string|int16|uint16|int32|uint32|int64|uint64|double|byte|boolean|variant|array \[|dict entry\(|object path|signature|struct \{|\]|\)|\}|file descriptor|unix fd)",
-                                      RegexOptions.Compiled);
     static readonly Regex Markup = new(@"<[^>]{1,200}>", RegexOptions.Compiled);
 
     readonly object _gate = new();
     readonly List<SystemNotification> _toasts = new();
     readonly Dictionary<string, string> _badges = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, byte[]> _logos = new(StringComparer.OrdinalIgnoreCase);
-    Process? _monitor;
+    IDisposable? _notificationWatch;
     IDisposable? _badgeWatch;
     uint _nextId = 1;
     bool _running;
@@ -40,7 +39,7 @@ public sealed class LinuxNotificationsPlatform : INotificationsPlatform
 
     public NotificationAccess Access { get; private set; } = NotificationAccess.Off;
 
-    public string? AccessHint => Access == NotificationAccess.Unavailable ? "dbus-monitor is missing – app badge counts only" : null;
+    public string? AccessHint => Access == NotificationAccess.Unavailable ? "Session D-Bus monitoring is unavailable – app badge counts only" : null;
 
     public void OpenAccessSettings() { }
 
@@ -48,43 +47,20 @@ public sealed class LinuxNotificationsPlatform : INotificationsPlatform
     {
         if (_running) return;
         _running = true;
-        try
-        {
-            var start = new ProcessStartInfo("dbus-monitor")
-            {
-                RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
-                StandardOutputEncoding = Encoding.UTF8,
-            };
-            start.ArgumentList.Add("--session");
-            start.ArgumentList.Add("type='method_call',interface='org.freedesktop.Notifications',member='Notify'");
-            _monitor = Process.Start(start);
-            if (_monitor == null) Access = NotificationAccess.Unavailable;
-            else
-            {
-                Access = NotificationAccess.Allowed;
-                var monitor = _monitor;
-                _ = Task.Run(() => ReadMonitor(monitor));
-                _ = Task.Run(async () => { try { await monitor.StandardError.ReadToEndAsync(); } catch { } });
-            }
-        }
-        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
-        {
-            Access = NotificationAccess.Unavailable;
-            WinNotch.Diag.Log("Notifications: dbus-monitor unavailable");
-        }
-        _badgeWatch = await WatchBadgesAsync();
+        _notificationWatch = await WatchNotificationsAsync().ConfigureAwait(false);
+        Access = _notificationWatch != null ? NotificationAccess.Allowed : NotificationAccess.Unavailable;
+        _badgeWatch = await WatchBadgesAsync().ConfigureAwait(false);
         Changed?.Invoke();
     }
 
     public void Stop()
     {
         _running = false;
-        try { if (_monitor is { HasExited: false }) _monitor.Kill(); } catch { }
-        _monitor?.Dispose();
-        _monitor = null;
+        _notificationWatch?.Dispose();
+        _notificationWatch = null;
         _badgeWatch?.Dispose();
         _badgeWatch = null;
-        lock (_gate) { _toasts.Clear(); _badges.Clear(); }
+        lock (_gate) { _toasts.Clear(); _badges.Clear(); _logos.Clear(); }
         Access = NotificationAccess.Off;
     }
 
@@ -101,80 +77,64 @@ public sealed class LinuxNotificationsPlatform : INotificationsPlatform
 
     // ───────────── notifications ─────────────
 
-    void ReadMonitor(Process monitor)
+    async Task<IDisposable?> WatchNotificationsAsync()
     {
-        var block = new List<string>();
-        bool notify = false;
         try
         {
-            string? line;
-            while ((line = monitor.StandardOutput.ReadLine()) != null)
+            var rule = new MatchRule { Type = MessageType.MethodCall, Interface = "org.freedesktop.Notifications", Member = "Notify" };
+            return await Bus.Session.MonitorAsync((error, message) =>
             {
-                if (Header.IsMatch(line))
+                using (message)
                 {
-                    if (notify) Take(block);
-                    block.Clear();
-                    notify = line.StartsWith("method call", StringComparison.Ordinal) && line.Contains("member=Notify", StringComparison.Ordinal);
-                    continue;
+                    if (!_running || error != null) return;
+                    try { Take(message.Message); }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or System.Text.DecoderFallbackException) { }
                 }
-                if (!notify) continue;
-                block.Add(line);
-                // The timeout is the call's last argument: take it now, not when the next message comes.
-                if (IsLastArgument(block))
-                {
-                    Take(block);
-                    block.Clear();
-                    notify = false;
-                }
-            }
-            if (notify) Take(block);
+            }, new[] { rule }).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException) { }
+        catch { return null; }
     }
 
-    /// <summary>Whether the block ends with Notify's timeout: an int32 at the outer level after at least six values.</summary>
-    internal static bool IsLastArgument(IReadOnlyList<string> block)
-    {
-        string last = block[^1];
-        if (!last.StartsWith("   int32 ", StringComparison.Ordinal)) return false;
-        int outer = 0;
-        foreach (string line in block)
-            if (line.Length > 3 && line.StartsWith("   ", StringComparison.Ordinal) && line[3] != ' ') outer++;
-        return outer >= 7;
-    }
+    internal readonly record struct NotificationFields(string App, string Icon, string Summary, string Body, string? DesktopEntry);
 
-    /// <summary>The values of a Notify call: app name, replaced id, icon, summary, body, actions, hints, timeout.</summary>
-    internal static (string App, string Icon, string Summary, string Body, string? DesktopEntry)? ParseNotify(IReadOnlyList<string> lines)
+    /// <summary>Reads Notify's binary signature susssasa{sv}i; string boundaries come from D-Bus, never text lines.</summary>
+    internal static NotificationFields? ReadNotify(Message message)
     {
-        var values = new List<(int Indent, string Text)>();
-        foreach (string line in lines)
+        if (message.MessageType != MessageType.MethodCall || message.SignatureAsString != "susssasa{sv}i") return null;
+        var reader = message.GetBodyReader();
+        string app = Text(reader.ReadString(), 256);
+        reader.ReadUInt32(); // replaces id
+        string icon = Text(reader.ReadString(), MaxText);
+        string summary = Text(reader.ReadString(), MaxText);
+        string body = Text(reader.ReadString(), MaxText);
+
+        ArrayEnd actions = reader.ReadArrayStart(DBusType.String);
+        int count = 0;
+        while (reader.HasNext(actions))
         {
-            var match = Value.Match(line);
-            if (match.Success) values.Add((match.Groups[1].Length, line.TrimStart()));
-            else if (values.Count > 0) values[^1] = (values[^1].Indent, values[^1].Text + "\n" + line); // a string over several lines
+            string action = reader.ReadString();
+            if (count++ < 64 && action.Length > MaxText) action = action[..MaxText];
         }
-        if (values.Count == 0) return null;
-        int outer = values.Min(v => v.Indent);
-        var top = values.Where(v => v.Indent == outer).Select(v => v.Text).ToList();
-        if (top.Count < 5) return null;
+
         string? entry = null;
-        for (int i = 0; i + 1 < values.Count; i++)
-            if (values[i].Indent > outer && Str(values[i].Text) == "desktop-entry")
-            {
-                string variant = values[i + 1].Text;
-                if (variant.StartsWith("variant", StringComparison.Ordinal)) entry = Str(variant["variant".Length..].TrimStart());
-                break;
-            }
-        return (Str(top[0]) ?? "", Str(top[2]) ?? "", Str(top[3]) ?? "", Str(top[4]) ?? "", entry);
+        var hints = reader.ReadDictionaryStart();
+        while (reader.HasNext(hints))
+        {
+            string key = reader.ReadString();
+            var value = reader.ReadVariantValue();
+            if (key == "desktop-entry" && value.Type == VariantValueType.String)
+                entry = Text(value.GetString(), 256);
+        }
+        reader.ReadInt32(); // timeout
+        return new NotificationFields(app, icon, summary, body, entry);
     }
 
-    static string? Str(string text)
-        => text.StartsWith("string \"", StringComparison.Ordinal) && text.EndsWith('"') && text.Length >= 9 ? text[8..^1] : null;
+    static string Text(string? value, int maximum) => value == null ? "" : value.Length <= maximum ? value : value[..maximum];
 
-    void Take(List<string> block)
+    void Take(Message message)
     {
-        if (ParseNotify(block) is not { } n) return;
-        string appId = n.DesktopEntry is { Length: > 0 } entry ? entry : n.App;
+        if (ReadNotify(message) is not { } n) return;
+        string appId = SafeDesktopEntry(n.DesktopEntry) ? n.DesktopEntry! : SafeAppId(n.App);
         if (appId.Length == 0) return;
         // A browser names the site in the body (Chrome: the first line, as a link): put it last, where Windows has it.
         var lines = new List<string> { Plain(n.Summary) };
@@ -187,33 +147,88 @@ public sealed class LinuxNotificationsPlatform : INotificationsPlatform
             _toasts.RemoveAll(t => t.AppId == appId && t.Lines.SequenceEqual(lines));
             _toasts.Add(new SystemNotification(_nextId++, appId, n.App, lines, DateTimeOffset.Now));
             if (_toasts.Count > Keep) _toasts.RemoveRange(0, _toasts.Count - Keep);
-            if (!_logos.ContainsKey(appId) && IconFile(n.Icon, n.DesktopEntry ?? n.App) is { } file)
-                try { _logos[appId] = File.ReadAllBytes(file); } catch (IOException) { }
+            if (!_logos.ContainsKey(appId) && IconBytes(n.Icon, SafeDesktopEntry(n.DesktopEntry) ? n.DesktopEntry! : n.App) is { } logo)
+            {
+                if (_logos.Count >= KeepLogos && _logos.Keys.FirstOrDefault() is { } old) _logos.Remove(old);
+                _logos[appId] = logo;
+            }
         }
         Changed?.Invoke();
     }
 
-    static string Plain(string text) => System.Net.WebUtility.HtmlDecode(Markup.Replace(text, ""));
+    internal static string Plain(string text) => System.Net.WebUtility.HtmlDecode(Markup.Replace(text, ""));
+
+    internal static bool SafeDesktopEntry(string? entry)
+        => !string.IsNullOrWhiteSpace(entry) && entry.Length <= 256 && !entry.Contains("..", StringComparison.Ordinal)
+            && !entry.Contains('/') && !entry.Contains('\\') && !Path.IsPathRooted(entry)
+            && entry.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.' or '@');
+
+    static string SafeAppId(string app)
+        => app.Length is > 0 and <= 256 && !app.Contains("..", StringComparison.Ordinal)
+            && !app.Any(c => char.IsControl(c) || c is '/' or '\\') ? app : "";
 
     /// <summary>The app's icon: the notification's own PNG, or the icon its desktop file names.</summary>
+    internal static byte[]? IconBytes(string icon, string desktopEntry)
+    {
+        string? file = IconFile(icon, desktopEntry);
+        return file == null ? null : ReadPng(file);
+    }
+
     static string? IconFile(string icon, string desktopEntry)
     {
-        if (icon.StartsWith("file://", StringComparison.Ordinal)) icon = Uri.UnescapeDataString(icon[7..]);
-        if (icon.StartsWith('/') && icon.EndsWith(".png", StringComparison.OrdinalIgnoreCase) && File.Exists(icon)) return icon;
+        if (icon.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!Uri.TryCreate(icon, UriKind.Absolute, out var uri) || !uri.IsFile || uri.Host.Length != 0
+                || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment)) return null;
+            icon = uri.LocalPath;
+        }
+        if (Path.IsPathRooted(icon) && icon.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) return icon;
         if (LinuxAppVolumePlatform.FindIcon(icon) is { } named) return named;
+        if (!SafeDesktopEntry(desktopEntry)) return null;
         foreach (string folder in new[] { "/usr/share/applications", "/var/lib/flatpak/exports/share/applications",
                      Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local/share/applications") })
         {
             string file = Path.Combine(folder, desktopEntry + ".desktop");
-            if (!File.Exists(file)) continue;
+            if (!RegularFile(file, MaxDesktopBytes)) continue;
             try
             {
-                string? name = File.ReadLines(file).FirstOrDefault(l => l.StartsWith("Icon=", StringComparison.Ordinal))?[5..].Trim();
-                if (name != null && LinuxAppVolumePlatform.FindIcon(name) is { } found) return found;
+                using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);
+                using var reader = new StreamReader(stream);
+                string? line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    if (!line.StartsWith("Icon=", StringComparison.Ordinal)) continue;
+                    string name = line[5..].Trim();
+                    if (LinuxAppVolumePlatform.FindIcon(name) is { } found) return found;
+                    break;
+                }
             }
-            catch (IOException) { }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { }
         }
         return null;
+    }
+
+    static byte[]? ReadPng(string path)
+    {
+        try
+        {
+            if (!path.EndsWith(".png", StringComparison.OrdinalIgnoreCase) || !RegularFile(path, MaxLogoBytes)) return null;
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            byte[] bytes = BoundedIo.ReadAllBytes(stream, MaxLogoBytes);
+            return bytes.Length >= 8 && bytes[0] == 0x89 && bytes[1] == 'P' && bytes[2] == 'N' && bytes[3] == 'G'
+                && bytes[4] == 0x0D && bytes[5] == 0x0A && bytes[6] == 0x1A && bytes[7] == 0x0A ? bytes : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { return null; }
+    }
+
+    static bool RegularFile(string path, long maximum)
+    {
+        try
+        {
+            var file = new FileInfo(path);
+            return file.Exists && file.Length <= maximum && (file.Attributes & FileAttributes.ReparsePoint) == 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { return false; }
     }
 
     // ───────────── launcher badges ─────────────

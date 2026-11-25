@@ -10,7 +10,10 @@ namespace WinNotch.Sharing;
 // HOLM-7KQ2X-9XF4M to tell a friend, type into a chat or read out. Everything comes from the code: the inbox on the
 // server where your friend card waits (sealed with a key from the code, so only someone with the code can read it)
 // and a proof your friend's request carries, so your notch knows they had your code and adds them without asking.
-// The card is kept by the server for 12 hours; a code works for anyone you give it to until then.
+// The card is kept by the server for 12 hours. New codes are single-use on inviters running this version; older
+// inviters still accept the code for everyone it was given to until it expires. The ten-character code deliberately
+// stays at 50 random bits with the v1 HKDF salt: changing either would make codes installed apps derive unusable.
+// That derivation is fast and unstretched, so the proof-attempt limiter and single-use/revocation checks matter.
 
 /// <summary>Short invite codes: their format, what they lead to, and the sealed card behind them.</summary>
 public static class FriendInvite
@@ -131,6 +134,14 @@ public sealed class OwnInvite
     public string Proof { get; set; } = "";
     /// <summary>Unix time.</summary>
     public long Expires { get; set; }
+    /// <summary>Only the first request is accepted automatically. Missing in old settings means the old multi-use behavior.</summary>
+    public bool SingleUse { get; set; }
+    /// <summary>Revoked here, or consumed by a single-use request. The server copy can remain until its expiry.</summary>
+    public bool Revoked { get; set; }
+    /// <summary>The first friend who consumed a single-use code; useful when explaining why it no longer works.</summary>
+    public string? UsedBy { get; set; }
+    /// <summary>Unix time when the code was revoked or consumed.</summary>
+    public long RevokedAt { get; set; }
 }
 
 /// <summary>A friend request we sent that hasn't been answered yet. Kept, so a late yes still makes you friends.</summary>

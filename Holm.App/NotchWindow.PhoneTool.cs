@@ -254,10 +254,7 @@ public sealed partial class NotchWindow
             string? text = await clipboard.TryGetTextAsync();
             if (string.IsNullOrWhiteSpace(text)) { ShowPeek(null, "Copy some text first", "", null); return; }
             if (Encoding.UTF8.GetByteCount(text) > FileTransfer.MaxTextBytes) { ShowPeek(null, "That text is too long", "Send it as a file", Dim); return; }
-            Directory.CreateDirectory(FolderPack.TempFolder);
-            string path = Path.Combine(FolderPack.TempFolder, "Beamed text.txt");
-            for (int n = 2; File.Exists(path); n++) path = Path.Combine(FolderPack.TempFolder, $"Beamed text ({n}).txt");
-            await File.WriteAllTextAsync(path, text, new UTF8Encoding(false));
+            string path = await PrivateStorage.WriteNewTextAsync(BeamTempFolder, "Beamed text", text);
             await BeamTextFileAsync(target, path);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException) { Diag.Log("Phone text: " + ex.GetType().Name); } // never the text

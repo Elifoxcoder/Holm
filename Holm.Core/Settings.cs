@@ -233,6 +233,8 @@ internal sealed class AppSettings
     public long? FriendsHolmRelaySince { get; set; }
     /// <summary>Ids of the last notes handled, so catching up never handles one twice.</summary>
     public List<string> FriendsSeen { get; set; } = new();
+    /// <summary>Local Unix times parallel to <see cref="FriendsSeen"/>. Missing entries are legacy/unknown until migrated.</summary>
+    public List<long> FriendsSeenTimes { get; set; } = new();
     /// <summary>
     /// This PC among the account's devices (Sharing/OwnDevices.cs): made once, never synced, so each PC and phone has
     /// its own and skips its own notes in the shared inbox.
@@ -260,7 +262,7 @@ internal sealed class AppSettings
 
     public static AppSettings Load()
     {
-        try { return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new(); }
+        try { return JsonSerializer.Deserialize<AppSettings>(PrivateStorage.ReadAllText(FilePath)) ?? new(); }
         catch { return new(); }
     }
 
@@ -270,12 +272,10 @@ internal sealed class AppSettings
         lock (SaveGate)
         {
             string path = FilePath;
-            string temp = path + ".tmp";
             try
             {
-                Directory.CreateDirectory(Diag.Folder);
-                File.WriteAllText(temp, JsonSerializer.Serialize(this));
-                File.Move(temp, path, overwrite: true);
+                PrivateStorage.WriteAllTextAtomic(path, JsonSerializer.Serialize(this));
+                PrivateStorage.SecureDataFolder(Diag.Folder);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
@@ -301,8 +301,8 @@ internal static class FormerName
             string now = Path.Combine(Diag.Folder, "settings.json");
             if (!File.Exists(now) && File.Exists(before))
             {
-                Directory.CreateDirectory(Diag.Folder);
-                File.Copy(before, now);
+                PrivateStorage.EnsureFolder(Diag.Folder);
+                PrivateStorage.WriteAllTextAtomic(now, PrivateStorage.ReadAllText(before));
             }
         }
         catch (Exception ex) { Diag.Error(ex); }
@@ -357,6 +357,8 @@ internal static class Diag
 #endif
         null;
 
+    internal static void EnsureFolder() => PrivateStorage.SecureDataFolder(Folder);
+
     public static void Log(string message)
     {
         if (Enabled) Write("diag.log", message);
@@ -366,11 +368,16 @@ internal static class Diag
 
     static void Write(string file, string message)
     {
-        try
+        lock (WriteGate)
         {
-            Directory.CreateDirectory(Folder);
-            File.AppendAllText(Path.Combine(Folder, file), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {message}{Environment.NewLine}");
+            try
+            {
+                EnsureFolder();
+                PrivateStorage.AppendAllText(Path.Combine(Folder, file), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {message}{Environment.NewLine}");
+            }
+            catch { }
         }
-        catch { }
     }
+
+    static readonly object WriteGate = new();
 }

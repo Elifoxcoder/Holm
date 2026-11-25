@@ -157,6 +157,106 @@ public class FileTransferTests
         Assert.EndsWith(".pdf", safe);
     }
 
+    [Theory]
+    [InlineData("payload.exe")]
+    [InlineData("PHOTO.JPG.EXE")]
+    [InlineData("payload.bat")]
+    [InlineData("payload.cmd")]
+    [InlineData("payload.msi")]
+    [InlineData("payload.ps1")]
+    [InlineData("payload.vbs")]
+    [InlineData("payload.js")]
+    [InlineData("payload.lnk")]
+    [InlineData("payload.url")]
+    [InlineData("payload.desktop")]
+    [InlineData("payload.sh")]
+    [InlineData("payload.appimage")]
+    [InlineData("payload.deb")]
+    [InlineData("payload.service")]
+    [InlineData("payload.py")]
+    [InlineData("payload.wsh")]
+    [InlineData("payload.scf")]
+    [InlineData("payload.msix")]
+    [InlineData("payload.exe.")]
+    [InlineData("payload.exe ")]
+    public void Executable_script_and_shortcut_names_are_never_opened(string name)
+        => Assert.True(FileTransfer.IsDangerousToOpen(name));
+
+    [Theory]
+    [InlineData("photo.jpg")]
+    [InlineData("notes.txt")]
+    [InlineData("archive.zip")]
+    [InlineData("report.pdf")]
+    [InlineData("script.exe.txt")]
+    [InlineData("README")]
+    public void Ordinary_received_files_can_still_be_opened(string name)
+        => Assert.False(FileTransfer.IsDangerousToOpen(name));
+
+    [Fact]
+    public void Offer_totals_are_checked_against_the_wire_limit()
+    {
+        string exact = $$"""{"Sender":"Lena","Files":[{"Name":"big.bin","Size":{{FileTransfer.MaxTotalBytes}}}]}""";
+        string tooBig = $$"""{"Sender":"Lena","Files":[{"Name":"big.bin","Size":{{FileTransfer.MaxTotalBytes + 1}}}]}""";
+        Assert.Equal(FileTransfer.MaxTotalBytes, FileTransfer.ParseOffer(Encoding.UTF8.GetBytes(exact)).TotalBytes);
+        Assert.Throws<InvalidDataException>(() => FileTransfer.ParseOffer(Encoding.UTF8.GetBytes(tooBig)));
+    }
+
+    [Fact]
+    public async Task A_text_offer_cannot_save_a_program_extension()
+    {
+        using var target = new TempFolder();
+        var (evil, receiver) = await Net.ChannelPairAsync();
+        var ct = Net.Timeout();
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            Sender = "Mallory", Files = new[] { new { Name = "payload.ps1", Size = 4 } }, Text = true,
+        });
+        var receive = FileTransfer.ReceiveAsync(receiver, _ => Task.FromResult(true), target.Path, null, ct);
+        await evil.SendAsync(new byte[] { 1 }.Concat(json).ToArray(), ct);
+        await evil.ReceiveAsync(ct);
+        await evil.SendAsync(new byte[] { (byte)3, 1, 2, 3, 4 }, ct);
+        await evil.SendAsync(new byte[] { (byte)4 }, ct);
+        await evil.ReceiveAsync(ct);
+
+        string saved = Assert.Single((await receive)!);
+        Assert.Equal("payload.txt", Path.GetFileName(saved));
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, File.ReadAllBytes(saved));
+    }
+
+    [Fact]
+    public async Task A_silent_peer_times_out_before_an_offer()
+    {
+        using var target = new TempFolder();
+        var streams = await Net.ChannelPairAsync();
+        await using var evil = streams.Sender;
+        await using var receiver = streams.Receiver;
+        var receive = FileTransfer.ReceiveAsync(receiver, (_, _) => Task.FromResult(true), target.Path, null, Net.Timeout(),
+                                                 initialOfferTimeout: TimeSpan.FromMilliseconds(150));
+        await Assert.ThrowsAsync<TimeoutException>(() => receive);
+    }
+
+    [Fact]
+    public async Task Accepted_data_and_the_final_done_each_have_an_idle_timeout()
+    {
+        using var target = new TempFolder();
+        var (evil, receiver) = await Net.ChannelPairAsync();
+        var ct = Net.Timeout();
+        var receive = FileTransfer.ReceiveAsync(receiver, (_, _) => Task.FromResult(true), target.Path, null, ct,
+                                                 frameIdleTimeout: TimeSpan.FromMilliseconds(150));
+        await evil.SendAsync(OfferFrame("Mallory", ("quiet.txt", 4)), ct);
+        Assert.Equal(new byte[] { 2, 1 }, await evil.ReceiveAsync(ct));
+        await Assert.ThrowsAsync<TimeoutException>(() => receive);
+        Assert.Empty(Directory.GetFiles(target.Path));
+
+        var (evil2, receiver2) = await Net.ChannelPairAsync();
+        var receive2 = FileTransfer.ReceiveAsync(receiver2, (_, _) => Task.FromResult(true), target.Path, null, ct,
+                                                  frameIdleTimeout: TimeSpan.FromMilliseconds(150));
+        await evil2.SendAsync(OfferFrame("Mallory", ("quiet.txt", 1)), ct);
+        await evil2.ReceiveAsync(ct);
+        await evil2.SendAsync(new byte[] { 3, 42 }, ct);
+        await Assert.ThrowsAsync<TimeoutException>(() => receive2); // bytes arrived, but no Done
+    }
+
     /// <summary>Progress&lt;T&gt; posts to a thread pool; this reports right away so the test can check the last value.</summary>
     sealed class SyncProgress(Action<double> report) : IProgress<double>
     {

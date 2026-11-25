@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   version:
@@ -26,14 +26,15 @@ jobs:
       island: ${{ steps.v.outputs.island }}
       new: ${{ steps.v.outputs.new }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: v
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=$(grep -oP '(?<=<Version>)[0-9]+\.[0-9]+\.[0-9]+(?=</Version>)' Holm.App/Holm.App.csproj | head -1)
           island=$(grep -oP '(?<=<ReleaseIsland>)[^<]+' Holm.App/Holm.App.csproj | head -1)
-          test -n "$version" || { echo "::error::No <Version> in Holm.App.csproj"; exit 1; }
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::Holm.App.csproj must contain a Version in x.y.z form"; exit 1; }
+          if [ -n "$island" ] && ! [[ "$island" =~ ^[[:alpha:]][[:alpha:]]*$ ]]; then echo "::error::Holm.App.csproj ReleaseIsland must be a single word"; exit 1; fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "island=$island" >> "$GITHUB_OUTPUT"
           if gh release view "v$version" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
@@ -57,9 +58,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      RID: ${{ matrix.rid }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: "10.0.x"
 
@@ -67,7 +69,7 @@ jobs:
         shell: bash
         run: |
           filter="Category!=Local&Category!=Online&Category!=Manual"
-          if [ "${{ runner.os }}" != "Windows" ]; then filter="$filter&FullyQualifiedName!~UpdateInstallerTests"; fi
+          if [ "$RUNNER_OS" != "Windows" ]; then filter="$filter&FullyQualifiedName!~UpdateInstallerTests"; fi
           dotnet test Holm.Tests -c Release --filter "$filter"
 
       - name: Build and pack
@@ -75,11 +77,11 @@ jobs:
         env:
           GIPHY_API_KEY: ${{ secrets.GIPHY_API_KEY }} # optional: without it, people paste their own key in the GIF picker
         run: |
-          dotnet publish Holm.App -c Release -r ${{ matrix.rid }} --self-contained -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:DebugType=none -o out/sc
+          dotnet publish Holm.App -c Release -r $env:RID --self-contained -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:DebugType=none -o out/sc
           New-Item -ItemType Directory -Force assets, pkg | Out-Null
           Copy-Item LICENSE pkg/LICENSE
           $about = "See https://github.com/$env:GITHUB_REPOSITORY for details. HolyNotch is a fork of Holm by ademerci (MIT License)."
-          if ("${{ matrix.rid }}" -eq "win-x64") {
+          if ($env:RID -eq "win-x64") {
             # The updater installs only an exe whose file version is exactly the release's (x.y.z.0) and named HolyNotch.
             $info = [Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path out/sc/Holm.App.exe).Path)
             $file = '{0}.{1}.{2}.{3}' -f $info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart, $info.FilePrivatePart
@@ -96,7 +98,7 @@ jobs:
             tar -czf "assets/HolyNotch-$env:VERSION-linux-x64.tar.gz" -C pkg .
           }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-${{ matrix.rid }}
           path: assets/
@@ -104,12 +106,14 @@ jobs:
   publish:
     needs: [version, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
       ISLAND: ${{ needs.version.outputs.island }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: release-*
           path: assets
@@ -133,7 +137,7 @@ jobs:
             echo "Running HolyNotch updates itself to this version within two hours (Settings › Updates)."
             echo
             # The CHANGELOG section of this version, without its heading.
-            awk -v v="$VERSION" '$0 ~ "^## "v"( |$)" {on=1; next} on && /^## / {exit} on' CHANGELOG.md
+            awk -v v="$VERSION" '$0 == "## "v || index($0, "## "v" ") == 1 {on=1; next} on && /^## / {exit} on' CHANGELOG.md
             echo
             echo "---"
             echo "HolyNotch is a fork of [Holm](https://github.com/ademerci/Holm) by ademerci (MIT License), kept in sync with it."
@@ -146,4 +150,4 @@ jobs:
         run: |
           title="HolyNotch $VERSION"
           if [ -n "$ISLAND" ]; then title="$title — $ISLAND"; fi
-          gh release create "v$VERSION" assets/* --target "${{ github.sha }}" --title "$title" --notes-file notes.md --latest
+          gh release create "v$VERSION" assets/* --target "$GITHUB_SHA" --title "$title" --notes-file notes.md --latest

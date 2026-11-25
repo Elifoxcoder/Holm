@@ -39,7 +39,7 @@ double openHeight(NotchSettings s, NotchActivity a, NotchActivity? second, [Notc
     ActivityKind.buds => 120.0,
     ActivityKind.screenshot => 118.0,
     ActivityKind.clipboard => 26 + lines(a.text, 3) + 54,
-    _ when a.isOffer => 108.0,
+    _ when a.isOffer => a.offerAuthenticated ? 108.0 : 132.0,
     _ => math.max(48.0, 26 + lines(a.text, a.hasProgress ? 1 : 3) + (a.hasProgress && !a.done ? 22 : 0)) + actions,
   };
   final h = band + content + _inset + (second != null ? 36 : 0) + (a.replyIndex != null && c.typing ? 8 : 0);
@@ -1162,8 +1162,13 @@ class _OpenBody extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        headline(a.label == 'Text' ? 'Text from ${a.title}' : '${a.title} sends you', size: 17),
-                        body(a.text, lines: 1),
+                        headline(
+                          a.offerAuthenticated
+                              ? (a.label == 'Text' ? 'Text from ${a.title}' : '${a.title} sends you')
+                              : 'Unauthenticated nearby offer',
+                          size: 17,
+                        ),
+                        body(a.offerAuthenticated ? a.text : '${a.title} · ${a.text}', lines: 2),
                       ],
                     ),
                   ),

@@ -28,7 +28,7 @@ public sealed partial class NotchWindow
 {
     const string ClipboardGlyph = "";
     const int MaxClipPixels = 40_000_000;
-    static readonly string ClipFolder = Path.Combine(Path.GetTempPath(), "Holm", "Clipboard");
+    static readonly string ClipFolder = PrivateStorage.TempFolder("Clipboard");
     const string PasteKeys = "Ctrl+V";
 
     readonly ClipboardHistory _clips = new();
@@ -160,9 +160,8 @@ public sealed partial class NotchWindow
         {
             (entry, thumb) = await Task.Run(() =>
             {
-                Directory.CreateDirectory(ClipFolder);
                 string path = Path.Combine(ClipFolder, Guid.NewGuid().ToString("N") + ".png");
-                using (var file = File.Create(path)) image.Save(file, new PngBitmapEncoderOptions());
+                using (var file = PrivateStorage.CreateFile(path)) image.Save(file, new PngBitmapEncoderOptions());
                 double scale = Math.Min(1, 72.0 / Math.Max(width, height));
                 var small = image.CreateScaledBitmap(new PixelSize(Math.Max(1, (int)(width * scale)), Math.Max(1, (int)(height * scale))));
                 return (new ClipEntry { Key = key, ImagePath = path, Width = width, Height = height, CopiedAt = DateTime.UtcNow }, small);
@@ -195,8 +194,9 @@ public sealed partial class NotchWindow
                     await clipboard.SetTextAsync(entry.Text);
                     done = true;
                 }
-                else if (entry.ImagePath != null && File.Exists(entry.ImagePath))
+                else if (entry.ImagePath != null && File.Exists(entry.ImagePath) && SendLater.IsHolmsOwn(entry.ImagePath, ClipFolder))
                 {
+                    PrivateStorage.SecureFile(entry.ImagePath);
                     using var image = new Bitmap(entry.ImagePath);
                     _restoringKey = entry.Key;
                     await clipboard.SetBitmapAsync(image);
@@ -226,7 +226,7 @@ public sealed partial class NotchWindow
 
     static void ForgetClipFiles()
     {
-        try { if (Directory.Exists(ClipFolder)) Directory.Delete(ClipFolder, recursive: true); }
+        try { if (Directory.Exists(ClipFolder) && !PrivateStorage.IsLink(ClipFolder)) Directory.Delete(ClipFolder, recursive: true); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 

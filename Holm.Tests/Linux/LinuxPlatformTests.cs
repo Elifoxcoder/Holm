@@ -146,8 +146,34 @@ public class LinuxPlatformTests : IDisposable
     [InlineData("data:image/png,plain")]
     [InlineData("file:///nowhere/at/all.jpg")]
     [InlineData("ftp://example.invalid/cover.jpg")]
+    [InlineData("http://example.com/cover.jpg")]
+    [InlineData("https://127.0.0.1/cover.jpg")]
+    [InlineData("https://user@example.com/cover.jpg")]
     public async Task A_cover_that_cannot_be_read_is_no_cover(string url)
         => Assert.Null(await LinuxMediaPlatform.LoadCoverAsync(url));
+
+    [Fact]
+    public void Linux_cover_files_must_be_regular_and_not_symlinks_or_FIFOs()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        Directory.CreateDirectory(_folder);
+        string file = Path.Combine(_folder, "regular.jpg");
+        File.WriteAllBytes(file, new byte[] { 1 });
+        Assert.True(LinuxMediaPlatform.RegularFile(file, LinuxMediaPlatform.MaxCoverBytes));
+        Assert.False(LinuxMediaPlatform.RegularFile(file, 0));
+        Assert.False(LinuxMediaPlatform.RegularFile(_folder, LinuxMediaPlatform.MaxCoverBytes));
+
+        string link = Path.Combine(_folder, "link.jpg");
+        File.CreateSymbolicLink(link, file);
+        Assert.False(LinuxMediaPlatform.RegularFile(link, LinuxMediaPlatform.MaxCoverBytes));
+
+        string fifo = Path.Combine(_folder, "pipe.jpg");
+        Assert.Equal(0, Mkfifo(fifo, 0x180)); // 0600
+        Assert.False(LinuxMediaPlatform.RegularFile(fifo, LinuxMediaPlatform.MaxCoverBytes));
+    }
+
+    [System.Runtime.InteropServices.DllImport("libc", EntryPoint = "mkfifo", SetLastError = true)]
+    static extern int Mkfifo([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string path, uint mode);
 
     [Fact]
     public async Task A_failed_cover_load_can_recover_after_a_short_cooldown()

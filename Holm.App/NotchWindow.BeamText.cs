@@ -25,7 +25,8 @@ namespace Holm.App;
 /// </summary>
 public sealed partial class NotchWindow
 {
-    static readonly string TextInbox = Path.Combine(Path.GetTempPath(), "Holm", "Text") + Path.DirectorySeparatorChar;
+    static readonly string TextInbox = PrivateStorage.TempFolder("Text") + Path.DirectorySeparatorChar;
+    static string BeamTempFolder => PrivateStorage.TempFolder("Beam");
     const string LaterGlyph = ""; // a clock
     string? _pickText; // the text file the share view was opened for
     readonly DispatcherTimer _laterTick = new(), _laterSoon = new() { Interval = TimeSpan.FromSeconds(30) };
@@ -61,10 +62,7 @@ public sealed partial class NotchWindow
         string path;
         try
         {
-            Directory.CreateDirectory(FolderPack.TempFolder);
-            path = Path.Combine(FolderPack.TempFolder, "Beamed text.txt");
-            for (int n = 2; File.Exists(path); n++) path = Path.Combine(FolderPack.TempFolder, $"Beamed text ({n}).txt");
-            File.WriteAllText(path, text, new UTF8Encoding(false));
+            path = PrivateStorage.WriteNewText(BeamTempFolder, "Beamed text", text);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -87,21 +85,26 @@ public sealed partial class NotchWindow
             return;
         }
         try { await SendFilesAsync(target, new() { path }, text: true); }
-        finally { FolderPack.Forget(new[] { path }, FolderPack.TempFolder); }
+        finally { FolderPack.Forget(new[] { path }, BeamTempFolder); }
     }
 
     void ForgetPickedText()
     {
         if (_pickText is not { } path) return;
         _pickText = null;
-        FolderPack.Forget(new[] { path }, FolderPack.TempFolder);
+        FolderPack.Forget(new[] { path }, BeamTempFolder);
     }
 
     /// <summary>A text arrived: onto the clipboard it goes, and the file is gone. Busy clipboard: it stays in Downloads.</summary>
     async Task TakeBeamedTextAsync(string path, string sender)
     {
+        if (!SendLater.IsHolmsOwn(path, TextInbox)) return;
         string text;
-        try { text = await File.ReadAllTextAsync(path, Encoding.UTF8); }
+        try
+        {
+            PrivateStorage.SecureFile(path);
+            text = await File.ReadAllTextAsync(path, Encoding.UTF8);
+        }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             Diag.Log("Beamed text: " + ex.GetType().Name);
@@ -111,14 +114,16 @@ public sealed partial class NotchWindow
         if (await TrySetClipboardAsync(text))
         {
             try { File.Delete(path); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-            EndTask("", GreenBrush, $"Text from {sender} copied", "Paste it with Ctrl+V");
+            EndTask("", GreenBrush, $"Text from {sender} copied", $"{Path.GetFileName(path)} · Paste it with Ctrl+V");
             return;
         }
-        // The clipboard is busy: keep it where they'd look for a file.
-        string kept = Path.Combine(_shell.DownloadsFolder(), Path.GetFileName(path));
+        // The clipboard is busy: keep it where they'd look for a file, always as .txt even if an older peer named
+        // its text payload like a program.
+        string kept = FileTransfer.UniquePath(_shell.DownloadsFolder(), FileTransfer.TextFileName(Path.GetFileName(path)));
         try { File.Move(path, kept, overwrite: false); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { kept = path; }
-        EndTask("", GreenBrush, $"Text from {sender} saved", "The clipboard was busy · in Downloads",
-                ("Open", () => { HideTask(); _shell.Open(kept); }),
+        EndTask("", GreenBrush, $"Saved {Path.GetFileName(kept)}",
+                $"{Path.GetFileName(kept)} · Text from {sender} · clipboard was busy · in Downloads",
+                ("Open", () => { HideTask(); OpenReceivedFile(kept); }),
                 ("Show", () => { HideTask(); _shell.Reveal(kept); }));
     }
 
@@ -160,12 +165,13 @@ public sealed partial class NotchWindow
         string own = Path.Combine(SendLater.Folder, send.Id);
         foreach (var path in paths)
         {
-            if (!SendLater.IsHolmsOwn(path, FolderPack.TempFolder)) { send.Paths.Add(path); continue; }
+            if (!SendLater.IsHolmsOwn(path, PrivateStorage.TempRootPath) && !SendLater.IsHolmsOwn(path, FolderPack.TempFolder)) { send.Paths.Add(path); continue; }
             try
             {
-                Directory.CreateDirectory(own);
+                PrivateStorage.EnsureFolder(own);
                 string moved = Path.Combine(own, Path.GetFileName(path));
                 File.Move(path, moved);
+                PrivateStorage.SecureFile(moved);
                 send.Paths.Add(moved);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Diag.Log("Send later: " + ex.GetType().Name); }
@@ -185,8 +191,11 @@ public sealed partial class NotchWindow
         _settings.Save();
         try
         {
-            string own = Path.Combine(SendLater.Folder, send.Id);
-            if (Directory.Exists(own)) Directory.Delete(own, recursive: true);
+            if (SendLater.IsSafeId(send.Id))
+            {
+                string own = Path.Combine(SendLater.Folder, send.Id);
+                if (Directory.Exists(own) && !PrivateStorage.IsLink(own)) Directory.Delete(own, recursive: true);
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         ShowLaterRows();
@@ -199,9 +208,9 @@ public sealed partial class NotchWindow
         try
         {
             if (!Directory.Exists(SendLater.Folder)) return;
-            var ids = _settings.SendQueue.Select(q => q.Id).ToHashSet();
+            var ids = _settings.SendQueue.Where(q => SendLater.IsSafeId(q.Id)).Select(q => q.Id).ToHashSet();
             foreach (var dir in Directory.GetDirectories(SendLater.Folder))
-                if (!ids.Contains(Path.GetFileName(dir))) Directory.Delete(dir, recursive: true);
+                if (!ids.Contains(Path.GetFileName(dir)) && !PrivateStorage.IsLink(dir)) Directory.Delete(dir, recursive: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }

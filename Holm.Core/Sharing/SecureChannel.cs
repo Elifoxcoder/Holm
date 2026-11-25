@@ -10,7 +10,7 @@ namespace WinNotch.Sharing;
 /// <summary>
 /// Length-prefixed AES-256-GCM frames over any stream. Each direction has its own nonce prefix and
 /// counter, so a nonce is never reused; a frame that was changed, dropped or replayed fails to decrypt.
-/// One reader and one writer may use it at the same time.
+/// One reader may use it at a time; concurrent writers are serialized into whole, ordered frames.
 /// </summary>
 public sealed class SecureChannel : IAsyncDisposable, IDisposable
 {
@@ -19,8 +19,10 @@ public sealed class SecureChannel : IAsyncDisposable, IDisposable
 
     readonly Stream _stream;
     readonly AesGcm _aes;
+    readonly SemaphoreSlim _sendLock = new(1, 1);
     readonly uint _sendDirection, _receiveDirection;
     ulong _sent, _received;
+    byte[]? _bufferedReceive;
 
     /// <param name="initiator">The side that starts the conversation (the sender); the other side passes false.</param>
     public SecureChannel(Stream stream, byte[] key, bool initiator)
@@ -34,18 +36,31 @@ public sealed class SecureChannel : IAsyncDisposable, IDisposable
     public async Task SendAsync(ReadOnlyMemory<byte> plaintext, CancellationToken ct)
     {
         if (plaintext.Length > MaxPlaintext) throw new ArgumentException("Frame too large.", nameof(plaintext));
-        var frame = new byte[4 + plaintext.Length + TagSize];
-        BinaryPrimitives.WriteInt32BigEndian(frame, plaintext.Length + TagSize);
-        _aes.Encrypt(Nonce(_sendDirection, _sent++), plaintext.Span,
-                     frame.AsSpan(4, plaintext.Length), frame.AsSpan(4 + plaintext.Length, TagSize));
-        await _stream.WriteAsync(frame, ct).ConfigureAwait(false);
-        await _stream.FlushAsync(ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            // A caller cancelled while waiting must not consume a nonce or put half a frame on the wire.
+            ct.ThrowIfCancellationRequested();
+            var frame = new byte[4 + plaintext.Length + TagSize];
+            BinaryPrimitives.WriteInt32BigEndian(frame, plaintext.Length + TagSize);
+            _aes.Encrypt(Nonce(_sendDirection, _sent++), plaintext.Span,
+                         frame.AsSpan(4, plaintext.Length), frame.AsSpan(4 + plaintext.Length, TagSize));
+            await _stream.WriteAsync(frame, ct).ConfigureAwait(false);
+            await _stream.FlushAsync(ct).ConfigureAwait(false);
+        }
+        finally { _sendLock.Release(); }
     }
 
     /// <exception cref="EndOfStreamException">The other side hung up.</exception>
     /// <exception cref="AuthenticationTagMismatchException">Wrong key, or the data was tampered with.</exception>
     public async Task<byte[]> ReceiveAsync(CancellationToken ct)
     {
+        if (_bufferedReceive is { } buffered)
+        {
+            _bufferedReceive = null;
+            return buffered;
+        }
         var header = new byte[4];
         await _stream.ReadExactlyAsync(header, ct).ConfigureAwait(false);
         int length = BinaryPrimitives.ReadInt32BigEndian(header);
@@ -56,6 +71,16 @@ public sealed class SecureChannel : IAsyncDisposable, IDisposable
         _aes.Decrypt(Nonce(_receiveDirection, _received++), data.AsSpan(0, length - TagSize),
                      data.AsSpan(length - TagSize), plaintext);
         return plaintext;
+    }
+
+    /// <summary>
+    /// Reads one frame now and returns it again on the next <see cref="ReceiveAsync"/>. Nearby uses this to validate
+    /// an Offer before taking its single transfer slot; the handler still sees the unchanged wire conversation.
+    /// </summary>
+    internal async Task<byte[]> ReceiveAndBufferAsync(CancellationToken ct)
+    {
+        _bufferedReceive ??= await ReceiveAsync(ct).ConfigureAwait(false);
+        return _bufferedReceive;
     }
 
     static byte[] Nonce(uint direction, ulong counter)
@@ -70,6 +95,7 @@ public sealed class SecureChannel : IAsyncDisposable, IDisposable
     {
         _aes.Dispose();
         _stream.Dispose();
+        _sendLock.Dispose();
     }
 
     public ValueTask DisposeAsync()

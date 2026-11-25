@@ -3,9 +3,12 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using Holm.Platform;
 using Tmds.DBus.Protocol;
+using WinNotch;
 
 namespace Holm.Platform.Linux;
 
@@ -20,10 +23,10 @@ public sealed class LinuxMediaPlatform : IMediaPlatform
     const string ObjectPath = "/org/mpris/MediaPlayer2";
     const string Root = "org.mpris.MediaPlayer2", Player = "org.mpris.MediaPlayer2.Player";
     /// <summary>A cover larger than this isn't one.</summary>
-    const int MaxCoverBytes = 8 * 1024 * 1024;
+    internal const int MaxCoverBytes = 8 * 1024 * 1024;
     static readonly TimeSpan CoverRetryDelay = TimeSpan.FromSeconds(3);
 
-    static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(6), MaxResponseContentBufferSize = MaxCoverBytes };
+    static readonly HttpClient Http = new(NetSecurity.PublicHandler()) { Timeout = TimeSpan.FromSeconds(6), MaxResponseContentBufferSize = MaxCoverBytes };
 
     readonly Bus _bus;
     readonly TimeProvider _time;
@@ -179,20 +182,57 @@ public sealed class LinuxMediaPlatform : IMediaPlatform
             if (url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
             {
                 int comma = url.IndexOf(',');
-                if (comma < 0 || !url.AsSpan(0, comma).EndsWith(";base64", StringComparison.OrdinalIgnoreCase)) return null;
-                return Convert.FromBase64String(url[(comma + 1)..]);
+                if (comma is < 6 or > 128 || !url.AsSpan(0, comma).EndsWith(";base64", StringComparison.OrdinalIgnoreCase)) return null;
+                string encoded = url[(comma + 1)..];
+                if (encoded.Length > (MaxCoverBytes + 2) / 3 * 4 || encoded.Any(char.IsWhiteSpace)) return null;
+                byte[] bytes = Convert.FromBase64String(encoded);
+                return bytes.Length <= MaxCoverBytes ? bytes : null;
             }
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return null;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Fragment)) return null;
             if (uri.IsFile)
             {
-                var file = new FileInfo(uri.LocalPath);
-                return file.Exists && file.Length <= MaxCoverBytes ? await File.ReadAllBytesAsync(file.FullName).ConfigureAwait(false) : null;
+                if (!RegularFile(uri.LocalPath, MaxCoverBytes)) return null;
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await using var stream = new FileStream(uri.LocalPath, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, useAsync: true);
+                if (!stream.CanSeek) return null;
+                return await BoundedIo.ReadAllBytesAsync(stream, MaxCoverBytes, timeout.Token).ConfigureAwait(false);
             }
-            if (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp)
-                return await Http.GetByteArrayAsync(uri).ConfigureAwait(false);
+            if (uri.Scheme == Uri.UriSchemeHttps && NetSecurity.IsPublicHost(uri.Host))
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+                using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+                using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength > MaxCoverBytes) return null;
+                await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+                return await BoundedIo.ReadAllBytesAsync(stream, MaxCoverBytes, timeout.Token).ConfigureAwait(false);
+            }
         }
         catch { }
         return null;
+    }
+
+    internal static bool RegularFile(string path, long maximum)
+    {
+        try
+        {
+            if (OperatingSystem.IsLinux() && (Lstat(path, out var status) != 0 || (status.Mode & 0xF000) != 0x8000))
+                return false; // lstat rejects symlinks, devices and FIFOs before FileStream can block on one
+            var file = new FileInfo(path);
+            var attributes = file.Attributes;
+            return file.Exists && file.Length <= maximum && (attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint | FileAttributes.Device)) == 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { return false; }
+    }
+
+    [DllImport("libc", EntryPoint = "lstat", SetLastError = true)]
+    static extern int Lstat([MarshalAs(UnmanagedType.LPUTF8Str)] string path, out StatBuffer status);
+
+    // The first fields are identical in the Linux x64/arm64 UAPI layouts; the kernel only writes its real struct.
+    [StructLayout(LayoutKind.Sequential, Size = 256)]
+    struct StatBuffer
+    {
+        public nuint Device, Inode, Links;
+        public uint Mode;
     }
 
     public void PlayPause() => Call("PlayPause");

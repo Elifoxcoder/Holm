@@ -12,6 +12,8 @@ class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        // Core stays OS-free; the platform supplies the euid check before any XDG runtime path is accepted.
+        WinNotch.PrivateStorage.RuntimeDirectoryOwner = Holm.Platform.UnixIdentityPlatform.IsOwnedByCurrentUser;
         // One Holm at a time, the same way on every system: the first one holds a lock file, a second start finds it
         // taken and quits. The lock goes with the process, also when it crashes.
         // As in the WPF app: Holm --diag writes what it does to diag.log next to the settings.
@@ -40,9 +42,9 @@ class Program
     {
         try
         {
-            Directory.CreateDirectory(WinNotch.Diag.Folder);
+            WinNotch.Diag.EnsureFolder();
             // Not the WPF app's mutex: on Windows the port runs next to an installed Holm.
-            return new FileStream(Path.Combine(WinNotch.Diag.Folder, "holm-app.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            return WinNotch.PrivateStorage.OpenOrCreatePrivate(Path.Combine(WinNotch.Diag.Folder, "holm-app.lock"), FileAccess.ReadWrite, FileShare.None);
         }
         catch (IOException) { return null; } // held by the running one
         catch (UnauthorizedAccessException) { return new MemoryStream(); } // can't tell: start rather than not at all

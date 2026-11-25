@@ -72,6 +72,8 @@ public sealed partial class NotchWindow : Window
 
     public NotchWindow(IPlatformServices platform)
     {
+        bool migratedLater = SelfTestFolder == null && SendLater.MigrateLegacyPaths(_settings.SendQueue);
+        if (migratedLater) _settings.Save();
         _platform = platform.NotchWindow;
         _media = new MediaService(platform.Media);
         _audio = platform.Audio;

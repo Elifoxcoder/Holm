@@ -19,8 +19,13 @@ class NearbyPeer {
 
 class NearbyService {
   static const discoveryPort = 47811;
+  static const maxPeers = 256;
   static const _app = 'WinNotch'; // the desktop app's former name, still what every Holm announces
   static const _lifetime = Duration(minutes: 3);
+  static final _guid = RegExp(r'^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32})$', caseSensitive: false);
+
+  /// Guid's dashed JSON form and the compact "N" form are accepted, then canonicalized to one map key.
+  static bool isPeerId(String? value) => value != null && _guid.hasMatch(value);
 
   final String id = newGuid();
   String name;
@@ -32,15 +37,21 @@ class NearbyService {
   ServerSocket? _tcp;
   Timer? _announce;
   bool _busy = false;
+  final int _discoveryPort;
+  final Duration _handshakeTimeout;
 
   /// Handles an incoming connection. Only one at a time; others are turned away meanwhile.
   Future<void> Function(SecureChannel channel)? incoming;
 
-  NearbyService(this.name);
+  NearbyService(this.name, {int? discoveryPort, Duration? handshakeTimeout})
+      : _discoveryPort = discoveryPort ?? NearbyService.discoveryPort,
+        _handshakeTimeout = handshakeTimeout ?? const Duration(seconds: 10);
 
   Stream<void> get changes => _changes.stream;
   bool get isRunning => _udp != null;
+  bool get isBusy => _busy;
   int get tcpPort => _tcp?.port ?? 0;
+  int get boundDiscoveryPort => _udp?.port ?? _discoveryPort;
 
   List<NearbyPeer> get peers {
     final now = DateTime.now();
@@ -53,7 +64,13 @@ class NearbyService {
     if (_udp != null) return;
     _tcp = await ServerSocket.bind(InternetAddress.anyIPv4, 0);
     _tcp!.listen(_accept, onError: (_) {});
-    _udp = await RawDatagramSocket.bind(InternetAddress.anyIPv4, discoveryPort, reuseAddress: true);
+    try {
+      _udp = await RawDatagramSocket.bind(InternetAddress.anyIPv4, _discoveryPort, reuseAddress: true);
+    } catch (_) {
+      await _tcp?.close();
+      _tcp = null;
+      rethrow;
+    }
     _udp!.broadcastEnabled = true;
     _udp!.listen(_onUdp, onError: (_) {});
     await _broadcast('query');
@@ -141,11 +158,19 @@ class NearbyService {
     } catch (_) {
       return;
     }
-    if (packet['App'] != _app || packet['V'] != 1 || packet['Id'] is! String) return;
-    final peerId = (packet['Id'] as String).toLowerCase();
-    if (peerId == id) return;
+    if (packet['App'] != _app || packet['V'] != 1 || packet['Id'] is! String || !isPeerId(packet['Id'] as String)) return;
+    final peerId = (packet['Id'] as String).replaceAll('-', '').toLowerCase();
+    if (peerId == id.replaceAll('-', '')) return;
+    final now = DateTime.now();
+    _prune();
+    final existing = _peers[peerId];
+    // Discovery is unauthenticated. A live device id belongs to the address that announced it; a stranger on another
+    // IP may neither take over that id nor remove it with a forged "bye".
+    if (existing != null && now.difference(existing.lastSeen) < _lifetime && existing.address.address != datagram.address.address) {
+      return;
+    }
     if (packet['T'] == 'bye') {
-      if (_peers.remove(peerId) != null) _changes.add(null);
+      if (existing != null && _peers.remove(peerId) != null) _changes.add(null);
       return;
     }
     final port = packet['Port'];
@@ -158,16 +183,23 @@ class NearbyService {
         .join()
         .trim();
     if (peerName.isEmpty) peerName = 'HolyNotch';
-    var isNew = !_peers.containsKey(peerId);
+    final isNew = existing == null;
     // The same device started again (an update, a restart): same name and address, new id. Its old entry goes now,
     // not after three minutes, or it shows twice.
     if (isNew) {
-      final before = _peers.length;
       _peers.removeWhere((id, p) => id != peerId && p.name == peerName && p.address == datagram.address);
-      if (_peers.length != before) isNew = true;
+      if (_peers.length >= maxPeers) {
+        var oldest = _peers.keys.first;
+        for (final key in _peers.keys) {
+          if (_peers[key]!.lastSeen.isBefore(_peers[oldest]!.lastSeen)) oldest = key;
+        }
+        _peers.remove(oldest);
+      }
     }
-    _peers[peerId] = NearbyPeer(peerId, peerName, datagram.address, port, DateTime.now());
-    if (isNew) _changes.add(null);
+    _peers[peerId] = NearbyPeer(peerId, peerName, datagram.address, port, now);
+    if (isNew || existing.name != peerName || existing.address != datagram.address || existing.port != port) {
+      _changes.add(null);
+    }
     if (packet['T'] == 'query') {
       try {
         udp.send(_packet('hello'), datagram.address, datagram.port);
@@ -184,15 +216,18 @@ class NearbyService {
     SecureChannel? channel;
     try {
       socket.setOption(SocketOption.tcpNoDelay, true);
-      channel = await SecureChannel.open(socket, initiator: false).timeout(const Duration(seconds: 10));
+      channel = await SecureChannel.open(socket, initiator: false).timeout(_handshakeTimeout);
       final handler = incoming;
       if (handler != null) await handler(channel);
     } catch (_) {
-      // a failed handshake or a dropped connection
+      // a failed handshake, offer timeout or dropped connection
     } finally {
-      await channel?.close();
-      socket.destroy();
+      // Release first: even a broken close must not leave every later peer turned away.
       _busy = false;
+      try {
+        await channel?.close();
+      } catch (_) {}
+      socket.destroy();
     }
   }
 

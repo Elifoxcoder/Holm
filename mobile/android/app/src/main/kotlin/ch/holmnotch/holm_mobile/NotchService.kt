@@ -55,6 +55,7 @@ class NotchService : AccessibilityService() {
     private val receivers = mutableListOf<BroadcastReceiver>()
     private val callbacks = mutableListOf<ConnectivityManager.NetworkCallback>()
     private var started = 0L
+    private var locked = false
     /** Where touches count, in drawing-window pixels. */
     private val touchRect = Rect()
     private var touch: View? = null
@@ -93,6 +94,7 @@ class NotchService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        locked = NotchBridge.isDeviceLocked(this)
         NotchBridge.service = this
         NotchBridge.mainEngine(this) // Holm keeps running in the background, for its events in the notch
         val e = NotchBridge.notchEngine(this)
@@ -128,7 +130,8 @@ class NotchService : AccessibilityService() {
         e.lifecycleChannel.appIsResumed()
         started = SystemClock.elapsedRealtime()
         watch()
-        NotchBridge.applyPopups(this, notchRunning = true)
+        updateLockState()
+        NotchBridge.applyPopups(this, notchRunning = !locked)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -137,6 +140,7 @@ class NotchService : AccessibilityService() {
             if (pkg != packageName && pkg != "com.android.systemui") foreground = pkg
         }
         if (event?.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED || event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            updateLockState()
             followShade()
         }
     }
@@ -150,7 +154,7 @@ class NotchService : AccessibilityService() {
         if (open == shadeOpen) return
         shadeOpen = open
         // Hidden, not faded: the notch draws on a surface of its own, which a parent's alpha doesn't reach.
-        root?.visibility = if (open) View.INVISIBLE else View.VISIBLE
+        root?.visibility = if (open || locked) View.INVISIBLE else View.VISIBLE
         android.util.Log.d("HolmNotch", "shade " + (if (open) "open: notch hidden" else "closed: notch back"))
         if (open) NotchBridge.toNotch(mapOf("type" to "outside")) // an open notch closes
         val (w, h, t) = lastWindow
@@ -159,12 +163,10 @@ class NotchService : AccessibilityService() {
 
     /**
      * The shade is a system window across the screen and at least a third of its height (the status bar alone is a
-     * strip, the volume panel narrow). On the lock screen the same window is the lock screen itself: there the notch
-     * stays.
+     * strip, the volume panel narrow). The lock screen is hidden separately by [updateLockState].
      */
     private fun shadeShown(): Boolean {
-        val keyguard = getSystemService(android.app.KeyguardManager::class.java)
-        if (keyguard?.isKeyguardLocked == true) return false
+        if (NotchBridge.isDeviceLocked(this)) return false
         val screen = wm.currentWindowMetrics.bounds
         val list = runCatching { windows }.getOrNull() ?: return false
         val bounds = Rect()
@@ -183,6 +185,7 @@ class NotchService : AccessibilityService() {
     private var volumeRepeat: Runnable? = null
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
+        if (NotchBridge.isDeviceLocked(this)) return false
         if (event.keyCode != KeyEvent.KEYCODE_VOLUME_UP && event.keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) return false
         if (!volumeInNotch()) return false
         val up = event.keyCode == KeyEvent.KEYCODE_VOLUME_UP
@@ -281,6 +284,7 @@ class NotchService : AccessibilityService() {
         for (r in receivers) runCatching { unregisterReceiver(r) }
         val cm = getSystemService(ConnectivityManager::class.java)
         for (c in callbacks) runCatching { cm.unregisterNetworkCallback(c) }
+        NotchBridge.clearPending()
         NotchBridge.notch = null
         NotchBridge.service = null
         NotchBridge.applyPopups(this, notchRunning = false) // Android's pop-ups come back with the notch gone
@@ -291,7 +295,35 @@ class NotchService : AccessibilityService() {
         super.onDestroy()
     }
 
+    /** Hide every private pixel and touch while the keyguard or screen-off state is active. */
+    private fun updateLockState() {
+        val nowLocked = NotchBridge.isDeviceLocked(this)
+        val changed = nowLocked != locked
+        locked = nowLocked
+        if (changed && locked) {
+            volumeRepeat?.let { NotchBridge.handler.removeCallbacks(it) }
+            volumeRepeat = null
+            keyboard(false)
+            NotchBridge.clearPending()
+            NotchBridge.toNotch(mapOf("type" to "outside"))
+        } else if (changed) {
+            NotchBridge.toNotch(mapOf("type" to "outside"))
+            NotchBridge.listener?.resendAll()
+            sendBattery(alert = false)
+            sendPrivacy()
+        }
+        // Apply even when the state did not change: the service can start while the phone is already locked.
+        root?.visibility = if (locked || shadeOpen) View.INVISIBLE else View.VISIBLE
+        setWindow(lastWindow.first, lastWindow.second, lastWindow.third)
+        if (changed) NotchBridge.applyPopups(this, notchRunning = !locked)
+    }
+
     private fun onCall(call: MethodCall, result: MethodChannel.Result) {
+        if (NotchBridge.isDeviceLocked(this) != locked) updateLockState()
+        if (locked && call.method in NotchBridge.lockedNotchMethods) {
+            result.error("device_locked", "Unlock the device before using HolyNotch", null)
+            return
+        }
         when (call.method) {
             "ready" -> {
                 NotchBridge.notch = MethodChannel(engine!!.dartExecutor.binaryMessenger, "holm/notch").also {
@@ -339,7 +371,7 @@ class NotchService : AccessibilityService() {
                 result.success(null)
             }
             "shade" -> {
-                performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
+                if (!NotchBridge.isDeviceLocked(this)) performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
                 result.success(null)
             }
             "reply" -> result.success(
@@ -357,15 +389,15 @@ class NotchService : AccessibilityService() {
             }
             "muteCall" -> {
                 val am = getSystemService(AudioManager::class.java)
-                am.isMicrophoneMute = !am.isMicrophoneMute
-                result.success(am.isMicrophoneMute)
+                if (!NotchBridge.isDeviceLocked(this)) am.isMicrophoneMute = !am.isMicrophoneMute
+                result.success(if (NotchBridge.isDeviceLocked(this)) false else am.isMicrophoneMute)
             }
             "keyboard" -> {
-                keyboard(call.arguments == true)
+                if (!NotchBridge.isDeviceLocked(this)) keyboard(call.arguments == true)
                 result.success(null)
             }
             "gesture" -> {
-                gesture(call.arguments as? String)
+                if (!NotchBridge.isDeviceLocked(this)) gesture(call.arguments as? String)
                 result.success(null)
             }
             "phoneStatus" -> {
@@ -427,6 +459,7 @@ class NotchService : AccessibilityService() {
 
     /** What the overview shows besides the time: the next alarm and the next event (if Holm may read the calendar). */
     private fun overview(): Map<String, Any?> {
+        if (NotchBridge.isDeviceLocked(this)) return mapOf("alarm" to null, "event" to null)
         val alarm = getSystemService(AlarmManager::class.java).nextAlarmClock?.triggerTime
         var event: Map<String, Any?>? = null
         if (checkSelfPermission(Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED) {
@@ -443,6 +476,7 @@ class NotchService : AccessibilityService() {
                 )?.use { c -> if (c.moveToFirst()) event = mapOf("title" to c.getString(0), "begin" to c.getLong(1)) }
             }
         }
+        if (NotchBridge.isDeviceLocked(this)) return mapOf("alarm" to null, "event" to null)
         return mapOf("alarm" to alarm, "event" to event)
     }
 
@@ -458,7 +492,7 @@ class NotchService : AccessibilityService() {
         }
         // Without a rect (an older notch engine), the touch window covers the drawing window.
         val area = if (touchRect.isEmpty) Rect(0, 0, width, height) else touchRect
-        val on = touchable && !shadeOpen && w > 0 && !area.isEmpty
+        val on = touchable && !locked && !shadeOpen && w > 0 && !area.isEmpty
         val t = touch ?: return
         var flags = touchParams.flags
         flags = if (on) flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv() else flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
@@ -483,6 +517,7 @@ class NotchService : AccessibilityService() {
         val v = object : View(this) {
             @android.annotation.SuppressLint("ClickableViewAccessibility")
             override fun onTouchEvent(ev: MotionEvent): Boolean {
+                if (NotchBridge.isDeviceLocked(this@NotchService)) return false
                 if (ev.actionMasked == MotionEvent.ACTION_OUTSIDE) {
                     NotchBridge.toNotch(mapOf("type" to "outside"))
                     return false
@@ -516,6 +551,7 @@ class NotchService : AccessibilityService() {
     private fun drawLeft(): Int = (wm.currentWindowMetrics.bounds.width() - params.width) / 2
 
     private fun send(intent: PendingIntent) {
+        if (NotchBridge.isDeviceLocked(this)) return
         // The service is bound by the system: it may start the app the notification belongs to.
         val options = ActivityOptions.makeBasic()
             .setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
@@ -523,6 +559,7 @@ class NotchService : AccessibilityService() {
     }
 
     private fun openApp(page: String?) {
+        if (NotchBridge.isDeviceLocked(this)) return
         val intent = Intent(this, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         if (page != null) {
@@ -538,6 +575,11 @@ class NotchService : AccessibilityService() {
     private val settling get() = SystemClock.elapsedRealtime() - started < 2500
 
     private fun watch() {
+        receive(IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }) { updateLockState() }
         receive(IntentFilter().apply {
             addAction(Intent.ACTION_BATTERY_CHANGED)
             addAction(Intent.ACTION_POWER_CONNECTED)
@@ -609,6 +651,7 @@ class NotchService : AccessibilityService() {
     }
 
     private fun sendPrivacy() {
+        if (NotchBridge.isDeviceLocked(this)) return
         // The camera Holm's own torch uses doesn't count.
         val camera = cameraInUse.any { it != torchCamera || !torchOn }
         val app = foreground?.let { pkg ->
@@ -622,6 +665,7 @@ class NotchService : AccessibilityService() {
         val observer = object : ContentObserver(Handler(mainLooper)) {
             private var last: Uri? = null
             override fun onChange(selfChange: Boolean, uri: Uri?) {
+                if (NotchBridge.isDeviceLocked(this@NotchService)) return
                 if (checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) != PackageManager.PERMISSION_GRANTED) return
                 runCatching {
                     contentResolver.query(

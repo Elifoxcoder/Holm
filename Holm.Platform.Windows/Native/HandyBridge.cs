@@ -3,10 +3,12 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32;
+using Microsoft.Win32.SafeHandles;
 
 namespace WinNotch;
 
@@ -23,6 +25,7 @@ internal sealed partial class HandyBridge : IDisposable
     internal const string OverlayClass = "Tauri Window", OverlayTitle = "Recording";
     internal const string LatestReleaseUrl = "https://api.github.com/repos/cjpais/Handy/releases/latest";
     const string DownloadPrefix = "https://github.com/cjpais/Handy/releases/download/";
+    static readonly Guid WinTrustVerifyAction = new("00AAC56B-CD44-11D0-8CC2-00C04FC295EE");
     internal const long MaxInstallerBytes = 200L * 1024 * 1024;
     const int MaxMetadataBytes = 1024 * 1024;
 
@@ -35,6 +38,25 @@ internal sealed partial class HandyBridge : IDisposable
     [DllImport("user32.dll", EntryPoint = "GetClassNameW", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hwnd, char[] name, int max);
     [DllImport("user32.dll", EntryPoint = "GetWindowTextW", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd, char[] text, int max);
     [DllImport("user32.dll", EntryPoint = "FindWindowExW", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string? cls, string? title);
+    [DllImport("wintrust.dll", ExactSpelling = true)] static extern int WinVerifyTrust(IntPtr hwnd, ref Guid action, ref WINTRUST_DATA data);
+
+    [StructLayout(LayoutKind.Sequential)] struct WINTRUST_FILE_INFO
+    {
+        public uint cbStruct;
+        public IntPtr pcwszFilePath, hFile, pgKnownSubject;
+    }
+
+    [StructLayout(LayoutKind.Sequential)] struct WINTRUST_DATA
+    {
+        public uint cbStruct;
+        public IntPtr pPolicyCallbackData, pSIPClientData;
+        public uint dwUIChoice, fdwRevocationChecks, dwUnionChoice;
+        public IntPtr pFile;
+        public uint dwStateAction;
+        public IntPtr hWVTStateData, pwszURLReference;
+        public uint dwProvFlags, dwUIContext;
+        public IntPtr pSignatureSettings;
+    }
 
     readonly WinEventProc _proc; // kept alive while the hooks are in
     /// <summary>The UI thread's loop (the WPF app: its Dispatcher, see HandyBridge.Wpf.cs).</summary>
@@ -197,8 +219,8 @@ internal sealed partial class HandyBridge : IDisposable
 
     static string Unquote(string? value) => (value ?? "").Trim().Trim('"').Trim();
 
-    /// <summary>The Windows x64 installer of Handy's latest release, or null.</summary>
-    public static async Task<(string Url, string? Sha256)?> FindInstallerUrlAsync(HttpClient http, CancellationToken ct)
+    /// <summary>The Windows x64 installer of Handy's latest release, with the SHA-256 GitHub publishes for it, or null.</summary>
+    public static async Task<(string Url, string Sha256)?> FindInstallerUrlAsync(HttpClient http, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(30));
@@ -209,8 +231,12 @@ internal sealed partial class HandyBridge : IDisposable
         using var metadata = new MemoryStream();
         await CopyBoundedAsync(stream, metadata, MaxMetadataBytes, timeout.Token).ConfigureAwait(false);
         string json = System.Text.Encoding.UTF8.GetString(metadata.GetBuffer(), 0, (int)metadata.Length);
-        return PickInstaller(json) is { } url ? (url, PickDigest(json, url)) : null;
+        return PickInstallerRelease(json);
     }
+
+    /// <summary>An installer is usable only when its trusted URL and a valid release digest arrive together.</summary>
+    internal static (string Url, string Sha256)? PickInstallerRelease(string releaseJson)
+        => PickInstaller(releaseJson) is { } url && PickDigest(releaseJson, url) is { } sha256 ? (url, sha256) : null;
 
     /// <summary>The download URL of the one "_x64-setup.exe" asset, only if it is an https download from Handy's own releases.</summary>
     internal static string? PickInstaller(string releaseJson)
@@ -234,12 +260,12 @@ internal sealed partial class HandyBridge : IDisposable
         try
         {
             using var document = JsonDocument.Parse(releaseJson);
-            if (!document.RootElement.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array) return null;
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array) return null;
             string? digest = assets.EnumerateArray().Where(a => a.ValueKind == JsonValueKind.Object && Text(a, "browser_download_url") == url)
                                    .Select(a => Text(a, "digest")).FirstOrDefault();
-            if (digest == null || !digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)) return null;
-            string hex = digest[7..].ToLowerInvariant();
-            return hex.Length == 64 && hex.All(Uri.IsHexDigit) ? hex : null;
+            return digest != null && digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)
+                ? NormalizeSha256(digest[7..]) : null;
         }
         catch (JsonException) { return null; }
     }
@@ -249,13 +275,14 @@ internal sealed partial class HandyBridge : IDisposable
         && uri.Host == "github.com" && uri.IsDefaultPort && uri.AbsoluteUri.StartsWith(DownloadPrefix, StringComparison.Ordinal)
         && uri.AbsolutePath.EndsWith("_x64-setup.exe", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Downloads the installer to a fresh folder under %TEMP%\Holm\handy and returns its path. Runs nothing.</summary>
-    /// <param name="sha256">The digest GitHub lists for it: a download that doesn't match is deleted and refused.</param>
-    public static async Task<string> DownloadInstallerAsync(HttpClient http, string url, string? sha256, CancellationToken ct)
+    /// <summary>Downloads the installer to Holm's private temp folder and returns its path. Runs nothing.</summary>
+    /// <param name="sha256">The digest GitHub lists for it. Missing, malformed or mismatched bytes are refused.</param>
+    public static async Task<string> DownloadInstallerAsync(HttpClient http, string url, string sha256, CancellationToken ct)
     {
+        if (!TryNormalizeSha256(sha256, out string expected)) throw new InvalidDataException("Handy's release has no valid SHA-256 digest.");
         if (!IsTrustedDownload(url)) throw new InvalidDataException("That is not a Handy release download.");
-        string folder = Path.Combine(Path.GetTempPath(), "Holm", "handy", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(folder);
+        string folder = Path.Combine(PrivateStorage.TempFolder("handy"), Guid.NewGuid().ToString("N"));
+        PrivateStorage.EnsureFolder(folder);
         string path = Path.Combine(folder, "Handy-x64-setup.exe");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromMinutes(15));
@@ -266,15 +293,10 @@ internal sealed partial class HandyBridge : IDisposable
             response.EnsureSuccessStatusCode();
             if (response.Content.Headers.ContentLength > MaxInstallerBytes) throw new InvalidDataException("The Handy installer is too large.");
             await using (var input = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false))
-            await using (var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, true))
+            await using (var output = PrivateStorage.CreateFile(path, useAsync: true, bufferSize: 64 * 1024))
                 if (await CopyBoundedAsync(input, output, MaxInstallerBytes, timeout.Token).ConfigureAwait(false) == 0)
                     throw new InvalidDataException("The Handy installer download was empty.");
-            if (sha256 != null)
-            {
-                await using var written = File.OpenRead(path);
-                string actual = Convert.ToHexString(await System.Security.Cryptography.SHA256.HashDataAsync(written, timeout.Token).ConfigureAwait(false)).ToLowerInvariant();
-                if (actual != sha256) throw new InvalidDataException("The Handy installer doesn't match its release.");
-            }
+            await VerifyInstallerAsync(path, expected, timeout.Token).ConfigureAwait(false);
             return path;
         }
         catch
@@ -283,6 +305,81 @@ internal sealed partial class HandyBridge : IDisposable
             throw;
         }
     }
+
+    internal static bool TryNormalizeSha256(string? value, out string digest)
+    {
+        digest = "";
+        string text = value?.Trim() ?? "";
+        if (text.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)) text = text[7..];
+        if (text.Length != 64 || !text.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F')) return false;
+        digest = text.ToLowerInvariant();
+        return true;
+    }
+
+    static string? NormalizeSha256(string value) => TryNormalizeSha256(value, out string digest) ? digest : null;
+
+    /// <summary>Rechecks the downloaded bytes immediately before Holm hands them to the installer.</summary>
+    public static async Task VerifyInstallerAsync(string path, string sha256, CancellationToken ct)
+    {
+        if (!TryNormalizeSha256(sha256, out string expected)) throw new InvalidDataException("Handy's release has no valid SHA-256 digest.");
+        // Hash and signature-check the same opened inode while writes are denied.
+        await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        string actual = Convert.ToHexString(await SHA256.HashDataAsync(file, ct).ConfigureAwait(false)).ToLowerInvariant();
+        if (actual != expected) throw new InvalidDataException("The Handy installer doesn't match its release.");
+        // A bad signature is never launched. An unsigned release is still pinned by GitHub's mandatory SHA-256.
+        if (VerifyAuthenticode(file.SafeFileHandle) == HandySignature.Invalid)
+            throw new InvalidDataException("The Handy installer's signature is not valid.");
+    }
+
+    internal static HandySignature VerifyAuthenticode(string path)
+    {
+        using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        return VerifyAuthenticode(file.SafeFileHandle);
+    }
+
+    static HandySignature VerifyAuthenticode(SafeFileHandle file)
+    {
+        IntPtr filePointer = IntPtr.Zero;
+        Guid action = WinTrustVerifyAction;
+        var data = new WINTRUST_DATA();
+        try
+        {
+            var info = new WINTRUST_FILE_INFO
+            {
+                cbStruct = (uint)Marshal.SizeOf<WINTRUST_FILE_INFO>(),
+                hFile = file.DangerousGetHandle(),
+            };
+            filePointer = Marshal.AllocHGlobal(Marshal.SizeOf<WINTRUST_FILE_INFO>());
+            Marshal.StructureToPtr(info, filePointer, false);
+            data = new WINTRUST_DATA
+            {
+                cbStruct = (uint)Marshal.SizeOf<WINTRUST_DATA>(),
+                dwUIChoice = 2, // WTD_UI_NONE
+                fdwRevocationChecks = 0, // WTD_REVOKE_NONE: installation must also work offline
+                dwUnionChoice = 1, // WTD_CHOICE_FILE
+                pFile = filePointer,
+                dwUIContext = 1, // WTD_UICONTEXT_EXECUTE
+            };
+            int result = WinVerifyTrust(IntPtr.Zero, ref action, ref data);
+            const int TrustNoSignature = unchecked((int)0x800B0100);
+            return result == 0 ? HandySignature.Valid : result == TrustNoSignature ? HandySignature.Unsigned : HandySignature.Invalid;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            return HandySignature.Invalid;
+        }
+        finally
+        {
+            if (data.hWVTStateData != IntPtr.Zero)
+            {
+                data.dwStateAction = 1; // WTD_STATEACTION_CLOSE
+                try { WinVerifyTrust(IntPtr.Zero, ref action, ref data); } catch { }
+            }
+            if (filePointer != IntPtr.Zero) Marshal.FreeHGlobal(filePointer);
+        }
+    }
+
+    internal enum HandySignature { Valid, Unsigned, Invalid }
 
     // Same request shape as UpdateService's (its helpers are private there): GitHub refuses requests without a User-Agent.
     static HttpRequestMessage Request(string url)

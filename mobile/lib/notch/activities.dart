@@ -38,6 +38,7 @@ class NotchActivity {
   DateTime? until;
 
   String? title, text, label, package, notificationKey, offerId, page;
+  bool offerAuthenticated = false;
   /// The notification's own buttons: their index in it and their title (a reply's not among them, see [replyIndex]).
   List<(int, String)> actions = const [];
   /// The notification's reply button, which asks for text: answered right in the notch.
@@ -658,7 +659,8 @@ class NotchController extends ChangeNotifier {
           ..offerId = id
           ..title = e['sender'] as String?
           ..text = e['summary'] as String?
-          ..label = e['text'] == true ? 'Text' : 'Files';
+          ..label = e['text'] == true ? 'Text' : 'Files'
+          ..offerAuthenticated = e['authenticated'] == true;
         _focus = 'offer:$id';
         expanded = true;
         notifyListeners();

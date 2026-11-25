@@ -428,7 +428,7 @@ internal sealed class AccountService : IDisposable
 
     static AccountFile Load(string path)
     {
-        try { return File.Exists(path) ? JsonSerializer.Deserialize<AccountFile>(File.ReadAllText(path), AccountJson.Options) ?? new() : new(); }
+        try { return File.Exists(path) ? JsonSerializer.Deserialize<AccountFile>(PrivateStorage.ReadAllText(path), AccountJson.Options) ?? new() : new(); }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
             Diag.Log("Account file unreadable, signed out: " + ex.Message);
@@ -441,10 +441,7 @@ internal sealed class AccountService : IDisposable
         if (AppSettings.ReadOnly || _file.Uid == null) return;
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-            string temp = _path + ".tmp";
-            File.WriteAllText(temp, JsonSerializer.Serialize(_file, AccountJson.Options));
-            File.Move(temp, _path, overwrite: true);
+            PrivateStorage.WriteAllTextAtomic(_path, JsonSerializer.Serialize(_file, AccountJson.Options));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Diag.Log("Couldn't save the account: " + ex.Message); }
     }

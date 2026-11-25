@@ -14,6 +14,12 @@ const _chunk = 64 * 1024;
 const maxFiles = 1000;
 const maxTotalBytes = 100 * 1024 * 1024 * 1024;
 const maxTextBytes = 1024 * 1024;
+const initialOfferTimeout = Duration(seconds: 20);
+const offerDecisionTimeout = Duration(seconds: 60);
+const idleFrameTimeout = Duration(seconds: 45);
+const transferAnswerTimeout = Duration(seconds: 75);
+const transferConfirmationTimeout = Duration(seconds: 30);
+const _frameWriteTimeout = Duration(seconds: 15);
 
 class ShareFile {
   final String name;
@@ -25,8 +31,33 @@ class ShareOffer {
   final String sender;
   final List<ShareFile> files;
   final bool isText;
-  const ShareOffer(this.sender, this.files, this.isText);
+  /// True only for an offer that arrived through a note sealed by our own account identity. Nearby ECDH encrypts the
+  /// connection but has no account authentication or SAS, so those offers are always false.
+  final bool authenticated;
+  final String? senderDeviceId;
+  const ShareOffer(this.sender, this.files, this.isText, {this.authenticated = false, this.senderDeviceId});
   int get totalBytes => files.fold(0, (s, f) => s + f.size);
+}
+
+String formatTransferBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  var value = bytes / 1024;
+  var unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value = (value ~/ 1024).toDouble();
+    unit++;
+  }
+  return '${value.toStringAsFixed(value >= 10 || unit == 0 ? 0 : 1)} ${units[unit]}';
+}
+
+String offerSummary(ShareOffer offer) {
+  if (offer.isText) return 'Text';
+  if (offer.files.length <= 3) {
+    return offer.files.map((f) => '${f.name} · ${formatTransferBytes(f.size)}').join('\n');
+  }
+  final first = offer.files.take(3).map((f) => '${f.name} · ${formatTransferBytes(f.size)}').join('\n');
+  return '$first\n+ ${offer.files.length - 3} more · ${formatTransferBytes(offer.totalBytes)} total';
 }
 
 /// Something to send: a file on disk, or bytes in memory (a beamed text).
@@ -81,11 +112,17 @@ String uniquePath(String folder, String name) {
 
 /// Offers the items and sends them if the receiver accepts. True when accepted and confirmed.
 Future<bool> sendTransfer(SecureChannel channel, String sender, List<Outgoing> items,
-    {bool text = false, void Function(double)? progress}) async {
+    {bool text = false,
+    void Function(double)? progress,
+    Duration answerTimeout = transferAnswerTimeout,
+    Duration confirmationTimeout = transferConfirmationTimeout}) async {
   if (items.isEmpty || items.length > maxFiles) throw ArgumentError('Send between 1 and 1000 files.');
   final sizes = [for (final i in items) i.size];
-  final total = sizes.fold<int>(0, (a, b) => a + b);
-  if (total > maxTotalBytes) throw const FileSystemException("That's more than 100 GB.");
+  var total = 0;
+  for (final size in sizes) {
+    if (size < 0 || size > maxTotalBytes - total) throw const FileSystemException("That's more than 100 GB.");
+    total += size; // check the headroom first: never add a hostile size and hope it does not wrap
+  }
   final offer = <String, Object>{
     'Sender': _trim(sender, 64),
     'Files': [for (var i = 0; i < items.length; i++) {'Name': items[i].name, 'Size': sizes[i]}],
@@ -93,7 +130,12 @@ Future<bool> sendTransfer(SecureChannel channel, String sender, List<Outgoing> i
   };
   await channel.send([_offer, ...utf8.encode(jsonEncode(offer))]);
 
-  final answer = await channel.receive();
+  final List<int> answer;
+  try {
+    answer = await channel.receive().timeout(answerTimeout);
+  } on TimeoutException {
+    throw const FormatException("The receiver didn't answer.");
+  }
   if (answer.length != 2 || answer[0] != _answer) throw const FormatException('Unexpected answer.');
   if (answer[1] != 1) return false;
 
@@ -130,7 +172,7 @@ Future<bool> sendTransfer(SecureChannel channel, String sender, List<Outgoing> i
   // Never "Sending…" forever: a confirmation lost on the way (or a receiver gone) ends it after half a minute.
   final List<int> confirmation;
   try {
-    confirmation = await channel.receive().timeout(const Duration(seconds: 30));
+    confirmation = await channel.receive().timeout(confirmationTimeout);
   } on TimeoutException {
     throw const FormatException("The receiver didn't confirm.");
   }
@@ -153,9 +195,10 @@ ShareOffer _parseOffer(List<int> json) {
   var total = 0;
   for (final f in list) {
     if (f is! Map || f['Size'] is! int || (f['Size'] as int) < 0) throw const FormatException('Bad file size.');
-    total += f['Size'] as int;
-    if (total > maxTotalBytes) throw const FormatException('Offer too large.');
-    files.add(ShareFile(safeFileName(f['Name'] as String?), f['Size'] as int));
+    final size = f['Size'] as int;
+    if (size > maxTotalBytes - total) throw const FormatException('Offer too large.');
+    total += size;
+    files.add(ShareFile(safeFileName(f['Name'] as String?), size));
   }
   final sender = _trim(dto['Sender'] as String?, 64);
   final text = dto['Text'] == true && files.length == 1 && total <= maxTextBytes;
@@ -171,15 +214,30 @@ class Received {
 }
 
 /// Reads the offer, asks [decide], and on a yes saves the files into [folder] (a text stays in memory).
-/// Null when declined.
+/// Null when declined. The nearby socket's 10-second ECDH handshake plus the 20-second initial-offer limit bounds the
+/// wait for an offer to 30 seconds; the decision then has at most 60 seconds, and every data frame has an idle deadline.
 Future<Received?> receiveTransfer(SecureChannel channel, Future<bool> Function(ShareOffer) decide, String folder,
-    {void Function(ShareOffer, double)? progress}) async {
-  final first = await channel.receive();
+    {void Function(ShareOffer, double)? progress,
+    Duration offerTimeout = initialOfferTimeout,
+    Duration decisionTimeout = offerDecisionTimeout,
+    Duration idleTimeout = idleFrameTimeout}) async {
+  Future<Uint8List> frame() => channel.receive().timeout(idleTimeout);
+  final first = await channel.receive().timeout(offerTimeout);
   if (first.length < 2 || first[0] != _offer) throw const FormatException('Expected an offer.');
   final offer = _parseOffer(first.sublist(1));
 
-  final accept = await decide(offer);
-  await channel.send([_answer, accept ? 1 : 0]);
+  final bool accept;
+  try {
+    accept = await decide(offer).timeout(decisionTimeout);
+  } on TimeoutException {
+    try {
+      await channel.send([_answer, 0]).timeout(_frameWriteTimeout);
+    } catch (_) {
+      // The peer may already be gone; either way this receive is over and the nearby slot can be released.
+    }
+    return null;
+  }
+  await channel.send([_answer, accept ? 1 : 0]).timeout(_frameWriteTimeout);
   if (!accept) return null;
 
   final saved = <String>[];
@@ -199,12 +257,12 @@ Future<Received?> receiveTransfer(SecureChannel channel, Future<bool> Function(S
       }
       try {
         while (remaining > 0) {
-          final frame = await channel.receive();
-          if (frame.length == 1 && frame[0] == _cancelled) throw SenderCancelled();
-          if (frame.length < 2 || frame[0] != _data) throw const FormatException('Expected file data.');
-          final length = frame.length - 1;
+          final data = await frame();
+          if (data.length == 1 && data[0] == _cancelled) throw SenderCancelled();
+          if (data.length < 2 || data[0] != _data) throw const FormatException('Expected file data.');
+          final length = data.length - 1;
           if (length > remaining) throw const FormatException('More data than offered.');
-          final chunk = Uint8List.sublistView(frame, 1);
+          final chunk = Uint8List.sublistView(data, 1);
           if (out != null) {
             out.add(chunk);
           } else {
@@ -220,10 +278,10 @@ Future<Received?> receiveTransfer(SecureChannel channel, Future<bool> Function(S
       if (current != null) saved.add(current);
       current = null;
     }
-    final done = await channel.receive();
+    final done = await frame();
     if (done.length == 1 && done[0] == _cancelled) throw SenderCancelled();
     if (done.length != 1 || done[0] != _done) throw const FormatException('Expected the end of the transfer.');
-    await channel.send([_received]);
+    await channel.send([_received]).timeout(_frameWriteTimeout);
     progress?.call(offer, 1);
     return Received(offer, saved, offer.isText ? utf8.decode(textBytes.takeBytes(), allowMalformed: true) : null);
   } catch (_) {

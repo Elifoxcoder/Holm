@@ -51,9 +51,9 @@ internal sealed class AddFriendPage : HubView
         _copyMessage = HubTheme.Action("Copy invite message");
         _copy.Margin = _copyMessage.Margin = new Thickness(0, 0, 8, 8);
         _copyMessage.Click += (_, _) => _ = CopyAsync(_invite == null ? null : Message(_invite.Code), "Message copied: paste it into any chat");
-        _newCode = HubTheme.Action("New code");
+        _newCode = HubTheme.Action("Revoke and renew");
         _newCode.Margin = new Thickness(0, 0, 8, 8);
-        ToolTip.SetTip(_newCode, "Makes a new code. The old one still works until it runs out; friends who already used it stay friends");
+        ToolTip.SetTip(_newCode, "Makes a new code and revokes the old one here. A copy already fetched by an older app may still ask to be added");
         _newCode.Click += async (_, _) => await LoadInvite(fresh: true);
         buttons.Children.Add(_copy);
         buttons.Children.Add(_copyMessage);
@@ -163,8 +163,9 @@ internal sealed class AddFriendPage : HubView
         _code.Text = _invite.Code;
         var until = DateTimeOffset.FromUnixTimeSeconds(_invite.Expires).LocalDateTime;
         string when = until.Date == DateTime.Today ? until.ToString("t", CultureInfo.CurrentCulture) : "tomorrow, " + until.ToString("t", CultureInfo.CurrentCulture);
-        _codeNote.Text = $"Send it to a friend, or read it out. It works for everyone you give it to until {when}. Anyone with this code becomes your friend and can see what you share with friends – only give it to people you trust.";
-        _newCode.Content = "New code";
+        string use = _invite.SingleUse ? $"It adds one friend automatically, then stops working here (or at {when})" : $"It works for everyone you give it to until {when}";
+        _codeNote.Text = $"Send it to a friend, or read it out. {use}. Anyone with this code can ask to become your friend and see what you share with friends – only give it to people you trust.";
+        _newCode.Content = "Revoke and renew";
         _newCode.IsEnabled = _copy.IsEnabled = _copyMessage.IsEnabled = true;
     }
 

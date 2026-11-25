@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.provider.Settings
@@ -104,8 +105,14 @@ class MainActivity : FlutterActivity() {
     private fun shareFrom(intent: Intent?) {
         val action = intent?.action
         if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
-        val uris = if (action == Intent.ACTION_SEND) listOfNotNull(intent.getParcelableExtra(Intent.EXTRA_STREAM, android.net.Uri::class.java))
-        else intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, android.net.Uri::class.java) ?: emptyList()
+        val uris = if (action == Intent.ACTION_SEND) listOfNotNull(intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java))
+        else intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java) ?: emptyList()
+        // A share is untrusted input. Reject file://, package paths and Holm's own providers before anything is
+        // forwarded; copyUri validates again because platform-channel calls can come from the running app too.
+        if (uris.any { !UriSecurity.isAllowedContentUri(this, it) }) {
+            intent.action = Intent.ACTION_MAIN
+            return
+        }
         val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
         if (uris.isEmpty() && text.isNullOrBlank()) return
         NotchBridge.shared = mapOf("text" to if (uris.isEmpty()) text else null, "uris" to uris.map { it.toString() })

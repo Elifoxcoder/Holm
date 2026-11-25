@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Sockets;
 using System.Threading.Tasks;
 using Avalonia;
@@ -21,7 +22,7 @@ namespace Holm.App;
 /// a QR code. The phone's camera opens a page with the files, served from this computer over the Wi-Fi – no app, no
 /// cable, no cloud. The link ends when you click Done, ten minutes after it opened, or shortly after everything has
 /// reached the phone. Right-click › Receive from phone… works the other way: the page lets an iPhone or Android phone
-/// pick photos and files, which land in Downloads; that link ends with Done or ten minutes after the last file.
+/// pick photos and files, which land in Downloads; that link ends with Done or ten minutes after it opened.
 /// </summary>
 public sealed partial class NotchWindow
 {
@@ -121,7 +122,6 @@ public sealed partial class NotchWindow
     void OnPhoneReceiving(PhoneShare share, string name, long got, long total)
     {
         if (_phone != share) return;
-        RestartPhoneExpiry(); // the link lasts while files keep coming
         var now = DateTime.UtcNow;
         if (now - _lastPhoneUi < TimeSpan.FromMilliseconds(200)) return;
         _lastPhoneUi = now;
@@ -131,9 +131,9 @@ public sealed partial class NotchWindow
     void OnPhoneReceived(PhoneShare share, string path)
     {
         if (_phone != share) return;
-        RestartPhoneExpiry();
         int count = share.ReceivedFiles.Count;
-        _phoneStatus.Text = count == 1 ? $"Received {System.IO.Path.GetFileName(path)} · in Downloads" : $"Received {count} files · in Downloads";
+        _phoneStatus.Text = count == 1 ? $"Received {System.IO.Path.GetFileName(path)} · in Downloads"
+                                        : $"Received {System.IO.Path.GetFileName(path)} · {count} files in Downloads";
     }
 
     /// <summary>
@@ -143,9 +143,8 @@ public sealed partial class NotchWindow
     async Task<bool> AskPhoneAsync(PhoneShare share, PhoneRequest request)
     {
         if (_phone != share) return false;
-        RestartPhoneExpiry();
         var answer = _phoneAnswer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        string what = request.Count == 1 ? request.FirstName : $"{request.Count} files";
+        string what = request.Count == 1 ? request.FirstName : $"{request.Count} files, first {request.FirstName}";
         _phoneStatus.Text = $"{request.Device} wants to send {what} · {PhoneShare.Size(request.Bytes)}. Accept only if it's yours.";
         _phoneButtons.IsVisible = false;
         _phoneAskButtons.IsVisible = true;
@@ -158,12 +157,6 @@ public sealed partial class NotchWindow
         if (_phone == share) _phoneStatus.Text = yes ? $"Receiving {what}…" : "Declined. Nothing was saved.";
         Diag.Log(yes ? "Phone accepted" : "Phone declined");
         return yes && _phone == share;
-    }
-
-    void RestartPhoneExpiry()
-    {
-        _phoneExpire.Stop();
-        _phoneExpire.Start();
     }
 
     /// <summary>Starts the link on this computer's Wi-Fi address and shows its QR code; null (with a word why) if it can't.</summary>
@@ -216,7 +209,8 @@ public sealed partial class NotchWindow
         if (_phone != share) return;
         if (share.AllDelivered)
         {
-            _phoneStatus.Text = share.Files.Count == 1 ? "Sent to your phone" : "All files are on your phone";
+            _phoneStatus.Text = share.Files.Count == 1 ? $"Sent {share.Files[0].Name} to your phone"
+                : $"All {share.Files.Count} files on your phone · first {share.Files[0].Name}";
             _phoneFinished.Stop();
             _phoneFinished.Start();
         }
@@ -240,12 +234,13 @@ public sealed partial class NotchWindow
         var received = share.ReceivedFiles;
         if (share.IsReceiving && received.Count > 0)
         {
-            // As a beam from a friend: open the file, or show it in Downloads.
+            // As a beam from a friend: open a safe file, or only show a program/script/shortcut in Downloads.
             string first = received[0];
-            EndTask("", GreenBrush, received.Count == 1 ? $"Saved {System.IO.Path.GetFileName(first)}" : $"Saved {received.Count} files",
-                    "From your phone · in Downloads",
-                    ("Open", () => { HideTask(); _shell.Open(first); }),
-                    ("Show", () => { HideTask(); _shell.Reveal(first); }));
+            (string Label, Action Act)? open = FileTransfer.IsDangerousToOpen(first)
+                ? null : ("Open", () => { HideTask(); OpenReceivedFile(first); });
+            EndTask("", GreenBrush, $"Saved {System.IO.Path.GetFileName(first)}",
+                    $"{string.Join(", ", received.Select(System.IO.Path.GetFileName))} · From your phone · in Downloads",
+                    open, ("Show", () => { HideTask(); _shell.Reveal(first); }));
             _taskHide.Interval = TimeSpan.FromSeconds(8);
             _taskHide.Start();
         }

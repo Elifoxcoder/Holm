@@ -20,11 +20,13 @@ public sealed class RelayInboxTests : IDisposable
 {
     readonly FakeInboxServer _relay = new(), _ntfy = new();
     readonly string _wasDefault = FriendIdentity.DefaultServer, _wasRelay = FriendIdentity.RelayServer;
+    readonly string? _wasHolm = FriendIdentity.HolmRelayServer;
 
     public RelayInboxTests()
     {
         FriendIdentity.DefaultServer = _ntfy.Url;
         FriendIdentity.RelayServer = _relay.Url;
+        FriendIdentity.HolmRelayServer = null; // these tests never call the real Holm relay
         FriendsService.ProtectKey = (data, _) => data.ToArray();
         FriendsService.UnprotectKey = (data, _) => data.ToArray();
     }
@@ -33,6 +35,7 @@ public sealed class RelayInboxTests : IDisposable
     {
         FriendIdentity.DefaultServer = _wasDefault;
         FriendIdentity.RelayServer = _wasRelay;
+        FriendIdentity.HolmRelayServer = _wasHolm;
         _relay.Dispose();
         _ntfy.Dispose();
     }
@@ -82,14 +85,14 @@ public sealed class RelayInboxTests : IDisposable
     }
 
     [Fact]
-    public async Task An_invite_goes_to_both_servers_and_one_left_by_an_older_Holm_is_found_on_ntfy()
+    public async Task A_new_invite_is_not_mirrored_to_ntfy_but_an_old_ntfy_only_code_still_opens()
     {
         using var lena = FriendIdentity.Create("Lena", null);
         string code = FriendInvite.New(), old = FriendInvite.New();
         long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         await FriendInbox.PublishInviteAsync(FriendInvite.Topic(code), FriendInvite.Seal(code, lena.FriendCode, now + 600), Net.Timeout());
         Assert.Single(_relay.Posts);
-        Assert.Single(_ntfy.Posts); // for friends whose Holm doesn't know the relay
+        Assert.Empty(_ntfy.Posts); // no new third-party copy of the unstretched invite derivation
 
         _ntfy.Keep(FriendInvite.Topic(old), FriendInvite.Seal(old, lena.FriendCode, now + 600)); // as Holm 1.17 leaves it
         _relay.Status = 503;
@@ -98,11 +101,32 @@ public sealed class RelayInboxTests : IDisposable
     }
 
     [Fact]
+    public async Task An_invite_can_be_revoked_and_renewed_as_single_use()
+    {
+        long now = Now();
+        var old = new OwnInvite { Code = FriendInvite.New(), Proof = "", Expires = now + 3600 };
+        old.Proof = FriendInvite.Proof(old.Code);
+        var settings = new AppSettings { Beam = false, FriendInvites = [old] };
+        var lena = new FriendsService(settings, Ui);
+        Assert.Same(old, Assert.Single(lena.Invites));
+        Assert.True(lena.RevokeInvite(old));
+        Assert.Empty(lena.Invites);
+
+        var fresh = await lena.InviteAsync(fresh: true, Net.Timeout());
+        Assert.True(fresh.SingleUse);
+        Assert.True(old.Revoked);
+        Assert.Same(fresh, Assert.Single(lena.Invites));
+        Assert.Single(_relay.Posts);
+        Assert.Empty(_ntfy.Posts);
+    }
+
+    [Fact]
     public async Task An_invite_needs_one_server()
     {
         _relay.Status = _ntfy.Status = 503;
         var ex = await Assert.ThrowsAsync<IOException>(() => FriendInbox.PublishInviteAsync(FriendInvite.Topic(FriendInvite.New()), "hinv1 x", Net.Timeout()));
         Assert.Contains("503", ex.Message);
+        Assert.Empty(_ntfy.Posts); // publishing an invite never falls back to the third-party mirror
     }
 
     static Task Ui(Action a)
@@ -188,6 +212,262 @@ public sealed class RelayInboxTests : IDisposable
         => FriendNotes.Seal(from, to, new FriendNote(FriendNoteKind.Chat, from.Name, DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                                                      Text: text, MessageId: Guid.NewGuid().ToString("N")));
 
+    static string Request(FriendIdentity from, Friend to, string proof, long sent)
+        => FriendNotes.Seal(from, to, new FriendNote(FriendNoteKind.FriendRequest, from.Name, sent, Code: from.FriendCode,
+                                                      RequestId: Guid.NewGuid().ToString("N"), Invite: proof));
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_mirrored_note_is_replayed_once_even_after_settings_are_reloaded(bool legacy)
+    {
+        using var noah = FriendIdentity.Create("Noah", null);
+        var settings = new AppSettings { Beam = false, FriendsServer = _ntfy.Url };
+        settings.Friends.Add(noah.AsFriend());
+        var lena = new FriendsService(settings, Ui);
+        var target = lena.EnsureMe().AsFriend();
+        var note = new FriendNote(FriendNoteKind.Chat, noah.Name, Now(), Text: "only once", MessageId: Guid.NewGuid().ToString("N"));
+        string text = legacy ? FriendNotes.SealWithoutNoteId(noah, target, note) : FriendNotes.Seal(noah, target, note);
+        int chats = 0;
+        lena.ChatReceived += (_, _, _, _) => chats++;
+        long arrived = Now();
+        lena.Handle("relay-copy", arrived, text);
+        lena.Handle("ntfy-copy", arrived, text);
+        Assert.Equal(1, chats);
+        Assert.Contains(settings.FriendsSeen, id => id.StartsWith(legacy ? "hash:" : "note:", StringComparison.Ordinal));
+        Assert.Equal(settings.FriendsSeen.Count, settings.FriendsSeenTimes.Count);
+
+        var reloaded = JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(settings))!;
+        var again = new FriendsService(reloaded, Ui);
+        again.ChatReceived += (_, _, _, _) => chats++;
+        again.EnsureMe();
+        again.Handle("another-copy", arrived, text);
+        Assert.Equal(1, chats);
+    }
+
+    static long Now() => DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+    [Theory]
+    [InlineData(301)]
+    [InlineData(-605200)] // safely beyond the seven-day + 300-second window, including test execution time
+    public void An_authenticated_note_outside_the_sender_time_bounds_is_ignored(int delta)
+    {
+        using var noah = FriendIdentity.Create("Noah", null);
+        var settings = new AppSettings { Beam = false, FriendsServer = _ntfy.Url };
+        settings.Friends.Add(noah.AsFriend());
+        var lena = new FriendsService(settings, Ui);
+        var target = lena.EnsureMe().AsFriend();
+        int chats = 0;
+        lena.ChatReceived += (_, _, _, _) => chats++;
+        long now = Now();
+        Assert.False(FriendNotes.IsSentTimePlausible(now - 605101, now)); // exact boundary, independent of elapsed test time
+        string text = FriendNotes.Seal(noah, target, new FriendNote(FriendNoteKind.Chat, noah.Name, now + delta,
+                                                                    Text: "bad clock", MessageId: Guid.NewGuid().ToString("N")));
+        lena.Handle("bad-clock", now, text);
+        Assert.Equal(0, chats);
+    }
+
+    [Theory]
+    [InlineData(FriendNoteKind.Ping)]
+    [InlineData(FriendNoteKind.Here)]
+    public void A_fresh_server_timestamp_cannot_make_an_old_authenticated_presence_note_fresh(FriendNoteKind kind)
+    {
+        using var noah = FriendIdentity.Create("Noah", null);
+        var settings = new AppSettings { Beam = false, FriendsServer = _ntfy.Url };
+        settings.Friends.Add(noah.AsFriend());
+        var lena = new FriendsService(settings, Ui);
+        var target = lena.EnsureMe().AsFriend();
+        int online = 0;
+        lena.FriendOnline += _ => online++;
+        long now = Now();
+        string text = FriendNotes.Seal(noah, target, new FriendNote(kind, noah.Name, now - 31));
+        lena.Handle("fresh-server-time", now, text);
+        Assert.Equal(0, online);
+        Assert.Empty(_ntfy.Posts);
+    }
+
+    [Fact]
+    public void A_fresh_server_timestamp_cannot_make_an_old_own_device_phone_note_fresh()
+    {
+        var settings = new AppSettings { Beam = false };
+        var service = new FriendsService(settings, Ui);
+        var own = service.EnsureMe();
+        int received = 0;
+        service.PhoneStatusReceived += (_, _) => received++;
+        long now = Now();
+        var status = new PhoneStatus(PhoneStatus.Notification, "Lena", "old notification", now, true);
+        string text = FriendNotes.Seal(own, own.AsFriend(), new FriendNote(FriendNoteKind.Phone, "My phone", now - 61,
+                                                                            Device: OwnDevice.NewId(), Phone: status));
+        service.Handle("fresh-server-time", now, text);
+        Assert.Equal(0, received);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_fresh_server_timestamp_cannot_make_an_old_authenticated_friend_request_fresh(bool alreadyFriend)
+    {
+        using var noah = FriendIdentity.Create("Noah", null);
+        var settings = new AppSettings { Beam = false, FriendsServer = _ntfy.Url };
+        if (alreadyFriend) settings.Friends.Add(noah.AsFriend());
+        var lena = new FriendsService(settings, Ui);
+        var target = lena.EnsureMe().AsFriend();
+        int asked = 0;
+        lena.FriendRequested += (_, _) => asked++;
+        long now = Now();
+        string text = FriendNotes.Seal(noah, target, new FriendNote(FriendNoteKind.FriendRequest, noah.Name,
+            now - 2 * 24 * 60 * 60 - 1, Code: noah.FriendCode, RequestId: Guid.NewGuid().ToString("N")));
+        lena.Handle("fresh-server-time", now, text);
+        Assert.Equal(0, asked);
+        Assert.Empty(lena.Incoming);
+        await Task.Delay(100); // a fire-and-forget repair response would reach the fake inbox by now
+        Assert.Empty(_ntfy.Posts);
+    }
+
+    [Fact]
+    public async Task A_backdated_invite_request_that_arrived_after_the_grace_period_is_not_autoaccepted()
+    {
+        using var noah = FriendIdentity.Create("Noah", null);
+        string code = FriendInvite.New();
+        long now = Now();
+        var settings = new AppSettings
+        {
+            Beam = false, FriendsServer = _ntfy.Url,
+            FriendInvites = [new OwnInvite { Code = code, Proof = FriendInvite.Proof(code), Expires = now - 600 }],
+        };
+        var lena = new FriendsService(settings, Ui);
+        var target = lena.EnsureMe().AsFriend();
+        int asked = 0;
+        lena.FriendRequested += (_, _) => asked++;
+        // dto.T would pass the old expires + 300 check. The server arrival time must not.
+        lena.Handle("late", now, Request(noah, target, FriendInvite.Proof(code), now - 3600));
+        Assert.Equal(1, asked);
+        Assert.Single(lena.Incoming);
+        Assert.Null(lena.Find(noah.PublicKey));
+        Assert.Empty(_ntfy.Posts);
+    }
+
+    [Theory]
+    [InlineData(300, true)]
+    [InlineData(301, false)]
+    public async Task Invite_expiry_keeps_the_300_second_server_arrival_allowance(int offset, bool accepted)
+    {
+        using var noah = FriendIdentity.Create("Noah", null);
+        string code = FriendInvite.New();
+        string proof = FriendInvite.Proof(code);
+        long now = Now(), expires = now - 600, arrived = expires + offset;
+        var settings = new AppSettings
+        {
+            Beam = false, FriendsServer = _ntfy.Url,
+            FriendInvites = [new OwnInvite { Code = code, Proof = proof, Expires = expires }],
+        };
+        var lena = new FriendsService(settings, Ui);
+        var target = lena.EnsureMe().AsFriend();
+        int asked = 0, acceptedEvents = 0;
+        lena.FriendRequested += (_, _) => asked++;
+        lena.InviteAccepted += _ => acceptedEvents++;
+        lena.Handle("boundary", arrived, Request(noah, target, proof, now - 3600));
+        if (accepted) await Until(() => lena.Find(noah.PublicKey) != null && acceptedEvents == 1, "the boundary request was accepted");
+        else
+        {
+            Assert.Equal(1, asked);
+            Assert.Null(lena.Find(noah.PublicKey));
+            Assert.Single(lena.Incoming);
+        }
+    }
+
+    [Fact]
+    public async Task A_single_use_invite_uses_server_arrival_time_and_cannot_spend_twice()
+    {
+        using var first = FriendIdentity.Create("First", null);
+        using var second = FriendIdentity.Create("Second", null);
+        string code = FriendInvite.New();
+        string proof = FriendInvite.Proof(code);
+        long now = Now();
+        var invite = new OwnInvite { Code = code, Proof = proof, Expires = now - 600, SingleUse = true };
+        var settings = new AppSettings { Beam = false, FriendsServer = _ntfy.Url, FriendInvites = [invite] };
+        var lena = new FriendsService(settings, Ui);
+        var target = lena.EnsureMe().AsFriend();
+        int asked = 0, accepted = 0;
+        lena.FriendRequested += (_, _) => asked++;
+        lena.InviteAccepted += _ => accepted++;
+
+        // Both reached the server before expires + 300, while Holm was offline. Reconnecting now must not move
+        // that arrival time forward. The first is also deliberately backdated; dto.T is not the expiry clock.
+        long arrived = now - 1000;
+        lena.Handle("first", arrived, Request(first, target, proof, now - 3600));
+        lena.Handle("second", arrived, Request(second, target, proof, now));
+        await Until(() => lena.Find(first.PublicKey) != null && accepted == 1, "the first request was accepted");
+        Assert.Equal(1, accepted);
+        Assert.Equal(1, asked);
+        Assert.True(invite.Revoked);
+        Assert.Equal(first.PublicKey, invite.UsedBy);
+        Assert.Empty(lena.Invites);
+        Assert.Null(lena.Find(second.PublicKey));
+        Assert.Single(lena.Incoming);
+    }
+
+    [Fact]
+    public void Seen_note_retention_is_deduplicated_and_bounded()
+    {
+        var settings = new AppSettings { Beam = false };
+        settings.FriendsSeen.AddRange(Enumerable.Range(0, FriendsService.SeenLimit + 20).Select(i => $"id-{i}"));
+        settings.FriendsSeen.Add(settings.FriendsSeen[^1]);
+        _ = new FriendsService(settings, Ui);
+        Assert.Equal(FriendsService.SeenLimit, settings.FriendsSeen.Count);
+        Assert.Equal(settings.FriendsSeen.Count, settings.FriendsSeen.Distinct().Count());
+        Assert.Equal(settings.FriendsSeen.Count, settings.FriendsSeenTimes.Count);
+        Assert.All(settings.FriendsSeenTimes, at => Assert.True(at > 0));
+        Assert.DoesNotContain("id-0", settings.FriendsSeen);
+        Assert.DoesNotContain("id-19", settings.FriendsSeen);
+        Assert.Contains("id-20", settings.FriendsSeen);
+        Assert.Contains($"id-{FriendsService.SeenLimit + 19}", settings.FriendsSeen);
+    }
+
+    [Fact]
+    public void Seen_entries_are_pruned_by_time_while_a_recent_replay_stays_blocked()
+    {
+        using var noah = FriendIdentity.Create("Noah", null);
+        var settings = new AppSettings { Beam = false, FriendsServer = _ntfy.Url };
+        settings.Friends.Add(noah.AsFriend());
+        var first = new FriendsService(settings, Ui);
+        var target = first.EnsureMe().AsFriend();
+        var note = new FriendNote(FriendNoteKind.Chat, noah.Name, Now(), Text: "recent replay", MessageId: Guid.NewGuid().ToString("N"),
+                                  NoteId: FriendNotes.NewNoteId());
+        string text = FriendNotes.Seal(noah, target, note);
+        string replayId = FriendNotes.ReplayId(text, note);
+        long now = Now();
+        settings.FriendsSeen.Add(replayId);
+        settings.FriendsSeenTimes.Add(now - 60);
+        settings.FriendsSeen.Add("old-transport-id");
+        settings.FriendsSeenTimes.Add(now - FriendsService.SeenRetentionSeconds - 1);
+
+        var reloaded = JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(settings))!;
+        var again = new FriendsService(reloaded, Ui);
+        int chats = 0;
+        again.ChatReceived += (_, _, _, _) => chats++;
+        again.EnsureMe();
+        Assert.DoesNotContain("old-transport-id", reloaded.FriendsSeen);
+        Assert.Contains(replayId, reloaded.FriendsSeen);
+        Assert.Equal(reloaded.FriendsSeen.Count, reloaded.FriendsSeenTimes.Count);
+        Assert.Single(reloaded.FriendsSeenTimes);
+
+        again.Handle("another-transport-id", now, text);
+        Assert.Equal(0, chats);
+    }
+
+    [Fact]
+    public void Legacy_seen_entries_without_times_are_retained_as_unknown_for_one_window()
+    {
+        var settings = new AppSettings { Beam = false };
+        settings.FriendsSeen.Add("legacy-transport-id");
+        long before = Now();
+        _ = new FriendsService(settings, Ui);
+        long after = Now();
+        Assert.Contains("legacy-transport-id", settings.FriendsSeen);
+        Assert.InRange(Assert.Single(settings.FriendsSeenTimes), before, after);
+    }
+
     [Fact]
     public async Task Resending_a_request_keeps_the_original_accept_button_working()
     {
@@ -254,18 +534,21 @@ public sealed class RelayWorkerTests : IDisposable
 {
     readonly string? _url = Environment.GetEnvironmentVariable("HOLM_RELAY_URL");
     readonly string _wasDefault = FriendIdentity.DefaultServer, _wasRelay = FriendIdentity.RelayServer;
+    readonly string? _wasHolm = FriendIdentity.HolmRelayServer;
 
     public RelayWorkerTests()
     {
         if (_url == null) return;
         FriendIdentity.RelayServer = _url.TrimEnd('/');
         FriendIdentity.DefaultServer = "http://127.0.0.1:9"; // no ntfy: everything must work on the relay alone
+        FriendIdentity.HolmRelayServer = null;
     }
 
     public void Dispose()
     {
         FriendIdentity.DefaultServer = _wasDefault;
         FriendIdentity.RelayServer = _wasRelay;
+        FriendIdentity.HolmRelayServer = _wasHolm;
     }
 
     [Fact]
