@@ -118,7 +118,12 @@ public sealed class FriendIdentity : IDisposable
     /// Holm's own inbox server (relay/: a Cloudflare Worker). It takes ntfy's POST, so any Holm can leave notes there;
     /// Holm 1.18+ follows its inbox there and on <see cref="DefaultServer"/>, where older friends still write.
     /// </summary>
-    public static string RelayServer { get; internal set; } = "https://relay.holmnotch.ch";
+    public static string RelayServer { get; internal set; } = HolyNotchServer.Url;
+    /// <summary>
+    /// Holm's relay, where HolyNotch's inboxes were before HolyNotch had its own server, and where friends who still use
+    /// Holm (or haven't heard of the move yet) write. Followed as well; invite codes are left there too. Null: none.
+    /// </summary>
+    public static string? HolmRelayServer { get; internal set; } = "https://relay.holmnotch.ch";
     const string CodePrefix = "WNF1.";
     static readonly Regex CodeInText = new(@"WNF1\.[A-Za-z0-9_-]{40,2000}");
 
@@ -513,7 +518,8 @@ public static class FriendInbox
     static string Host(string? server)
         => Uri.TryCreate(FriendIdentity.NormalizeServer(server), UriKind.Absolute, out var uri) ? uri.Host : "the server";
 
-    static bool IsRelay(string? server) => FriendIdentity.NormalizeServer(server) == FriendIdentity.RelayServer;
+    static bool IsRelay(string? server)
+        => FriendIdentity.NormalizeServer(server) is var s && (s == FriendIdentity.RelayServer || s == FriendIdentity.HolmRelayServer);
 
     /// <summary>
     /// Leaves a note in a friend's inbox. A note for the relay that it doesn't take (down, over its daily limit) goes to
@@ -561,7 +567,10 @@ public static class FriendInbox
     {
         var relay = PostToAsync(FriendIdentity.RelayServer, topic, card, true, ct);
         var legacy = PostToAsync(FriendIdentity.DefaultServer, topic, card, true, ct);
+        // Holm's relay as well, for a friend on Holm who types the code; a failure there changes nothing.
+        var holm = FriendIdentity.HolmRelayServer is { } h ? PostToAsync(h, topic, card, true, ct) : Task.CompletedTask;
         await EitherAsync(relay, legacy).ConfigureAwait(false);
+        try { await holm.ConfigureAwait(false); } catch (IOException) { }
     }
 
     /// <summary>The invite cards waiting at an invite code's inbox on the relay and on ntfy, newest first.</summary>
@@ -570,8 +579,10 @@ public static class FriendInbox
     {
         var relay = FetchInviteFromAsync(FriendIdentity.RelayServer, topic, ct);
         var legacy = FetchInviteFromAsync(FriendIdentity.DefaultServer, topic, ct);
+        var holm = FriendIdentity.HolmRelayServer is { } h ? FetchInviteFromAsync(h, topic, ct) : Task.FromResult(new List<string>());
         await EitherAsync(relay, legacy).ConfigureAwait(false);
         var cards = new List<string>();
+        try { cards.AddRange(await holm.ConfigureAwait(false)); } catch (IOException) { }
         if (legacy.IsCompletedSuccessfully) cards.AddRange(legacy.Result);
         if (relay.IsCompletedSuccessfully) cards.AddRange(relay.Result);
         cards.Reverse();
@@ -658,8 +669,9 @@ public static class FriendInbox
     /// connection. <paramref name="connected"/> runs each time the relay let us in.
     /// </summary>
     public static async Task FollowRelayAsync(string topic, long? since, Func<string, long, string, Task> received, Action<long> handled,
-                                              Action? connected, Action<string>? log, CancellationToken ct)
+                                              Action? connected, Action<string>? log, CancellationToken ct, string? server = null)
     {
+        server ??= FriendIdentity.RelayServer;
         var delay = TimeSpan.FromSeconds(2);
         var buffer = new byte[8192];
         while (!ct.IsCancellationRequested)
@@ -670,13 +682,13 @@ public static class FriendInbox
                 ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(30);
                 ws.Options.KeepAliveTimeout = TimeSpan.FromSeconds(30); // a ping without a pong ends the connection
                 ws.Options.SetRequestHeader("User-Agent", "Holm-Friends/1");
-                string url = Regex.Replace(InboxUrl(FriendIdentity.RelayServer, topic), "^http", "ws") + "/ws" + (since != null ? "?since=" + since : "");
+                string url = Regex.Replace(InboxUrl(server, topic), "^http", "ws") + "/ws" + (since != null ? "?since=" + since : "");
                 using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
                 {
                     timeout.CancelAfter(TimeSpan.FromSeconds(20));
                     await ws.ConnectAsync(new Uri(url), timeout.Token).ConfigureAwait(false);
                 }
-                log?.Invoke("Friends inbox connected: " + Host(FriendIdentity.RelayServer));
+                log?.Invoke("Friends inbox connected: " + Host(server));
                 delay = TimeSpan.FromSeconds(2);
                 connected?.Invoke();
                 var events = new InboxEvents(received, handled);
@@ -695,7 +707,7 @@ public static class FriendInbox
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
-            catch (Exception ex) { log?.Invoke($"Friends inbox ({Host(FriendIdentity.RelayServer)}): {ex.Message}"); }
+            catch (Exception ex) { log?.Invoke($"Friends inbox ({Host(server)}): {ex.Message}"); }
 
             try { await Task.Delay(delay, ct).ConfigureAwait(false); } catch (OperationCanceledException) { return; }
             delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, TimeSpan.FromMinutes(2).Ticks));

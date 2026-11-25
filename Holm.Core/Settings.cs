@@ -227,6 +227,10 @@ internal sealed class AppSettings
     public bool FriendsRelay { get; set; }
     /// <summary>Server time of the last note in our inbox on the relay, to catch up from after a restart.</summary>
     public long? FriendsRelaySince { get; set; }
+    /// <summary>The relay our friends were last told about (HolyNotch's server since 2.4.0); null: Holm's relay, if any.</summary>
+    public string? FriendsRelayServer { get; set; }
+    /// <summary>Where we are in our inbox on Holm's relay, which HolyNotch keeps following for friends still on Holm.</summary>
+    public long? FriendsHolmRelaySince { get; set; }
     /// <summary>Ids of the last notes handled, so catching up never handles one twice.</summary>
     public List<string> FriendsSeen { get; set; } = new();
     /// <summary>

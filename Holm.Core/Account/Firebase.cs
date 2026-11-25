@@ -65,8 +65,9 @@ public sealed class FirebaseClient
         _http = http ?? SharedHttp;
     }
 
-    string AuthUrl(string method) => $"https://identitytoolkit.googleapis.com/v1/accounts:{method}?key={Uri.EscapeDataString(_apiKey)}";
-    string DocumentsUrl => $"https://firestore.googleapis.com/v1/projects/{Uri.EscapeDataString(_projectId)}/databases/(default)/documents";
+    // HolyNotch's server speaks the same REST subset as Firebase (server/holynotch-server.mjs), on its own address.
+    string AuthUrl(string method) => $"{HolyNotchServer.Url}/v1/accounts:{method}?key={Uri.EscapeDataString(_apiKey)}";
+    string DocumentsUrl => $"{HolyNotchServer.Url}/v1/projects/{Uri.EscapeDataString(_projectId)}/databases/(default)/documents";
 
     // ───────────── Authentication ─────────────
 
@@ -85,7 +86,7 @@ public sealed class FirebaseClient
     /// <summary>A fresh ID token (they last an hour) from the refresh token, which lasts until the password changes or the account goes.</summary>
     public async Task<FirebaseSession> RefreshAsync(string email, string refreshToken, CancellationToken ct)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"https://securetoken.googleapis.com/v1/token?key={Uri.EscapeDataString(_apiKey)}")
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{HolyNotchServer.Url}/v1/token?key={Uri.EscapeDataString(_apiKey)}")
         {
             Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["grant_type"] = "refresh_token", ["refresh_token"] = refreshToken }),
         };

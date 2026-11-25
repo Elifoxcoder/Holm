@@ -1011,14 +1011,18 @@ class AppState extends ChangeNotifier {
     _reconnect = Timer(backoff, () => _connect(Duration(seconds: (backoff.inSeconds * 2).clamp(2, 120))));
   }
 
-  /// Older Holms (and a relay that is down) write to ntfy.sh, so that inbox is looked at too.
+  /// Older Holms (and a relay that is down) write to ntfy.sh, and friends still on Holm to Holm's relay: both are
+  /// looked at too. A note that came through two servers counts once (_handleEvent).
   Future<void> _pollLegacy() async {
-    try {
-      final events = await Inbox.poll(legacyServer, me.topic, '${_since ?? (unixNow() - 12 * 3600)}');
-      for (final e in events) {
-        _handleEvent(e);
-      }
-    } catch (_) {}
+    final since = '${_since ?? (unixNow() - 12 * 3600)}';
+    for (final server in [holmRelayServer, legacyServer]) {
+      try {
+        final events = await Inbox.poll(server, me.topic, since);
+        for (final e in events) {
+          _handleEvent(e);
+        }
+      } catch (_) {}
+    }
   }
 
   void _handleLine(String line) {

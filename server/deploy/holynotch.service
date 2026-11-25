@@ -1,0 +1,23 @@
+# HolyNotch server (server/README.md). Installed by deploy/install.sh.
+[Unit]
+Description=HolyNotch server: accounts, friend inboxes, transfer relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=holynotch
+Group=holynotch
+WorkingDirectory=/opt/holynotch
+EnvironmentFile=/etc/holynotch.env
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning /opt/holynotch/holynotch-server.mjs
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/holynotch
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

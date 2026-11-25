@@ -782,6 +782,11 @@ internal sealed partial class FriendsService
                 time => _ = _ui(() => { if (_follow == cts) { _settings.FriendsRelaySince = time; _settings.Save(); } }),
                 () => _ = _ui(() => { if (_follow == cts) MoveToRelay(); }),
                 Diag.Log, cts.Token));
+        // And on Holm's relay, where friends still on Holm (or who haven't got our new code yet) write.
+        if (_settings.FriendsServer == null && FriendIdentity.HolmRelayServer is { } holm)
+            _ = Task.Run(() => FriendInbox.FollowRelayAsync(me.Topic, _settings.FriendsHolmRelaySince ?? Now, received,
+                time => _ = _ui(() => { if (_follow == cts) { _settings.FriendsHolmRelaySince = time; _settings.Save(); } }),
+                null, Diag.Log, cts.Token, holm));
         SyncProfiles();
         AnnounceDevice(query: true);
     }
@@ -793,8 +798,11 @@ internal sealed partial class FriendsService
     /// </summary>
     internal void MoveToRelay()
     {
-        if (_settings.FriendsRelay || _settings.FriendsServer != null || Me is not { } me) return;
+        if (_settings.FriendsServer != null || Me is not { } me) return;
+        // Told already, about this relay (HolyNotch's server); a Holm user's inbox may have moved to Holm's relay before.
+        if (_settings.FriendsRelay && _settings.FriendsRelayServer == FriendIdentity.RelayServer) return;
         _settings.FriendsRelay = true;
+        _settings.FriendsRelayServer = FriendIdentity.RelayServer;
         _settings.Save();
         _me = new FriendIdentity(me.Name, me.Topic, FriendIdentity.RelayServer, me.Key);
         Diag.Log("Friends: our inbox moved to the relay");

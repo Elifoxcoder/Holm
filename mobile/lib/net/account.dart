@@ -13,6 +13,7 @@ import 'package:pointycastle/export.dart';
 import 'package:unorm_dart/unorm_dart.dart' as unorm;
 
 import 'crypto.dart';
+import 'server.dart';
 
 /// The Firebase project "Holm Accounts" (Firebase.cs). The web API key only names the project; what a signed-in user
 /// may read is decided by the Firestore rules (firebase/firestore.rules).
@@ -282,14 +283,14 @@ class Firebase {
     ..connectionTimeout = const Duration(seconds: 15);
 
   static Future<FirebaseSession> signIn(String email, String signInSecret) async {
-    final j = await _send('POST', 'https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=$firebaseApiKey',
+    final j = await _send('POST', '$holyNotchUrl/v1/accounts:signInWithPassword?key=$firebaseApiKey',
         jsonBody: {'email': email, 'password': signInSecret, 'returnSecureToken': true});
     return FirebaseSession(j['localId'] as String, j['idToken'] as String, j['refreshToken'] as String);
   }
 
   /// A fresh ID token (they last an hour) from the refresh token.
   static Future<FirebaseSession> refresh(String refreshToken) async {
-    final j = await _send('POST', 'https://securetoken.googleapis.com/v1/token?key=$firebaseApiKey',
+    final j = await _send('POST', '$holyNotchUrl/v1/token?key=$firebaseApiKey',
         form: 'grant_type=refresh_token&refresh_token=${Uri.encodeQueryComponent(refreshToken)}');
     return FirebaseSession(j['user_id'] as String, j['id_token'] as String, j['refresh_token'] as String);
   }
@@ -298,7 +299,7 @@ class Firebase {
   static Future<String?> field(String path, String name, String idToken) async {
     try {
       final j = await _send('GET',
-          'https://firestore.googleapis.com/v1/projects/$firebaseProject/databases/(default)/documents/$path', idToken: idToken);
+          '$holyNotchUrl/v1/projects/$firebaseProject/databases/(default)/documents/$path', idToken: idToken);
       return ((j['fields'] as Map<String, dynamic>?)?[name] as Map<String, dynamic>?)?['stringValue'] as String?;
     } on AccountException catch (e) {
       if (e.code == 'NOT_FOUND') return null;

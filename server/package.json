@@ -1,0 +1,15 @@
+{
+  "name": "holynotch-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "HolyNotch's accounts, friend inboxes and transfer relay, on one machine",
+  "type": "module",
+  "main": "holynotch-server.mjs",
+  "engines": { "node": ">=22.5" },
+  "scripts": {
+    "start": "node holynotch-server.mjs",
+    "test": "node --test test/server.test.mjs"
+  },
+  "dependencies": { "ws": "8.18.3" },
+  "license": "MIT"
+}

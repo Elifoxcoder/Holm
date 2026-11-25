@@ -19,7 +19,7 @@ void main() {
     final f = parseFriendCode('Add me: $desktopCode thanks')!;
     expect(f.name, 'Laptop');
     expect(f.topic, 'wnf-wyofza32dzlahfjbg2ddtsnm5w');
-    expect(f.server, relayServer);
+    expect(f.server, holmRelayServer); // a code from Holm names Holm's relay
   });
 
   test('invite topic and proof match FriendInvite.cs', () {

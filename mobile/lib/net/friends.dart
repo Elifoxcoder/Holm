@@ -7,8 +7,14 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'crypto.dart';
+import 'server.dart';
 
-const relayServer = 'https://relay.holmnotch.ch';
+/// HolyNotch's own server, where our inbox is (server.dart).
+const relayServer = holyNotchUrl;
+
+/// Holm's relay: where our inbox was before HolyNotch had its own server, and where friends still on Holm write.
+/// Looked at as well, and invite codes are read there too.
+const holmRelayServer = 'https://relay.holmnotch.ch';
 const legacyServer = 'https://ntfy.sh';
 const _userAgent = 'Holm-Friends/1';
 
@@ -214,7 +220,7 @@ class Inbox {
     try {
       await _postTo(to.serverUrl, to.topic, note, keep);
     } on IOException {
-      if (to.serverUrl != relayServer) rethrow;
+      if (to.serverUrl != relayServer && to.serverUrl != holmRelayServer) rethrow;
       await _postTo(legacyServer, to.topic, note, keep); // a Holm that follows the relay follows ntfy too
     }
   }
@@ -247,15 +253,15 @@ class Inbox {
   }
 
   /// Follows our inbox on the relay with a WebSocket: kept notes since [since], then each new one.
-  static Future<WebSocket> follow(String topic, int? since) => WebSocket.connect(
-        '${relayServer.replaceFirst('https', 'wss')}/${Uri.encodeComponent(topic)}/ws${since != null ? '?since=$since' : ''}',
+  static Future<WebSocket> follow(String topic, int? since, {String server = relayServer}) => WebSocket.connect(
+        '${server.replaceFirst('https', 'wss')}/${Uri.encodeComponent(topic)}/ws${since != null ? '?since=$since' : ''}',
         headers: {'User-Agent': _userAgent},
       ).timeout(const Duration(seconds: 20));
 
   static Future<Friend?> fetchInvite(String code) async {
     final topic = Invite.topic(code);
     final results = await Future.wait([
-      for (final s in [relayServer, legacyServer])
+      for (final s in [relayServer, holmRelayServer, legacyServer])
         poll(s, topic, '12h').then<List<InboxEvent>?>((v) => v).catchError((_) => null),
     ]);
     if (results.every((r) => r == null)) throw const HttpException("Couldn't reach the invite server");
