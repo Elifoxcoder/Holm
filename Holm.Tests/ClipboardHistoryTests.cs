@@ -112,12 +112,12 @@ public class ClipboardHistoryTests
     {
         var old = JsonSerializer.Deserialize<AppSettings>("{\"Animations\":false,\"Calculator\":false}")!;
         Assert.False(old.Calculator);
-        Assert.True(old.ClipboardHistory);
+        Assert.False(old.ClipboardHistory);
     }
 
     [Fact]
     public void The_history_is_never_saved_with_the_settings()
-        => Assert.DoesNotContain("Clip", JsonSerializer.Serialize(new AppSettings()).Replace("\"ClipboardHistory\":true", ""));
+        => Assert.DoesNotContain("Clip", JsonSerializer.Serialize(new AppSettings()).Replace("\"ClipboardHistory\":false", ""));
 }
 
 public class ClipboardWipeTests

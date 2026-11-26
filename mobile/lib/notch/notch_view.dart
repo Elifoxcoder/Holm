@@ -31,10 +31,10 @@ double openHeight(NotchSettings s, NotchActivity a, NotchActivity? second, [Notc
     ActivityKind.timer => 66.0 + actions,
     ActivityKind.charging => 64.0,
     ActivityKind.vpn => a.mullvad ? 70.0 : 56.0,
-    ActivityKind.wifi || ActivityKind.bluetooth || ActivityKind.privacy || ActivityKind.torch => 56.0,
+    ActivityKind.wifi || ActivityKind.bluetooth || ActivityKind.privacy || ActivityKind.torch || ActivityKind.hotspot || ActivityKind.ringer => 56.0,
     ActivityKind.volume => 5 * 32.0,
     ActivityKind.call => 112.0,
-    ActivityKind.navigation => 72.0,
+    ActivityKind.navigation => 96.0,
     ActivityKind.home => 132.0,
     ActivityKind.buds => 120.0,
     ActivityKind.screenshot => 118.0,
@@ -86,6 +86,7 @@ class _NotchStageState extends State<NotchStage> with SingleTickerProviderStateM
   List<double>? _rect;
   /// How tall the notch is when open now (it follows what it shows), for the corners on the way.
   double _openHeight = const NotchSettings().open.height;
+  DateTime? _lastTap;
 
   NotchController get c => widget.controller;
 
@@ -124,10 +125,15 @@ class _NotchStageState extends State<NotchStage> with SingleTickerProviderStateM
       final v = c.visible;
       return (s.open.copyWith(height: openHeight(s, p, v.length > 1 ? v[1] : null, c)), 1);
     }
+    if (p.callPill) return (_callPillShape(s), 1);
     if (p.wide) return (_wideShape(s), 1);
     if (p.banner) return (s.compactBanners ? _compactShape(s) : _bannerShape(s), 1);
     return (closed, 1);
   }
+
+  /// Incoming call: iPhone-style wide rounded pill with caller photo, decline, and green accept buttons.
+  static NotchGeometry _callPillShape(NotchSettings s) =>
+      s.closed.copyWith(width: s.open.width - 12, height: 76, radius: 38);
 
   /// Short news: the closed pill, wider (a little taller), still round at the ends.
   static NotchGeometry _wideShape(NotchSettings s) {
@@ -201,7 +207,7 @@ class _NotchStageState extends State<NotchStage> with SingleTickerProviderStateM
     final width = 2 * halfW + 16;
     if (c.touchRegion) {
       // One size for as long as the notch shows; only where it is takes touches (all of it while open, to close it).
-      final tallest = [s.open.y + s.open.height, s.closed.y + _bannerShape(s).height].reduce(math.max) + 14;
+      final tallest = [s.open.y + s.open.height, s.closed.y + _bannerShape(s).height, s.closed.y + _callPillShape(s).height].reduce(math.max) + 14;
       final size = visible || idleTouch || !_shape.settled ? Size(width, tallest) : Size.zero;
       final w = _shape.w.value, h = _shape.h.value;
       final left = width / 2 + _shape.x.value - w / 2;
@@ -280,8 +286,21 @@ class _NotchStageState extends State<NotchStage> with SingleTickerProviderStateM
               opacity: alpha,
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
-                onTap: () => open ? null : (p == null ? c.showHome() : c.expand()),
-                onDoubleTap: open || c.settings.doubleTap == NotchGesture.none ? null : () => c.gesture(c.settings.doubleTap),
+                onTap: () {
+                  final now = DateTime.now();
+                  if (c.settings.doubleTap != NotchGesture.none &&
+                      _lastTap != null &&
+                      now.difference(_lastTap!) < const Duration(milliseconds: 280)) {
+                    _lastTap = null;
+                    c.collapse();
+                    c.gesture(c.settings.doubleTap);
+                    return;
+                  }
+                  _lastTap = now;
+                  if (!open) {
+                    p == null ? c.showHome() : c.expand(p);
+                  }
+                },
                 onLongPress: open ? null : () => c.gesture(c.settings.longPress),
                 onVerticalDragEnd: (d) {
                   final v = d.primaryVelocity ?? 0;
@@ -331,6 +350,8 @@ class _NotchStageState extends State<NotchStage> with SingleTickerProviderStateM
                                   key: ValueKey(
                                     '${open
                                         ? 'open'
+                                        : p.callPill
+                                        ? 'call'
                                         : p.banner
                                         ? 'banner'
                                         : p.wide
@@ -342,6 +363,8 @@ class _NotchStageState extends State<NotchStage> with SingleTickerProviderStateM
                                           openHeight(c.settings, p, second, c),
                                           NotchPalette.forDesign(_design(c), child: _Open(c, p, second, _target)),
                                         )
+                                      : p.callPill
+                                      ? _CallPill(c, p)
                                       : p.banner && c.settings.compactBanners
                                       ? _CompactBanner(c, p, c.settings.closed.height, _target.width)
                                       : p.banner
@@ -368,7 +391,17 @@ class _NotchStageState extends State<NotchStage> with SingleTickerProviderStateM
               child: Opacity(
                 opacity: _bubbleAlpha.value.clamp(0.0, 1.0),
                 child: c.budsBubble != null
-                    ? GestureDetector(onTap: c.openBuds, child: _BudsBubble(c, c.budsBubble!, _bubble.value))
+                    ? GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: c.openBuds,
+                        child: c.budsBubble!.kind == ActivityKind.hotspot
+                            ? Container(
+                                decoration: const BoxDecoration(color: Colors.black, shape: BoxShape.circle),
+                                alignment: Alignment.center,
+                                child: Icon(Icons.wifi_tethering_rounded, color: const Color(0xFF30D158), size: _bubble.value * 0.56),
+                              )
+                            : _BudsBubble(c, c.budsBubble!, _bubble.value),
+                      )
                     : GestureDetector(
                         onTap: second == null
                             ? null
@@ -390,9 +423,10 @@ class _NotchStageState extends State<NotchStage> with SingleTickerProviderStateM
   );
 }
 
-/// The edge the settings ask for, only while the notch is black: closed always, open unless a design colours it.
+/// The edge the settings ask for, only while the notch is black and >50% of the background behind it is pure black.
 NotchOutline _outlineFor(NotchController c, bool open) {
   if (c.settings.outline == NotchOutline.none) return NotchOutline.none;
+  if (c.touchRegion && !c.bgBlack) return NotchOutline.none;
   final design = _design(c);
   final black = !open || design == null || design.background.computeLuminance() < 0.02;
   return black ? c.settings.outline : NotchOutline.none;
@@ -425,8 +459,7 @@ class _Outline extends StatelessWidget {
       };
 }
 
-/// The open player: black, with a hint of the blurred cover rising from the bottom. It fades out before the camera's
-/// band, so the camera and the black around it stay one piece.
+/// The open player: black around the camera, with the blurred album cover rising as a smooth gradient from below.
 class _CoverGlow extends StatelessWidget {
   final CoverColors cover;
   final NotchSettings settings;
@@ -435,22 +468,25 @@ class _CoverGlow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final open = settings.open, closed = settings.closed;
-    // Where the camera's band ends inside the open notch, and a little below it.
-    final clear = ((closed.y - open.y + closed.height + 12) / open.height).clamp(0.1, 0.8);
+    final clear = ((closed.y - open.y + closed.height + 6) / open.height).clamp(0.12, 0.55);
     return Stack(
-      key: const ValueKey('wash'),
+      key: ValueKey('wash:${cover.accent.toARGB32()}'),
       fit: StackFit.expand,
       children: [
-        const ColoredBox(color: Colors.black),
-        ShaderMask(
-          blendMode: BlendMode.dstIn,
-          shaderCallback: (rect) => LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Colors.transparent, Colors.transparent, Colors.white.withValues(alpha: 0.42)],
-            stops: [0, clear, 1],
-          ).createShader(rect),
-          child: RawImage(image: cover.backdrop, fit: BoxFit.fill, filterQuality: FilterQuality.high),
+        RawImage(image: cover.backdrop, fit: BoxFit.fill, filterQuality: FilterQuality.high),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Colors.black,
+                Colors.black.withValues(alpha: 0.92),
+                Colors.black.withValues(alpha: 0.45),
+              ],
+              stops: [0.0, clear, 1.0],
+            ),
+          ),
         ),
       ],
     );
@@ -468,7 +504,8 @@ class _Backdrop extends StatelessWidget {
   Widget build(BuildContext context) {
     final cover = c.cover;
     final design = _design(c);
-    final wash = open && design == null && c.settings.look == NotchLook.holm && p?.kind == ActivityKind.music && cover != null;
+    final allowsWash = design == null || design.id == 'classic' || design.id == 'album';
+    final wash = open && allowsWash && c.settings.look == NotchLook.holm && p?.kind == ActivityKind.music && cover != null;
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 300),
       // Filling the notch: the default layout centres children at their own (here: no) size. Black under it all:
@@ -481,10 +518,10 @@ class _Backdrop extends StatelessWidget {
           ?current,
         ],
       ),
-      child: open && design != null
-          ? ColoredBox(key: ValueKey('design:${design.id}'), color: design.background)
-          : wash
+      child: wash
           ? _CoverGlow(cover: cover, settings: c.settings)
+          : open && design != null
+          ? ColoredBox(key: ValueKey('design:${design.id}'), color: design.background)
           : open && design == null && p?.kind == ActivityKind.buds
           // The earbuds' card: a hint of their own colour from below (white buds white, pink ones pink).
           ? DecoratedBox(
@@ -590,9 +627,13 @@ class _ClosedTrailing extends StatelessWidget {
             ? Icon(Icons.phone_in_talk_rounded, color: accent, size: size * 0.8)
             : Text(_clock(a), style: style);
       case ActivityKind.navigation:
-        return Text(a.title ?? '', style: style.copyWith(color: Colors.white));
+        return Text(_navEta(a) ?? a.title ?? '', style: style.copyWith(color: Colors.white));
       case ActivityKind.privacy:
         return _Dot(color: accent, size: size * 0.42);
+      case ActivityKind.hotspot:
+        return Text('On', style: style);
+      case ActivityKind.ringer:
+        return Text(a.title ?? '', style: style);
       case ActivityKind.wifi || ActivityKind.vpn || ActivityKind.bluetooth || ActivityKind.torch:
         return Icon(a.on ? Icons.check_rounded : Icons.close_rounded, color: accent, size: size * 0.8);
       case ActivityKind.buds:
@@ -635,6 +676,8 @@ class _Wide extends StatelessWidget {
     ActivityKind.volume => (a.title ?? 'Volume', '${((a.progress ?? 0) * 100).round()}%'),
     ActivityKind.vpn => (a.mullvad ? 'Mullvad' : 'VPN', a.on ? 'On' : 'Off'),
     ActivityKind.torch => (a.title ?? 'Flashlight', a.on ? 'On' : 'Off'),
+    ActivityKind.ringer => ('Sound', a.title ?? (a.on ? 'Ring' : 'Silent')),
+    ActivityKind.hotspot => ('Hotspot', a.on ? 'On' : 'Off'),
     ActivityKind.download => (a.title ?? 'Download', 'Downloaded'),
     _ => (a.title ?? '', a.text ?? ''),
   };
@@ -779,6 +822,75 @@ class _Banner extends StatelessWidget {
   }
 }
 
+/// Incoming call pill (iPhone Dynamic Island style): avatar left, app + caller name, red decline & green accept right.
+class _CallPill extends StatelessWidget {
+  final NotchController c;
+  final NotchActivity a;
+  const _CallPill(this.c, this.a);
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        child: Row(
+          children: [
+            SizedBox(width: 48, height: 48, child: _Glyph(c, a, size: 48)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    a.label ?? 'Phone',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: _dim, fontSize: 12, height: 1.15),
+                  ),
+                  const SizedBox(height: 2),
+                  Marquee(
+                    a.title ?? 'Incoming call',
+                    style: const TextStyle(color: Colors.white, fontSize: 16.5, fontWeight: FontWeight.w600, height: 1.2),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 10),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => c.callAction(a, 'decline'),
+              child: Container(
+                width: 44,
+                height: 44,
+                decoration: const BoxDecoration(color: Color(0xFFFF453A), shape: BoxShape.circle),
+                alignment: Alignment.center,
+                child: const Icon(Icons.call_end_rounded, color: Colors.white, size: 22),
+              ),
+            ),
+            const SizedBox(width: 10),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => c.callAction(a, 'answer'),
+              child: Container(
+                width: 44,
+                height: 44,
+                decoration: const BoxDecoration(color: Color(0xFF30D158), shape: BoxShape.circle),
+                alignment: Alignment.center,
+                child: const Icon(Icons.call_rounded, color: Colors.white, size: 22),
+              ),
+            ),
+          ],
+        ),
+      );
+}
+
+/// Extracts short ETA like "7 min" from a Google Maps navigation notification.
+String? _navEta(NotchActivity a) {
+  final source = '${a.sub ?? ''} ${a.text ?? ''} ${a.title ?? ''}';
+  final m = RegExp(r'\b(\d+\s*(?:h\s*\d+\s*min|hr\s*\d+\s*min|Std\.?\s*\d+\s*Min\.?|min|Min\.?|h|Std\.?))\b', caseSensitive: false)
+      .firstMatch(source);
+  return m?.group(1);
+}
+
 // ───────────── open ─────────────
 
 class _Open extends StatelessWidget {
@@ -821,18 +933,22 @@ class _Open extends StatelessWidget {
           ),
           Expanded(child: _OpenBody(c, a, nothing)),
           if (second != null) ...[
-            Divider(height: 14, color: NotchPalette.of(context).ink.withValues(alpha: 0.12)),
+            Divider(height: 10, color: NotchPalette.of(context).ink.withValues(alpha: 0.12)),
             GestureDetector(
+              behavior: HitTestBehavior.opaque,
               onTap: () => c.focus(second!),
-              child: Row(
-                children: [
-                  SizedBox(width: 22, height: 22, child: _Glyph(c, second!, size: 22)),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Marquee(_summary(second!), style: TextStyle(color: NotchPalette.of(context).dim, fontSize: 13, fontFamily: nothing ? 'monospace' : null)),
-                  ),
-                  Icon(Icons.unfold_more_rounded, size: 16, color: NotchPalette.of(context).faint),
-                ],
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  children: [
+                    SizedBox(width: 22, height: 22, child: _Glyph(c, second!, size: 22)),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Marquee(_summary(second!), style: TextStyle(color: NotchPalette.of(context).dim, fontSize: 13, fontFamily: nothing ? 'monospace' : null)),
+                    ),
+                    Icon(Icons.unfold_more_rounded, size: 16, color: NotchPalette.of(context).faint),
+                  ],
+                ),
               ),
             ),
           ],
@@ -891,12 +1007,22 @@ class _OpenBody extends StatelessWidget {
   const _OpenBody(this.c, this.a, this.nothing);
 
   void _open() {
-    if (a.notificationKey != null) {
-      c.action?.call('open', {'key': a.notificationKey, 'page': a.page});
+    if (a.notificationKey != null || a.package != null) {
+      c.action?.call('open', {'key': a.notificationKey, 'package': a.package, 'page': a.page});
     } else if (a.page != null) {
       c.action?.call('openApp', {'page': a.page});
+    } else {
+      final sys = switch (a.kind) {
+        ActivityKind.charging => 'battery',
+        ActivityKind.wifi => 'wifi',
+        ActivityKind.hotspot => 'hotspot',
+        ActivityKind.bluetooth || ActivityKind.buds => 'bluetooth',
+        ActivityKind.vpn => 'vpn',
+        _ => null,
+      };
+      if (sys != null) c.action?.call('openSystem', {'what': sys});
     }
-    c.dismiss(a);
+    if (a.isAlert) c.dismiss(a);
     c.collapse();
   }
 
@@ -970,21 +1096,25 @@ class _OpenBody extends StatelessWidget {
         final radius = _buttonRadius(c.settings);
         return Column(
           children: [
-            Row(
-              children: [
-                SizedBox(width: 44, height: 44, child: _Glyph(c, a, size: 44)),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      headline(title, size: 18),
-                      const SizedBox(height: 2),
-                      body(ringing ? 'Incoming call' : _clock(a), lines: 1),
-                    ],
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _open,
+              child: Row(
+                children: [
+                  SizedBox(width: 44, height: 44, child: _Glyph(c, a, size: 44)),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        headline(title, size: 18),
+                        const SizedBox(height: 2),
+                        body(ringing ? 'Incoming call' : _clock(a), lines: 1),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
             const Spacer(),
             Row(
@@ -1003,18 +1133,59 @@ class _OpenBody extends StatelessWidget {
           ],
         );
       case ActivityKind.navigation:
+        final eta = a.sub ?? _navEta(a);
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: _open,
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              SizedBox(width: 52, height: 52, child: _Glyph(c, a, size: 52)),
-              const SizedBox(width: 16),
+              SizedBox(width: 54, height: 54, child: _Glyph(c, a, size: 54)),
+              const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [headline(title, size: 24), const SizedBox(height: 2), body(a.text, lines: 1)],
+                  children: [
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: NotchPalette.of(context).ink, fontSize: 13.5, fontWeight: FontWeight.w700),
+                    ),
+                    if (a.text != null && a.text!.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        a.text!,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: NotchPalette.of(context).ink, fontSize: 17.5, fontWeight: FontWeight.w500, height: 1.2),
+                      ),
+                    ],
+                    if (eta != null && eta.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          Container(
+                            width: 16,
+                            height: 16,
+                            decoration: const BoxDecoration(color: Color(0xFF34A853), shape: BoxShape.circle),
+                            alignment: Alignment.center,
+                            child: const Icon(Icons.navigation_rounded, size: 10, color: Colors.white),
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              eta,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: NotchPalette.of(context).dim, fontSize: 12.5),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
                 ),
               ),
             ],
@@ -1064,18 +1235,40 @@ class _OpenBody extends StatelessWidget {
           ],
         );
       case ActivityKind.privacy:
-        return Row(
-          children: [
-            Icon(a.on ? Icons.videocam_rounded : Icons.mic_rounded, color: accent, size: 32),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [headline('$title in use'), const SizedBox(height: 2), body(a.text ?? 'By an app', lines: 1)],
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _open,
+          child: Row(
+            children: [
+              Icon(a.on ? Icons.videocam_rounded : Icons.mic_rounded, color: accent, size: 32),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [headline('$title in use'), const SizedBox(height: 2), body(a.text ?? 'By an app', lines: 1)],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
+        );
+      case ActivityKind.hotspot:
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _open,
+          child: Row(
+            children: [
+              Icon(Icons.wifi_tethering_rounded, color: accent, size: 34),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [headline('Hotspot'), const SizedBox(height: 2), body(a.on ? 'Personal hotspot active' : 'Off', lines: 1)],
+                ),
+              ),
+            ],
+          ),
         );
       case ActivityKind.volume:
         // Every volume, one under the other, each set with a finger.
@@ -1154,39 +1347,47 @@ class _OpenBody extends StatelessWidget {
           ],
         );
       case ActivityKind.charging:
-        return Row(
-          children: [
-            Icon(a.on ? Icons.bolt_rounded : Icons.power_off_rounded, color: accent, size: 34),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  headline(a.level == null ? title : '$title · ${a.level}%'),
-                  const SizedBox(height: 12),
-                  _Bar(progress: (a.level ?? 0) / 100, color: accent, nothing: nothing),
-                ],
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _open,
+          child: Row(
+            children: [
+              Icon(a.on ? Icons.bolt_rounded : Icons.power_off_rounded, color: accent, size: 34),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    headline(a.level == null ? title : '$title · ${a.level}%'),
+                    const SizedBox(height: 12),
+                    _Bar(progress: (a.level ?? 0) / 100, color: accent, nothing: nothing),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         );
       case ActivityKind.vpn:
-        return Row(
-          children: [
-            if (a.mullvad)
-              Mole(up: a.on, size: 64)
-            else
-              Icon(a.on ? Icons.vpn_lock_rounded : Icons.no_encryption_outlined, color: accent, size: 34),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [headline(title), const SizedBox(height: 4), body(a.text, lines: 1)],
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _open,
+          child: Row(
+            children: [
+              if (a.mullvad)
+                Mole(up: a.on, size: 64)
+              else
+                Icon(a.on ? Icons.vpn_lock_rounded : Icons.no_encryption_outlined, color: accent, size: 34),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [headline(title), const SizedBox(height: 4), body(a.text, lines: 1)],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         );
       default:
         if (a.isOffer) {
@@ -1415,37 +1616,64 @@ class _Home extends StatelessWidget {
     final de = locale == 'de';
     final days = de ? const ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'] : const ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     final date = '${days[now.weekday - 1]} ${now.day}.${now.month}.';
-    final chips = <(IconData, String)>[
-      if (c.batteryLevel != null) (c.plugged ? Icons.bolt_rounded : Icons.battery_5_bar_rounded, '${c.batteryLevel}%'),
-      for (final e in c.headphones.entries.take(1)) (Icons.headphones_rounded, '${e.value}%'),
-      if (c.nextAlarm != null) (Icons.alarm_rounded, _hm(c.nextAlarm!)),
-      if (c.nextEvent != null) (Icons.event_rounded, '${_hm(c.nextEvent!.begin)} ${c.nextEvent!.title}'),
-      if (c.devices.isNotEmpty) (Icons.laptop_rounded, c.devices.first),
+    final chips = <(IconData, String, VoidCallback)>[
+      if (c.batteryLevel != null)
+        (c.plugged ? Icons.bolt_rounded : Icons.battery_5_bar_rounded, '${c.batteryLevel}%', () {
+          c.collapse();
+          c.action?.call('openSystem', {'what': 'battery'});
+        }),
+      for (final e in c.headphones.entries.take(1))
+        (Icons.headphones_rounded, '${e.value}%', () {
+          c.collapse();
+          c.action?.call('openSystem', {'what': 'bluetooth'});
+        }),
+      if (c.nextAlarm != null)
+        (Icons.alarm_rounded, _hm(c.nextAlarm!), () {
+          c.collapse();
+          c.action?.call('openSystem', {'what': 'clock'});
+        }),
+      if (c.nextEvent != null)
+        (Icons.event_rounded, '${_hm(c.nextEvent!.begin)} ${c.nextEvent!.title}', () {
+          c.collapse();
+          c.action?.call('openSystem', {'what': 'calendar'});
+        }),
+      if (c.devices.isNotEmpty)
+        (Icons.laptop_rounded, c.devices.first, () {
+          c.collapse();
+          c.action?.call('openApp', {'page': 'devices'});
+        }),
     ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            nothing
-                ? DotText(_hm(now), dot: 5)
-                : Text(
-                    _hm(now),
-                    style: TextStyle(
-                      color: NotchPalette.of(context).ink,
-                      fontSize: 44,
-                      height: 1,
-                      fontWeight: FontWeight.w300,
-                      fontFeatures: [FontFeature.tabularFigures()],
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () {
+            c.collapse();
+            c.action?.call('openSystem', {'what': 'clock'});
+          },
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              nothing
+                  ? DotText(_hm(now), dot: 5)
+                  : Text(
+                      _hm(now),
+                      style: TextStyle(
+                        color: NotchPalette.of(context).ink,
+                        fontSize: 44,
+                        height: 1,
+                        fontWeight: FontWeight.w300,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
                     ),
-                  ),
-            const SizedBox(width: 12),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Text(date, style: TextStyle(color: NotchPalette.of(context).dim, fontSize: 15, fontFamily: nothing ? 'monospace' : null)),
-            ),
-          ],
+              const SizedBox(width: 12),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(date, style: TextStyle(color: NotchPalette.of(context).dim, fontSize: 15, fontFamily: nothing ? 'monospace' : null)),
+              ),
+            ],
+          ),
         ),
         const Spacer(),
         Row(
@@ -1457,25 +1685,29 @@ class _Home extends StatelessWidget {
           scrollDirection: Axis.horizontal,
           child: Row(
           children: [
-            for (final (i, (icon, text)) in chips.indexed)
-              Container(
-                margin: EdgeInsets.only(left: i == 0 ? 0 : 6),
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                decoration: BoxDecoration(
-                  color: NotchPalette.of(context).ink.withValues(alpha: nothing ? 0 : 0.1),
-                  border: nothing ? Border.all(color: NotchPalette.of(context).ink.withValues(alpha: 0.3)) : null,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(icon, size: 14, color: NotchPalette.of(context).dim),
-                    const SizedBox(width: 4),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 110),
-                      child: Marquee(text, style: TextStyle(color: NotchPalette.of(context).ink, fontSize: 12.5, fontFamily: nothing ? 'monospace' : null)),
-                    ),
-                  ],
+            for (final (i, (icon, text, onTap)) in chips.indexed)
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: onTap,
+                child: Container(
+                  margin: EdgeInsets.only(left: i == 0 ? 0 : 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: NotchPalette.of(context).ink.withValues(alpha: nothing ? 0 : 0.1),
+                    border: nothing ? Border.all(color: NotchPalette.of(context).ink.withValues(alpha: 0.3)) : null,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(icon, size: 14, color: NotchPalette.of(context).dim),
+                      const SizedBox(width: 4),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 110),
+                        child: Marquee(text, style: TextStyle(color: NotchPalette.of(context).ink, fontSize: 12.5, fontFamily: nothing ? 'monospace' : null)),
+                      ),
+                    ],
+                  ),
                 ),
               ),
           ],
@@ -1570,14 +1802,28 @@ class _Player extends StatelessWidget {
     final accent = nothing ? _nothingRed : (c.cover?.accent ?? NotchPalette.of(context).ink);
     final dur = m?.duration ?? 0;
     void act(String action, [int? position]) => c.action?.call('media', {'action': action, 'position': position});
+    final showLike = (m?.canLike ?? false) ||
+        (m?.package.contains('spotify') ?? false) ||
+        (m?.package.contains('apple.android.music') ?? false) ||
+        (m?.package.contains('youtube.music') ?? false);
     final controls = Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         _MediaButton(Icons.skip_previous_rounded, 28, nothing, () => act('previous')),
-        const SizedBox(width: 24),
+        const SizedBox(width: 20),
         _MediaButton((m?.playing ?? false) ? Icons.pause_rounded : Icons.play_arrow_rounded, 38, nothing, () => act('toggle')),
-        const SizedBox(width: 24),
+        const SizedBox(width: 20),
         _MediaButton(Icons.skip_next_rounded, 28, nothing, () => act('next')),
+        if (showLike) ...[
+          const SizedBox(width: 14),
+          _MediaButton(
+            (m?.liked ?? false) ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+            22,
+            nothing,
+            () => act('like'),
+            color: (m?.liked ?? false) ? const Color(0xFF1ED760) : null,
+          ),
+        ],
       ],
     );
     // However tall the person made the open notch: the song's line goes first, then the buttons move up beside the cover.
@@ -1588,34 +1834,47 @@ class _Player extends StatelessWidget {
           children: [
             Row(
               children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(nothing ? 4 : 12),
-                  child: SizedBox(
-                    width: 56,
-                    height: 56,
-                    child: c.art != null
-                        ? Image.memory(c.art!, fit: BoxFit.cover, gaplessPlayback: true)
-                        : ColoredBox(
-                            color: NotchPalette.of(context).ink.withValues(alpha: 0.1),
-                            child: Icon(Icons.music_note_rounded, color: NotchPalette.of(context).dim),
-                          ),
-                  ),
-                ),
-                const SizedBox(width: 14),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      nothing
-                          ? FittedBox(
-                              fit: BoxFit.scaleDown,
-                              alignment: Alignment.centerLeft,
-                              child: DotText(m?.title ?? 'Nothing playing', dot: 2.6, maxChars: 22),
-                            )
-                          : Marquee(m?.title ?? 'Nothing playing', style: TextStyle(color: NotchPalette.of(context).ink, fontSize: 17, fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 3),
-                      Marquee(m?.artist ?? '', style: TextStyle(color: NotchPalette.of(context).dim, fontSize: 14, fontFamily: nothing ? 'monospace' : null)),
-                    ],
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () {
+                      if (m?.package != null) c.action?.call('open', {'package': m!.package});
+                      c.collapse();
+                    },
+                    child: Row(
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(nothing ? 4 : 12),
+                          child: SizedBox(
+                            width: 56,
+                            height: 56,
+                            child: c.art != null
+                                ? Image.memory(c.art!, fit: BoxFit.cover, gaplessPlayback: true)
+                                : ColoredBox(
+                                    color: NotchPalette.of(context).ink.withValues(alpha: 0.1),
+                                    child: Icon(Icons.music_note_rounded, color: NotchPalette.of(context).dim),
+                                  ),
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              nothing
+                                  ? FittedBox(
+                                      fit: BoxFit.scaleDown,
+                                      alignment: Alignment.centerLeft,
+                                      child: DotText(m?.title ?? 'Nothing playing', dot: 2.6, maxChars: 22),
+                                    )
+                                  : Marquee(m?.title ?? 'Nothing playing', style: TextStyle(color: NotchPalette.of(context).ink, fontSize: 17, fontWeight: FontWeight.w600)),
+                              const SizedBox(height: 3),
+                              Marquee(m?.artist ?? '', style: TextStyle(color: NotchPalette.of(context).dim, fontSize: 14, fontFamily: nothing ? 'monospace' : null)),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
                 if (compact)
@@ -1788,7 +2047,8 @@ class _MediaButton extends StatelessWidget {
   final double size;
   final bool nothing;
   final VoidCallback onTap;
-  const _MediaButton(this.icon, this.size, this.nothing, this.onTap);
+  final Color? color;
+  const _MediaButton(this.icon, this.size, this.nothing, this.onTap, {this.color});
 
   @override
   Widget build(BuildContext context) => GestureDetector(
@@ -1804,7 +2064,7 @@ class _MediaButton extends StatelessWidget {
             )
           : null,
       alignment: Alignment.center,
-      child: Icon(icon, color: NotchPalette.of(context).ink, size: nothing ? size * 0.7 : size),
+      child: Icon(icon, color: color ?? NotchPalette.of(context).ink, size: nothing ? size * 0.7 : size),
     ),
   );
 }
@@ -1819,6 +2079,7 @@ class _Button extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => GestureDetector(
+    behavior: HitTestBehavior.opaque,
     onTap: onTap,
     child: Container(
       height: 42,
@@ -1874,6 +2135,14 @@ class _Glyph extends StatelessWidget {
         return symbol(a.on ? Icons.bolt_rounded : Icons.power_off_rounded);
       case ActivityKind.wifi:
         return symbol(a.on ? Icons.wifi_rounded : Icons.wifi_off_rounded);
+      case ActivityKind.hotspot:
+        return symbol(Icons.wifi_tethering_rounded);
+      case ActivityKind.ringer:
+        return symbol(a.ringerMode == 0
+            ? Icons.notifications_off_rounded
+            : a.ringerMode == 1
+                ? Icons.vibration_rounded
+                : Icons.notifications_active_rounded);
       case ActivityKind.bluetooth:
         return symbol(a.on ? Icons.bluetooth_connected_rounded : Icons.bluetooth_disabled_rounded);
       case ActivityKind.vpn:

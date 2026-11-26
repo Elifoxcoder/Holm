@@ -69,7 +69,8 @@ sealed partial class SettingsWindow : Window
     readonly List<(string Code, Control Row, SettingsSwitch Setting)> _secretRows = new();
     string _typed = "";
     readonly Button _apply;
-    readonly Border _surface, _dialog;
+    readonly Border _surface, _dialog, _backButton;
+    readonly Stack<string> _history = new();
     readonly Func<bool> _animations;
     bool _allowClose;
 
@@ -94,15 +95,14 @@ sealed partial class SettingsWindow : Window
         _social = social ?? Array.Empty<HubPage>();
         Title = "HolyNotch";
         WindowDecorations = WindowDecorations.None;
-        // Glass designs blur what's behind where the system can (Windows); elsewhere the panel is see-through.
         var design = Look.Current;
-        TransparencyLevelHint = Look.Prism
-            ? new[] { WindowTransparencyLevel.Blur, WindowTransparencyLevel.AcrylicBlur, WindowTransparencyLevel.Transparent }
-            : design.Glass
-                ? new[] { WindowTransparencyLevel.AcrylicBlur, WindowTransparencyLevel.Blur, WindowTransparencyLevel.Transparent }
-                : new[] { WindowTransparencyLevel.Transparent };
-        Background = Brushes.Transparent;
-        CanResize = false;
+        var opaquePanel = B(design.Panel | 0xFF000000);
+        var opaqueSidebar = B(design.Sidebar | 0xFF000000);
+        TransparencyLevelHint = new[] { WindowTransparencyLevel.None };
+        Background = opaquePanel;
+        CanResize = true;
+        MinWidth = 720;
+        MinHeight = 520;
         Width = 980;
         Height = 740;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -193,56 +193,73 @@ sealed partial class SettingsWindow : Window
             _titles[page.Key] = (page.Title, page.Subtitle);
             nav.Children.Add(NavItem(page.Key, page.Glyph, page.Title));
         }
-        const double prismSidebarInset = 12;
-        double corners = Look.Prism ? design.Corners + prismSidebarInset : design.Glass ? 0 : design.Corners;
-        if (Look.Prism)
-        {
-            // The native blur fills the window, so clip it as well as the painted surface.
-            void RoundWindow()
-            {
-                if (TryGetPlatformHandle() is { } handle)
-                    platform.SetRoundedWindowRegion(handle.Handle, (int)Math.Round(corners * RenderScaling));
-            }
-            Opened += (_, _) => RoundWindow();
-            SizeChanged += (_, _) => RoundWindow();
-            // On Windows the DPI notification arrives before the native window is resized.
-            ScalingChanged += (_, _) => Dispatcher.UIThread.Post(RoundWindow);
-        }
         var sideContent = new Grid();
         if (Look.Aero) sideContent.Children.Add(new AeroScenery(sidebar: true));
         DesignDetail.AddTo(sideContent, design);
         if (DotTextBlock.Enabled) sideContent.Children.Add(new Avalonia.Controls.Shapes.Rectangle { Fill = DotMatrix.Grid(design.Ink, 0x14), IsHitTestVisible = false });
         sideContent.Children.Add(sidebar);
-        if (Look.Prism) sideContent.Children.Add(new PrismGlass(design.Corners) { IsHitTestVisible = false });
         var sideBorder = new Border
         {
-            Background = Look.Prism ? PrismGlass.FloatingSurface(design.Sidebar, design.Ink) : Sidebar,
-            CornerRadius = Look.Prism ? new CornerRadius(design.Corners) : new CornerRadius(corners, 0, 0, corners),
-            Margin = Look.Prism ? new Thickness(prismSidebarInset, prismSidebarInset, 0, prismSidebarInset) : default,
-            BoxShadow = Look.Prism ? new BoxShadows(new BoxShadow { OffsetY = 4, Blur = 15, Color = Color.FromArgb(0x55, 0, 0, 0) }) : default,
+            Background = Look.Aero ? Sidebar : opaqueSidebar,
+            BorderBrush = Line,
+            BorderThickness = new Thickness(0, 0, 1, 0),
             ClipToBounds = Look.Aero, Child = sideContent,
         };
 
         // ── content ──
         var content = new DockPanel { Margin = new Thickness(28, 18, 22, 20) };
-        var header = new Grid { Background = Brushes.Transparent, Margin = new Thickness(0, 0, 0, 16), ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-        header.PointerPressed += (_, e) => { if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) BeginMoveDrag(e); };
+        var header = new Grid { Background = Brushes.Transparent, Margin = new Thickness(0, 0, 0, 16), ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
+        header.PointerPressed += (_, e) =>
+        {
+            if (e.ClickCount == 2 && e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+                WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+            else if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+                BeginMoveDrag(e);
+        };
+        _backButton = new Border
+        {
+            Width = 30, Height = 30, CornerRadius = new CornerRadius(15), Background = Card, Cursor = new Cursor(StandardCursorType.Hand),
+            VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 3, 12, 0), Child = Glyph("\uE72B", 12),
+        };
+        ToolTip.SetTip(_backButton, "Back (Esc)");
+        _backButton.PointerEntered += (_, _) => _backButton.Background = Edge;
+        _backButton.PointerExited += (_, _) => _backButton.Background = Card;
+        _backButton.PointerPressed += (_, e) => e.Handled = true;
+        _backButton.PointerReleased += (_, e) => { e.Handled = true; GoBack(); };
+        header.Children.Add(_backButton);
+
         var titles = new StackPanel();
         titles.Children.Add(_pageTitle);
         titles.Children.Add(_pageSubtitle);
+        Grid.SetColumn(titles, 1);
         header.Children.Add(titles);
+
+        var windowButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Top };
+        var maximize = new Border
+        {
+            Width = 30, Height = 30, CornerRadius = new CornerRadius(15), Background = Card, Cursor = new Cursor(StandardCursorType.Hand),
+            Child = Glyph("\uE740", 11),
+        };
+        ToolTip.SetTip(maximize, "Maximize / Restore");
+        maximize.PointerEntered += (_, _) => maximize.Background = Edge;
+        maximize.PointerExited += (_, _) => maximize.Background = Card;
+        maximize.PointerPressed += (_, e) => e.Handled = true;
+        maximize.PointerReleased += (_, e) => { e.Handled = true; WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized; };
+        windowButtons.Children.Add(maximize);
+
         var close = new Border
         {
             Width = 30, Height = 30, CornerRadius = new CornerRadius(15), Background = Card, Cursor = new Cursor(StandardCursorType.Hand),
-            VerticalAlignment = VerticalAlignment.Top, Child = Glyph("", 11),
+            Child = Glyph("", 11),
         };
         ToolTip.SetTip(close, "Close (Esc)");
         close.PointerEntered += (_, _) => close.Background = Edge;
         close.PointerExited += (_, _) => close.Background = Card;
         close.PointerPressed += (_, e) => e.Handled = true; // not the start of a drag
         close.PointerReleased += (_, _) => Close();
-        Grid.SetColumn(close, 1);
-        header.Children.Add(close);
+        windowButtons.Children.Add(close);
+        Grid.SetColumn(windowButtons, 2);
+        header.Children.Add(windowButtons);
         DockPanel.SetDock(header, Dock.Top);
         content.Children.Add(header);
 
@@ -266,34 +283,38 @@ sealed partial class SettingsWindow : Window
         Grid.SetColumn(content, 1);
         columns.Children.Add(content);
 
-        Control surfaceContent = Look.Prism
-            ? new Grid { Children = { columns, new PrismGlass(corners) { IsHitTestVisible = false } } }
-            : columns;
         _surface = new Border
         {
-            Background = Panel, BorderBrush = Edge, BorderThickness = new Thickness(Look.Prism ? 0 : design.Edge != 0 ? design.EdgeWidth : 1),
-            CornerRadius = new CornerRadius(corners), Margin = new Thickness(design.Glass ? 0 : 16), Child = surfaceContent,
-            // A hard shadow in the designs that have one (Brutalist, Pocket), else a soft one.
-            BoxShadow = Look.Prism ? default : new BoxShadows(design.Shadow != 0
-                ? new BoxShadow { OffsetX = 7, OffsetY = 7, Color = Color.FromUInt32(design.Shadow) }
-                : new BoxShadow { OffsetY = 4, Blur = 28, Color = Color.FromArgb(0x80, 0, 0, 0) }),
+            Background = Look.Aero ? Panel : opaquePanel, BorderBrush = Edge, BorderThickness = new Thickness(design.Edge != 0 ? design.EdgeWidth : 1),
+            Child = columns,
         };
         _dialog = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(100, 0, 0, 0)), CornerRadius = new CornerRadius(corners), Margin = new Thickness(design.Glass ? 0 : 16),
+            Background = new SolidColorBrush(Color.FromArgb(140, 0, 0, 0)),
             IsVisible = false,
         };
         var layers = new Grid();
         layers.Children.Add(_surface);
         layers.Children.Add(_dialog);
+        AddResizeGrips(layers);
         Content = layers;
 
         InitJellyMotion(platform);
-        Navigate(start != null && _titles.ContainsKey(start) ? start : _social.Count > 0 ? _social[0].Key : groups[0].Key);
+        Navigate(start != null && _titles.ContainsKey(start) ? start : _social.Count > 0 ? _social[0].Key : groups[0].Key, recordHistory: false);
         RefreshApplyState();
         AddHandler(KeyDownEvent, RevealSecret, RoutingStrategies.Tunnel);
+        AddHandler(PointerPressedEvent, (_, e) =>
+        {
+            if (e.GetCurrentPoint(this).Properties.IsXButton1Pressed) { e.Handled = true; GoBack(); }
+        }, RoutingStrategies.Tunnel);
         KeyDown += (_, e) =>
         {
+            if (e.Key == Key.Left && e.KeyModifiers.HasFlag(KeyModifiers.Alt))
+            {
+                e.Handled = true;
+                if (!_dialog.IsVisible) GoBack();
+                return;
+            }
             if (e.Key != Key.Escape) return;
             e.Handled = true;
             if (_dialog.IsVisible) HideDialog(); else Close();
@@ -317,10 +338,47 @@ sealed partial class SettingsWindow : Window
         };
     }
 
+    void AddResizeGrips(Grid layers)
+    {
+        const double edge = 6, corner = 12;
+        Border Grip(WindowEdge which, StandardCursorType cursor, HorizontalAlignment ha, VerticalAlignment va, double w = double.NaN, double h = double.NaN, Thickness margin = default)
+        {
+            var g = new Border
+            {
+                Background = Brushes.Transparent, Cursor = new Cursor(cursor),
+                HorizontalAlignment = ha, VerticalAlignment = va, Margin = margin,
+            };
+            if (!double.IsNaN(w)) g.Width = w;
+            if (!double.IsNaN(h)) g.Height = h;
+            g.PointerPressed += (_, e) =>
+            {
+                if (WindowState == WindowState.Maximized || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) return;
+                e.Handled = true;
+                BeginResizeDrag(which, e);
+            };
+            return g;
+        }
+        layers.Children.Add(Grip(WindowEdge.West, StandardCursorType.SizeWestEast, HorizontalAlignment.Left, VerticalAlignment.Stretch, w: edge, margin: new Thickness(0, corner, 0, corner)));
+        layers.Children.Add(Grip(WindowEdge.East, StandardCursorType.SizeWestEast, HorizontalAlignment.Right, VerticalAlignment.Stretch, w: edge, margin: new Thickness(0, corner, 0, corner)));
+        layers.Children.Add(Grip(WindowEdge.North, StandardCursorType.SizeNorthSouth, HorizontalAlignment.Stretch, VerticalAlignment.Top, h: edge, margin: new Thickness(corner, 0, corner, 0)));
+        layers.Children.Add(Grip(WindowEdge.South, StandardCursorType.SizeNorthSouth, HorizontalAlignment.Stretch, VerticalAlignment.Bottom, h: edge, margin: new Thickness(corner, 0, corner, 0)));
+        layers.Children.Add(Grip(WindowEdge.NorthWest, StandardCursorType.TopLeftCorner, HorizontalAlignment.Left, VerticalAlignment.Top, w: corner, h: corner));
+        layers.Children.Add(Grip(WindowEdge.NorthEast, StandardCursorType.TopRightCorner, HorizontalAlignment.Right, VerticalAlignment.Top, w: corner, h: corner));
+        layers.Children.Add(Grip(WindowEdge.SouthWest, StandardCursorType.BottomLeftCorner, HorizontalAlignment.Left, VerticalAlignment.Bottom, w: corner, h: corner));
+        layers.Children.Add(Grip(WindowEdge.SouthEast, StandardCursorType.BottomRightCorner, HorizontalAlignment.Right, VerticalAlignment.Bottom, w: corner, h: corner));
+    }
+
+    public void GoBack()
+    {
+        if (_history.Count > 0) Navigate(_history.Pop(), recordHistory: false);
+        else Close();
+    }
+
     /// <summary>Opens a page: a friends page by its key, or a group of switches by its key.</summary>
-    public void Navigate(string key)
+    public void Navigate(string key, bool recordHistory = true)
     {
         if (!_titles.ContainsKey(key)) return;
+        if (recordHistory && Page.Length > 0 && Page != key) _history.Push(Page);
         _typed = "";
         _shownView?.Detach();
         _shownView = null;
@@ -331,6 +389,8 @@ sealed partial class SettingsWindow : Window
         if (key == SecretPage && IsActive) _pageHost.Focus();
         (_pageTitle.Text, _pageSubtitle.Text) = (Look.Heading(_titles[key].Title), _titles[key].Subtitle);
         _footer.IsVisible = settings;
+        ToolTip.SetTip(_backButton, _history.Count > 0 && _titles.TryGetValue(_history.Peek(), out var prev)
+            ? $"Back to {prev.Title} (Alt+Left)" : "Back (Esc)");
         foreach (var (k, item) in _navItems)
         {
             bool on = k == key;

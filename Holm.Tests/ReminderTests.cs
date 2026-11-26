@@ -142,7 +142,7 @@ public class ReminderListTests
     public void Reminders_survive_a_restart_through_the_settings_file()
     {
         var settings = JsonSerializer.Deserialize<AppSettings>("{}")!;
-        Assert.True(settings.Reminders);
+        Assert.False(settings.Reminders);
         new ReminderList(settings.ReminderList).Add("Dentist", T0);
         var again = JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(settings))!;
         var restored = Assert.Single(again.ReminderList);

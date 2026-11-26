@@ -294,7 +294,7 @@ public sealed record FriendNote(FriendNoteKind Kind, string From, long Sent, byt
                                 string? RequestId = null, bool? Accepted = null, FriendProfile? Profile = null,
                                 string? Text = null, string? MessageId = null, FriendActivity? Activity = null, int? Trophies = null,
                                 string? Gif = null, string? Invite = null, string? Device = null, string? ForDevice = null, bool? Query = null,
-                                PhoneStatus? Phone = null, string? NoteId = null, bool? IsPhone = null);
+                                PhoneStatus? Phone = null, string? NoteId = null, bool? IsPhone = null, string? GroupId = null);
 
 /// <summary>
 /// What a friend is doing, as their notch shows it to friends who ask: listening to music, in a call, playing a game,
@@ -358,6 +358,14 @@ public enum FriendNoteKind
     Phone,
     /// <summary>Live clipboard text synced between devices of the same account (non-private text only, not stored offline).</summary>
     Clipboard,
+    /// <summary>Creates or updates an E2E-encrypted group chat and distributes its symmetric group key.</summary>
+    GroupInvite,
+    /// <summary>An E2E-encrypted message in a group chat.</summary>
+    GroupChat,
+    /// <summary>A reaction to a message in a group chat.</summary>
+    GroupReaction,
+    /// <summary>A member left a group chat.</summary>
+    GroupLeave,
 }
 
 public static class FriendNotes
@@ -405,6 +413,8 @@ public static class FriendNotes
         public bool? H { get; set; }
         /// <summary>A unique id for replay protection. Older Holm ignores it; old notes have no id and use a hash fallback.</summary>
         public string? J { get; set; }
+        /// <summary>For group chat notes: the group id.</summary>
+        public string? E { get; set; }
     }
 
     /// <summary>The key two friends share: SHA-256 over a label and their ECDH secret.</summary>
@@ -442,6 +452,10 @@ public static class FriendNotes
                 FriendNoteKind.Device => "device",
                 FriendNoteKind.Phone => "phone",
                 FriendNoteKind.Clipboard => "clipboard",
+                FriendNoteKind.GroupInvite => "group-invite",
+                FriendNoteKind.GroupChat => "group-chat",
+                FriendNoteKind.GroupReaction => "group-react",
+                FriendNoteKind.GroupLeave => "group-leave",
                 _ => throw new ArgumentOutOfRangeException(nameof(note)),
             },
             F = note.From,
@@ -467,6 +481,7 @@ public static class FriendNotes
             N = note.ForDevice,
             H = note.Query == true ? true : null,
             J = withId ? IsNoteId(note.NoteId) ? note.NoteId : NewNoteId() : null,
+            E = note.GroupId,
         };
         return SealDto(me, to, dto);
     }
@@ -583,6 +598,20 @@ public static class FriendNotes
                     => new FriendNote(FriendNoteKind.Phone, from, dto.T, Phone: phone with { Key = PhoneStatus.CleanKey(dto.I) }),
                 "clipboard" when OwnDevice.IsId(dto.D) && ChatText.Clean(ChatText.FromNote(dto.M)) is { } clip
                     => new FriendNote(FriendNoteKind.Clipboard, from, dto.T, Text: clip),
+                "group-invite" when Guid.TryParseExact(dto.E, "N", out _) && DecodeBoundedUtf8(dto.M, 2400) is { Length: > 0 } inviteJson
+                    => new FriendNote(FriendNoteKind.GroupInvite, from, dto.T, Text: inviteJson, GroupId: dto.E),
+                "group-chat" when Guid.TryParseExact(dto.E, "N", out _) && Guid.TryParseExact(dto.I, "N", out _)
+                                  && DecodeBoundedUtf8(dto.M, 2400) is { Length: > 0 } groupCipher
+                                  && groupCipher.StartsWith(ChatCrypto.GroupCipherPrefix, StringComparison.Ordinal)
+                    => new FriendNote(FriendNoteKind.GroupChat, from, dto.T, Text: groupCipher, MessageId: dto.I,
+                                      Gif: dto.G == true ? "1" : null, GroupId: dto.E),
+                "group-react" when Guid.TryParseExact(dto.E, "N", out _) && Guid.TryParseExact(dto.I, "N", out _)
+                                   && (dto.M == null || ChatReaction.Clean(ChatText.FromNote(dto.M)) != null)
+                    => new FriendNote(FriendNoteKind.GroupReaction, from, dto.T,
+                                      Text: dto.M == null ? null : ChatReaction.Clean(ChatText.FromNote(dto.M)),
+                                      MessageId: dto.I, GroupId: dto.E),
+                "group-leave" when Guid.TryParseExact(dto.E, "N", out _)
+                    => new FriendNote(FriendNoteKind.GroupLeave, from, dto.T, GroupId: dto.E),
                 _ => null, // a kind from a newer Holm: left unopened, as older ones leave "wave"
             };
             if (note != null)
@@ -594,6 +623,17 @@ public static class FriendNotes
             return note;
         }
         catch (Exception ex) when (ex is CryptographicException or FormatException or JsonException or ArgumentException or AsnContentException) { return null; }
+    }
+
+    static string? DecodeBoundedUtf8(string? base64, int maxBytes)
+    {
+        if (base64 == null || base64.Length > (maxBytes + 2) / 3 * 4) return null;
+        try
+        {
+            byte[] bytes = Convert.FromBase64String(base64);
+            return bytes.Length <= maxBytes ? Encoding.UTF8.GetString(bytes) : null;
+        }
+        catch (FormatException) { return null; }
     }
 }
 

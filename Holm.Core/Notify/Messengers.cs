@@ -76,6 +76,11 @@ public static class Messengers
                || app.Trim().Equals("Teams", StringComparison.OrdinalIgnoreCase)
                || app.Trim().Equals("Microsoft Teams", StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>Whether a notification's app is Spotify (which posts a toast on track changes).</summary>
+    public static bool IsSpotify(string? app)
+        => !string.IsNullOrWhiteSpace(app)
+           && app.Contains("Spotify", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>The messenger an app id belongs to; with no app id, the name Windows shows for the app.</summary>
     public static Messenger? ForApp(string? appId, string? displayName = null)
     {

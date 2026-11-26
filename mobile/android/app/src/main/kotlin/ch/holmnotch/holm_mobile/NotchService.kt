@@ -142,6 +142,93 @@ class NotchService : AccessibilityService() {
         if (event?.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED || event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             updateLockState()
             followShade()
+            scheduleBlackCheck()
+        }
+    }
+
+    /** Samples pixels behind the notch when outline is enabled; true only if >50% are pure black (<=1% off). */
+    private var lastBlackCheck = 0L
+    private var lastBgBlack: Boolean? = null
+    private var blackCheckPending = false
+
+    private fun outlineEnabled(): Boolean {
+        val json = NotchBridge.settings(this) ?: return false
+        return runCatching {
+            val outline = org.json.JSONObject(json).optString("outline", "none")
+            outline != "none" && outline.isNotEmpty()
+        }.getOrDefault(false)
+    }
+
+    private fun scheduleBlackCheck() {
+        if (locked || shadeOpen || !outlineEnabled() || blackCheckPending) return
+        val now = SystemClock.elapsedRealtime()
+        val wait = (1200L - (now - lastBlackCheck)).coerceAtLeast(120L)
+        blackCheckPending = true
+        NotchBridge.handler.postDelayed({
+            blackCheckPending = false
+            checkBackgroundBlack()
+        }, wait)
+    }
+
+    private fun checkBackgroundBlack() {
+        if (locked || shadeOpen || !outlineEnabled()) return
+        if (android.os.Build.VERSION.SDK_INT < 30) return
+        val area = if (!touchRect.isEmpty) Rect(touchRect.left + drawLeft(), touchRect.top, touchRect.right + drawLeft(), touchRect.bottom)
+        else {
+            val screen = wm.currentWindowMetrics.bounds
+            val w = (130 * density).toInt()
+            val h = (36 * density).toInt()
+            Rect((screen.width() - w) / 2, (10 * density).toInt(), (screen.width() + w) / 2, (46 * density).toInt())
+        }
+        lastBlackCheck = SystemClock.elapsedRealtime()
+        runCatching {
+            takeScreenshot(
+                android.view.Display.DEFAULT_DISPLAY,
+                mainExecutor,
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(screenshot: ScreenshotResult) {
+                        val buf = screenshot.hardwareBuffer
+                        try {
+                            val bmp = android.graphics.Bitmap.wrapHardwareBuffer(buf, screenshot.colorSpace)
+                                ?.copy(android.graphics.Bitmap.Config.ARGB_8888, false) ?: return
+                            try {
+                                val l = area.left.coerceIn(0, bmp.width - 1)
+                                val r = area.right.coerceIn(l + 1, bmp.width)
+                                val t = area.top.coerceIn(0, bmp.height - 1)
+                                val b = area.bottom.coerceIn(t + 1, bmp.height)
+                                val cols = 16
+                                val rows = 6
+                                var blackCount = 0
+                                var total = 0
+                                for (row in 0 until rows) {
+                                    val py = t + ((b - t - 1) * row) / (rows - 1).coerceAtLeast(1)
+                                    for (col in 0 until cols) {
+                                        val px = l + ((r - l - 1) * col) / (cols - 1).coerceAtLeast(1)
+                                        val c = bmp.getPixel(px, py)
+                                        val red = (c shr 16) and 0xFF
+                                        val green = (c shr 8) and 0xFF
+                                        val blue = c and 0xFF
+                                        // Pure black within ~1% (<= 3 out of 255 per channel)
+                                        if (red <= 3 && green <= 3 && blue <= 3) blackCount++
+                                        total++
+                                    }
+                                }
+                                val isBlack = total > 0 && blackCount * 2 > total
+                                if (isBlack != lastBgBlack) {
+                                    lastBgBlack = isBlack
+                                    NotchBridge.toNotch(mapOf("type" to "bgBlack", "black" to isBlack))
+                                }
+                            } finally {
+                                bmp.recycle()
+                            }
+                        } finally {
+                            buf.close()
+                        }
+                    }
+
+                    override fun onFailure(errorCode: Int) {}
+                },
+            )
         }
     }
 
@@ -364,8 +451,21 @@ class NotchService : AccessibilityService() {
             }
             "open" -> {
                 val key = call.argument<String>("key")
+                val pkg = call.argument<String>("package")
+                val page = call.argument<String>("page")
                 val intent = key?.let { NotchBridge.listener?.contentIntent(it) }
-                if (intent != null) send(intent) else openApp(call.argument<String>("page"))
+                if (intent != null) {
+                    send(intent)
+                } else if (pkg != null) {
+                    openPackage(pkg)
+                } else {
+                    openApp(page)
+                }
+                result.success(null)
+            }
+            "openSystem" -> {
+                val what = call.argument<String>("what")
+                openSystem(what)
                 result.success(null)
             }
             "openApp" -> {
@@ -593,6 +693,28 @@ class NotchService : AccessibilityService() {
         runCatching { startActivity(intent) }
     }
 
+    private fun openPackage(pkg: String) {
+        if (NotchBridge.isDeviceLocked(this)) return
+        val launch = packageManager.getLaunchIntentForPackage(pkg)?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) ?: return
+        runCatching { startActivity(launch) }
+    }
+
+    private fun openSystem(what: String?) {
+        if (NotchBridge.isDeviceLocked(this)) return
+        val intent = when (what) {
+            "clock" -> Intent(android.provider.AlarmClock.ACTION_SHOW_ALARMS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            "calendar" -> Intent(Intent.ACTION_VIEW, CalendarContract.CONTENT_URI.buildUpon().appendPath("time").build())
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            "wifi" -> Intent(android.provider.Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            "hotspot" -> Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            "bluetooth" -> Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            "battery" -> Intent(Intent.ACTION_POWER_USAGE_SUMMARY).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            "vpn" -> Intent(android.provider.Settings.ACTION_VPN_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            else -> null
+        } ?: return
+        runCatching { startActivity(intent) }
+    }
+
     // ───────────── system sources ─────────────
 
     /** True for the first moments after starting: the state then is what was there, not news to show. */
@@ -654,6 +776,26 @@ class NotchService : AccessibilityService() {
                     "call" to (stream == AudioManager.STREAM_VOICE_CALL),
                 )
             )
+        }
+        // Ringer mode changes (Silent <-> Vibrate <-> Ring).
+        var lastRinger = runCatching { getSystemService(AudioManager::class.java).ringerMode }.getOrDefault(-1)
+        receive(IntentFilter(AudioManager.RINGER_MODE_CHANGED_ACTION)) { intent ->
+            val mode = intent.getIntExtra(AudioManager.EXTRA_RINGER_MODE, -1)
+            if (mode < 0 || mode == lastRinger) return@receive
+            lastRinger = mode
+            if (!settling) NotchBridge.toNotch(mapOf("type" to "ringer", "mode" to mode))
+        }
+        // Personal hotspot (Wi-Fi tethering) active/inactive.
+        receive(IntentFilter("android.net.wifi.WIFI_AP_STATE_CHANGED")) { intent ->
+            val state = intent.getIntExtra("wifi_state", -1)
+            if (state == 13 || state == 11) {
+                NotchBridge.toNotch(mapOf("type" to "hotspot", "on" to (state == 13)))
+            }
+        }
+        runCatching {
+            val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+            val enabled = wifi.javaClass.getDeclaredMethod("isWifiApEnabled").apply { isAccessible = true }.invoke(wifi) as? Boolean
+            if (enabled == true) NotchBridge.toNotch(mapOf("type" to "hotspot", "on" to true))
         }
         // Camera and microphone in use, by any app.
         runCatching { getSystemService(CameraManager::class.java).registerAvailabilityCallback(cameraCallback, NotchBridge.handler) }

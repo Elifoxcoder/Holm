@@ -17,8 +17,11 @@ class MediaInfo {
   final int updated; // SystemClock.elapsedRealtime of the position, ms
   final double speed;
   final bool canSeek;
+  final bool canLike;
+  final bool liked;
   const MediaInfo({required this.package, required this.app, this.title, this.artist, required this.playing,
-      required this.position, required this.duration, required this.updated, required this.speed, required this.canSeek});
+      required this.position, required this.duration, required this.updated, required this.speed, required this.canSeek,
+      this.canLike = false, this.liked = false});
 
   /// Where the song is now, guessed from the last position and how long ago it was (wall clock as a stand-in).
   int positionAt(DateTime received) {
@@ -37,7 +40,7 @@ class NotchActivity {
   final DateTime created = DateTime.now();
   DateTime? until;
 
-  String? title, text, label, package, notificationKey, offerId, page;
+  String? title, text, sub, label, package, notificationKey, offerId, page;
   bool offerAuthenticated = false;
   /// The notification's own buttons: their index in it and their title (a reply's not among them, see [replyIndex]).
   List<(int, String)> actions = const [];
@@ -47,6 +50,8 @@ class NotchActivity {
   Uint8List? picture;
   /// Calls: 1 ringing, 2 talking (Notification.CallStyle).
   int callType = 0;
+  /// Ringer mode: 0 silent, 1 vibrate, 2 normal.
+  int ringerMode = 2;
   /// A screenshot to send to the PC.
   String? uri;
   double? progress; // 0..1; null with [busy] means indeterminate
@@ -69,15 +74,25 @@ class NotchActivity {
       const {ActivityKind.notification, ActivityKind.chat, ActivityKind.reminder, ActivityKind.clipboard, ActivityKind.screenshot}
           .contains(kind);
 
-  /// Short news (time's up, charging, connections) widens the notch: a name left of the camera, a value right of it.
+  /// Incoming call shows as a larger rounded pill with caller photo, decline, and green accept buttons.
+  bool get callPill => kind == ActivityKind.call && callType == 1;
+
+  /// Short news (time's up, charging, connections, ringer) widens the notch: a name left of the camera, a value right of it.
   bool get wide =>
       (kind == ActivityKind.timer && done) ||
       (kind == ActivityKind.download && done && isAlert) ||
       (isAlert &&
-          const {ActivityKind.charging, ActivityKind.wifi, ActivityKind.bluetooth, ActivityKind.vpn, ActivityKind.volume, ActivityKind.torch}
-              .contains(kind));
+          const {
+            ActivityKind.charging,
+            ActivityKind.wifi,
+            ActivityKind.bluetooth,
+            ActivityKind.vpn,
+            ActivityKind.volume,
+            ActivityKind.torch,
+            ActivityKind.ringer,
+          }.contains(kind));
 
-  bool get peeks => banner || wide;
+  bool get peeks => banner || wide || callPill;
 }
 
 /// What the notch knows and shows: fed by the system (notifications, media, battery, connections) and by Holm.
@@ -87,6 +102,10 @@ class NotchController extends ChangeNotifier {
   bool expanded = false;
   /// The overlay can limit touches to the notch, so its window keeps one size (NotchService.limitTouches).
   bool touchRegion = false;
+  /// True when >50% of the background behind the notch is pure black (sampled by NotchService).
+  bool bgBlack = false;
+  /// Explicit activity pinned to index 0 (e.g. tapped alert or switched via bottom switcher).
+  String? _focusedId;
 
   final Map<String, NotchActivity> _persistent = {};
   final List<NotchActivity> _alerts = [];
@@ -206,32 +225,44 @@ class NotchController extends ChangeNotifier {
         return b.priority.compareTo(a.priority);
       });
     final all = [...alerts.take(1), ...persistent, ...alerts.skip(1)];
-    final buds = all.where((a) => a.kind == ActivityKind.buds).firstOrNull;
-    // The earbuds are the small one beside anything else: in the bubble ([budsBubble]), in the notch only opened from
-    // there. Alone, they're the notch's own activity, as big as any.
-    final others = all.where((a) => a.kind != ActivityKind.buds).toList();
+    if (_focusedId != null) {
+      final idx = all.indexWhere((a) => a.id == _focusedId);
+      if (idx > 0) {
+        final chosen = all.removeAt(idx);
+        all.insert(0, chosen);
+      }
+    }
+    final smallSide = all.where((a) => a.kind == ActivityKind.buds || a.kind == ActivityKind.hotspot).firstOrNull;
+    // Earbuds and Hotspot are small beside anything else: in the bubble, in the notch only opened from there or alone.
+    final others = all.where((a) => a.kind != ActivityKind.buds && a.kind != ActivityKind.hotspot).toList();
     _othersShowing = others.length;
     final rest = others.take(settings.maxActivities).toList();
-    if (buds != null && (rest.isEmpty || (expanded && _focus == buds.id))) return [buds];
+    if (smallSide != null && (rest.isEmpty || (expanded && (_focus == smallSide.id || _focusedId == smallSide.id)))) {
+      return [smallSide, ...rest.take(settings.maxActivities - 1)];
+    }
     return rest;
   }
 
   /// How many other activities there are (all of them, also those beyond the ones shown), as of [visible].
   int _othersShowing = 0;
 
-  /// The earbuds in the bubble beside the camera (beside whatever else shows), while they're connected.
+  /// The earbuds or hotspot in the bubble beside the camera (beside whatever else shows), while active.
   NotchActivity? get budsBubble {
-    if (landscape || primary?.kind == ActivityKind.buds) return null; // alone (or opened), they're in the notch
-    if (_othersShowing >= 2) return null; // two others already: the earbuds step back until one is gone
-    final a = _persistent.values.where((a) => a.kind == ActivityKind.buds).firstOrNull;
-    return a != null && settings.shows(ActivityKind.buds) && !_hidden.contains(a.id) ? a : null;
+    if (landscape || primary?.kind == ActivityKind.buds || primary?.kind == ActivityKind.hotspot) return null;
+    if (_othersShowing >= 2) return null; // two others already: step back until one is gone
+    final buds = _persistent.values.where((a) => a.kind == ActivityKind.buds).firstOrNull;
+    if (buds != null && settings.shows(ActivityKind.buds) && !_hidden.contains(buds.id)) return buds;
+    final hs = _persistent.values.where((a) => a.kind == ActivityKind.hotspot).firstOrNull;
+    if (hs != null && settings.shows(ActivityKind.hotspot) && !_hidden.contains(hs.id)) return hs;
+    return null;
   }
 
-  /// A tap on the earbuds' bubble: their card opens (the buds come out of the case).
+  /// A tap on the earbuds/hotspot bubble: its card opens.
   void openBuds() {
     final a = budsBubble;
     if (a == null) return;
     _focus = a.id;
+    _focusedId = a.id;
     expanded = true;
     notifyListeners();
   }
@@ -246,10 +277,18 @@ class NotchController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void expand() {
-    if (primary == null || expanded) return;
+  void expand([NotchActivity? target]) {
+    final a = target ?? primary;
+    if (a == null || expanded) return;
+    if (a.isAlert) {
+      if (!_alerts.contains(a)) _alerts.add(a);
+      a.until = DateTime.now().add(const Duration(seconds: 10));
+    } else {
+      _focus = a.id;
+    }
+    _focusedId = a.id;
     expanded = true;
-    if (primary!.kind == ActivityKind.volume) _readVolumes();
+    if (a.kind == ActivityKind.volume) _readVolumes();
     notifyListeners();
   }
 
@@ -277,7 +316,8 @@ class NotchController extends ChangeNotifier {
   void collapse() {
     if (!expanded) return;
     expanded = false;
-    if (_persistent[_focus]?.kind == ActivityKind.buds) _focus = null; // back into the bubble
+    _focusedId = null;
+    if (_persistent[_focus]?.kind == ActivityKind.buds || _persistent[_focus]?.kind == ActivityKind.hotspot) _focus = null; // back into the bubble
     _endTyping();
     _persistent.remove('home');
     notifyListeners();
@@ -373,14 +413,16 @@ class NotchController extends ChangeNotifier {
         QuietMode.hours => settings.inQuietHours(DateTime.now()),
       };
 
-  /// Shows [a] first (a tap on the bubble).
+  /// Shows [a] first (a tap on the bubble or the bottom switcher).
   void focus(NotchActivity a) {
+    _focusedId = a.id;
     if (a.isAlert) {
       _alerts.remove(a);
       _alerts.add(a..until = DateTime.now().add(const Duration(seconds: 8)));
     } else {
       _focus = a.id;
     }
+    if (a.kind == ActivityKind.volume) _readVolumes();
     notifyListeners();
   }
 
@@ -542,6 +584,29 @@ class NotchController extends ChangeNotifier {
     switch (e['type']) {
       case 'settings':
         setSettings(NotchSettings.fromJsonString(e['json'] as String?));
+      case 'bgBlack':
+        bgBlack = e['black'] == true;
+        notifyListeners();
+      case 'hotspot':
+        final on = e['on'] == true;
+        if (on) {
+          _persistent['hotspot'] = NotchActivity('hotspot', ActivityKind.hotspot, persistent: true, priority: -50)
+            ..on = true
+            ..title = 'Hotspot'
+            ..text = 'Active'
+            ..label = 'Hotspot';
+        } else {
+          _persistent.remove('hotspot');
+          _hidden.remove('hotspot');
+        }
+        notifyListeners();
+      case 'ringer':
+        final mode = (e['mode'] as int?) ?? 2;
+        _alert(NotchActivity('ringer', ActivityKind.ringer, show: const Duration(milliseconds: 2500))
+          ..ringerMode = mode
+          ..on = mode == 2
+          ..title = mode == 0 ? 'Silent' : mode == 1 ? 'Vibrate' : 'Ring'
+          ..text = mode == 0 ? 'Muted' : mode == 1 ? 'Vibrate' : 'Sound on');
       case 'torch':
         final on = e['on'] == true;
         // Switched (not the state Android tells once at the start): a moment in the notch.
@@ -769,7 +834,8 @@ class NotchController extends ChangeNotifier {
       if (!ringing && e['chronometer'] == true) a.countUpStart = DateTime.fromMillisecondsSinceEpoch((e['when'] as int?) ?? 0);
       if (ringing && !initial) {
         _focus = a.id;
-        expanded = true; // Answer and Decline, right there
+        _focusedId = a.id;
+        expanded = false; // show as iPhone-style incoming call pill with Answer/Decline buttons
         _tellPc('call', a.title);
       }
       if (!ringing) callMuted = false;
@@ -777,7 +843,9 @@ class NotchController extends ChangeNotifier {
       return;
     }
     if (ongoing && (category == 'navigation' || pkg == 'com.google.android.apps.maps' || pkg == 'com.waze')) {
-      persistent(ActivityKind.navigation, 72).picture = e['picture'] as Uint8List?;
+      persistent(ActivityKind.navigation, 72)
+        ..picture = e['picture'] as Uint8List?
+        ..sub = e['sub'] as String?;
       notifyListeners();
       return;
     }
@@ -945,6 +1013,8 @@ class NotchController extends ChangeNotifier {
       updated: (e['updated'] as int?) ?? 0,
       speed: (e['speed'] as num?)?.toDouble() ?? 1,
       canSeek: e['canSeek'] == true,
+      canLike: e['canLike'] == true,
+      liked: e['liked'] == true,
     );
     // Swiped away, the music stays hidden only for that song: the next one, or playing again after a pause, shows it.
     final before = media;
@@ -958,12 +1028,14 @@ class NotchController extends ChangeNotifier {
     final art = e['art'] as Uint8List?;
     final artKey = e['artKey'] as String?;
     // A new song, or the same song's cover arriving late (players send the title first, the picture after).
-    if (artKey != _artKey || (this.art == null && art != null)) {
+    if (artKey != _artKey || (art != null && (this.art == null || cover == null))) {
       _artKey = artKey;
-      this.art = art;
+      if (art != null || artKey != _artKey) this.art = art;
+      if (art != null) this.art = art;
       cover = null;
-      if (art != null) {
-        CoverColors.of(art).then((c) {
+      if (this.art != null) {
+        final bytes = this.art!;
+        CoverColors.of(bytes).then((c) {
           if (_artKey == artKey) {
             cover = c;
             notifyListeners();
@@ -1125,6 +1197,8 @@ class NotchController extends ChangeNotifier {
       ActivityKind.charging => const Color(0xFF30D158),
       ActivityKind.download || ActivityKind.quickShare => const Color(0xFF0A84FF),
       ActivityKind.vpn => a.on ? const Color(0xFF30D158) : const Color(0xFFFF453A),
+      ActivityKind.hotspot => const Color(0xFF30D158),
+      ActivityKind.ringer => a.ringerMode == 0 ? const Color(0xFFFF453A) : a.ringerMode == 1 ? const Color(0xFFFF9F0A) : const Color(0xFF30D158),
       ActivityKind.wifi || ActivityKind.bluetooth => a.on ? const Color(0xFF0A84FF) : const Color(0xFF8E8E93),
       ActivityKind.holm || ActivityKind.chat => const Color(0xFF7B4DFF),
       ActivityKind.reminder => const Color(0xFFFFC43D),

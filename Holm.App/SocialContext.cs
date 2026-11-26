@@ -50,8 +50,26 @@ internal sealed class SocialContext
     public Func<IReadOnlyList<string>> RecentGifs { get; init; } = () => Array.Empty<string>();
     /// <summary>The key GIF search uses; null when there is none.</summary>
     public Func<string?> GifKey { get; init; } = () => null;
-    /// <summary>Saves a GIPHY key typed into the picker.</summary>
+    /// <summary>Saves a KLIPY API key typed into the picker.</summary>
     public Action<string?> SetGifKey { get; init; } = _ => { };
+    /// <summary>Our own public key, for E2E safety number verification.</summary>
+    public Func<string?> MyKey { get; init; } = () => null;
+    /// <summary>All E2E-encrypted group chats.</summary>
+    public Func<IReadOnlyList<ChatGroup>> Groups { get; init; } = () => Array.Empty<ChatGroup>();
+    /// <summary>Creates a new E2E-encrypted group chat and invites its members.</summary>
+    public Func<string, IReadOnlyList<Friend>, Task<ChatGroup?>> CreateGroup { get; init; } = (_, _) => Task.FromResult<ChatGroup?>(null);
+    /// <summary>Sends a text message to a group chat (E2E encrypted).</summary>
+    public Action<ChatGroup, string> SendGroup { get; init; } = (_, _) => { };
+    /// <summary>Sends a GIF to a group chat (E2E encrypted).</summary>
+    public Action<ChatGroup, string> SendGroupGif { get; init; } = (_, _) => { };
+    /// <summary>Retries a failed group message.</summary>
+    public Action<ChatGroup, FriendMessage> RetryGroup { get; init; } = (_, _) => { };
+    /// <summary>Reacts to a group chat message.</summary>
+    public Action<ChatGroup, FriendMessage, string?> ReactGroup { get; init; } = (_, _, _) => { };
+    /// <summary>Adds a friend to an existing group chat and distributes the group key.</summary>
+    public Func<ChatGroup, Friend, Task> AddGroupMember { get; init; } = (_, _) => Task.CompletedTask;
+    /// <summary>Leaves and removes a group chat locally.</summary>
+    public Func<ChatGroup, Task> LeaveGroup { get; init; } = _ => Task.CompletedTask;
     /// <summary>Whether GIFs move (off with Animations).</summary>
     public Func<bool> Animate { get; init; } = () => true;
     /// <summary>How many achievements a friend has, if their notch said.</summary>

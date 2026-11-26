@@ -136,11 +136,29 @@ class NotchListener : NotificationListenerService() {
 
     fun hasNotificationFrom(pkg: String) = runCatching { activeNotifications.any { it.packageName == pkg } }.getOrDefault(false)
 
+    /** Sends a PendingIntent with background-activity-start permission on Android 14+. */
+    private fun sendPendingIntent(intent: PendingIntent, fillIn: Intent? = null) {
+        if (android.os.Build.VERSION.SDK_INT >= 34) {
+            val options = android.app.ActivityOptions.makeBasic()
+                .setPendingIntentBackgroundActivityStartMode(
+                    android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+                ).toBundle()
+            if (fillIn != null) intent.send(this, 0, fillIn, null, null, null, options)
+            else intent.send(this, 0, null, null, null, null, options)
+        } else {
+            if (fillIn != null) intent.send(this, 0, fillIn) else intent.send()
+        }
+    }
+
     /** Presses one of the notification's buttons. */
     fun fireAction(key: String, index: Int) {
         if (NotchBridge.isDeviceLocked(this)) return
         val action = runCatching { activeNotifications.firstOrNull { it.key == key }?.notification?.actions?.getOrNull(index) }.getOrNull()
-        if (!NotchBridge.isDeviceLocked(this)) runCatching { action?.actionIntent?.send() }
+        val pi = action?.actionIntent ?: return
+        if (!NotchBridge.isDeviceLocked(this)) {
+            runCatching { sendPendingIntent(pi) }
+                .onFailure { android.util.Log.w("HolmNotch", "fireAction $index failed", it) }
+        }
     }
 
     /** Answers a message from the notch: the text goes to the app as if typed in its notification. */
@@ -151,7 +169,7 @@ class NotchListener : NotificationListenerService() {
         val intent = Intent()
         RemoteInput.addResultsToIntent(inputs, intent, Bundle().apply { putCharSequence(inputs.first().resultKey, text) })
         if (NotchBridge.isDeviceLocked(this)) false else {
-            action.actionIntent.send(this, 0, intent)
+            sendPendingIntent(action.actionIntent, intent)
             true
         }
     }.getOrDefault(false)
@@ -174,37 +192,47 @@ class NotchListener : NotificationListenerService() {
         }
     }
 
-    /** Answer, decline or hang up a call, with the buttons of the phone app's call notification. */
+    /** Answer, decline or hang up a call, with the phone app's call notification or TelecomManager. */
     fun callAction(key: String, which: String) {
         if (NotchBridge.isDeviceLocked(this)) return
-        // With "Answer calls" allowed, Android's telephony does it: listeners get call notifications without their
-        // buttons on Android 15 and later.
+        val sbn = runCatching { activeNotifications.firstOrNull { it.key == key } }.getOrNull()
+        val n = sbn?.notification
+        if (n != null) {
+            val x = n.extras
+            val actions = n.actions ?: emptyArray()
+            fun matchAction(vararg words: String): PendingIntent? =
+                actions.firstOrNull { a ->
+                    val t = a.title?.toString()?.lowercase(Locale.ROOT) ?: ""
+                    words.any { t.contains(it) }
+                }?.actionIntent
+            val intent = when (which) {
+                "answer" -> x.getParcelable(Notification.EXTRA_ANSWER_INTENT, PendingIntent::class.java)
+                    ?: matchAction("answer", "accept", "annehmen", "abnehmen", "répondre", "rispondi")
+                    ?: actions.lastOrNull()?.actionIntent
+                "decline" -> x.getParcelable(Notification.EXTRA_DECLINE_INTENT, PendingIntent::class.java)
+                    ?: matchAction("decline", "reject", "dismiss", "ablehnen", "abweisen", "refuser", "rifiuta")
+                    ?: actions.firstOrNull()?.actionIntent
+                else -> x.getParcelable(Notification.EXTRA_HANG_UP_INTENT, PendingIntent::class.java)
+                    ?: x.getParcelable(Notification.EXTRA_DECLINE_INTENT, PendingIntent::class.java)
+                    ?: matchAction("hang up", "end", "auflegen", "beenden", "raccrocher", "termina")
+                    ?: actions.firstOrNull()?.actionIntent
+            }
+            if (intent != null && !NotchBridge.isDeviceLocked(this)) {
+                val ok = runCatching { sendPendingIntent(intent); true }
+                    .onFailure { android.util.Log.w("HolmNotch", "call $which PendingIntent failed", it) }
+                    .getOrDefault(false)
+                if (ok) return
+            }
+        }
+        // Fallback for cellular calls on Android 15+ where CallStyle intents may be stripped from listeners.
         if (checkSelfPermission(android.Manifest.permission.ANSWER_PHONE_CALLS) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
             val telecom = getSystemService(android.telecom.TelecomManager::class.java)
-            val done = runCatching {
-                if (NotchBridge.isDeviceLocked(this)) return@runCatching false
+            runCatching {
+                if (NotchBridge.isDeviceLocked(this)) return@runCatching
                 @Suppress("DEPRECATION")
                 if (which == "answer") telecom.acceptRingingCall() else telecom.endCall()
-                true
-            }.getOrDefault(false)
-            if (done) return
+            }.onFailure { android.util.Log.w("HolmNotch", "call $which telecom failed", it) }
         }
-        val n = runCatching { activeNotifications.firstOrNull { it.key == key }?.notification }.getOrNull() ?: return
-        val x = n.extras
-        val actions = n.actions ?: emptyArray()
-        // CallStyle keeps its buttons in the extras; listeners don't always get them, but the same buttons are the
-        // notification's actions: Decline then Answer while it rings, Hang up while you talk.
-        val intent = when (which) {
-            "answer" -> x.getParcelable(Notification.EXTRA_ANSWER_INTENT, PendingIntent::class.java)
-                ?: actions.lastOrNull()?.actionIntent
-            "decline" -> x.getParcelable(Notification.EXTRA_DECLINE_INTENT, PendingIntent::class.java)
-                ?: actions.firstOrNull()?.actionIntent
-            else -> x.getParcelable(Notification.EXTRA_HANG_UP_INTENT, PendingIntent::class.java)
-                ?: x.getParcelable(Notification.EXTRA_DECLINE_INTENT, PendingIntent::class.java)
-                ?: actions.firstOrNull()?.actionIntent
-        }
-        if (!NotchBridge.isDeviceLocked(this)) runCatching { intent?.send() }
-            .onFailure { android.util.Log.w("HolmNotch", "call $which failed", it) }
     }
 
     fun contentIntent(key: String): PendingIntent? {
@@ -359,6 +387,7 @@ class NotchListener : NotificationListenerService() {
             // Players often send the title first and the cover a moment later: only a song with its cover counts as sent.
             if (art != null) lastArtKey = artKey else lookAgainForArt(artKey)
         }
+        val (canLike, liked) = likeState(c, meta, state)
         NotchBridge.toNotch(
             mapOf(
                 "type" to "media",
@@ -375,21 +404,64 @@ class NotchListener : NotificationListenerService() {
                 "speed" to (state?.playbackSpeed?.toDouble() ?: 1.0),
                 "duration" to meta.getLong(MediaMetadata.METADATA_KEY_DURATION),
                 "canSeek" to (((state?.actions ?: 0L) and PlaybackState.ACTION_SEEK_TO) != 0L),
+                "canLike" to canLike,
+                "liked" to liked,
             )
         )
     }
 
+    private fun likeCustomAction(state: PlaybackState?): PlaybackState.CustomAction? =
+        state?.customActions?.firstOrNull { a ->
+            val s = "${a.action} ${a.name}".lowercase(Locale.ROOT)
+            s.contains("like") || s.contains("heart") || s.contains("love") || s.contains("fav") ||
+                s.contains("thumb_up") || s.contains("thumbs_up") || s.contains("add_to_collection") ||
+                s.contains("remove_from_collection") || s.contains("collection") || s.contains("save")
+        }
+
+    private fun likeNotificationAction(pkg: String): Notification.Action? = runCatching {
+        activeNotifications.firstOrNull {
+            it.packageName == pkg && it.notification.extras.containsKey(Notification.EXTRA_MEDIA_SESSION)
+        }?.notification?.actions?.firstOrNull { a ->
+            val t = a.title?.toString()?.lowercase(Locale.ROOT) ?: ""
+            t.contains("like") || t.contains("heart") || t.contains("love") || t.contains("fav") ||
+                t.contains("save") || t.contains("gefällt") || t.contains("speichern") || t.contains("hinzufügen")
+        }
+    }.getOrNull()
+
+    private fun likeState(c: MediaController, meta: MediaMetadata, state: PlaybackState?): Pair<Boolean, Boolean> {
+        val custom = likeCustomAction(state)
+        if (custom != null) {
+            val s = "${custom.action} ${custom.name}".lowercase(Locale.ROOT)
+            val isLiked = s.contains("remove") || s.contains("unlike") || s.contains("unfav") || s.contains("saved") || s.contains("added")
+            return true to isLiked
+        }
+        val rating = meta.getRating(MediaMetadata.METADATA_KEY_USER_RATING)
+        if (rating != null && rating.isRated) {
+            return true to (rating.hasHeart() || rating.isThumbUp)
+        }
+        if (c.ratingType == android.media.Rating.RATING_HEART || c.ratingType == android.media.Rating.RATING_THUMB_UP_DOWN) {
+            return true to false
+        }
+        val notifAct = likeNotificationAction(c.packageName)
+        if (notifAct != null) {
+            val t = notifAct.title?.toString()?.lowercase(Locale.ROOT) ?: ""
+            val isLiked = t.contains("remove") || t.contains("unlike") || t.contains("entfernen")
+            return true to isLiked
+        }
+        return false to false
+    }
+
     /**
      * Skipped with the headphones, the screen off: some players (Spotify) fetch the cover only later and say so on no
-     * channel the notch hears. Looked for again a few times (1.5 s, 4 s, 10 s), as long as that song plays.
+     * channel the notch hears. Looked for again a few times, as long as that song plays.
      */
     private fun lookAgainForArt(artKey: String) {
         if (artMissingKey != artKey) {
             artMissingKey = artKey
             artRetries = 0
         }
-        if (artRetries >= 3) return
-        val delay = longArrayOf(1500, 4000, 10000)[artRetries++]
+        if (artRetries >= 4) return
+        val delay = longArrayOf(800, 2000, 5000, 10000)[artRetries++]
         NotchBridge.handler.postDelayed({
             if (artMissingKey == artKey && lastArtKey != artKey) sendMedia()
         }, delay)
@@ -544,23 +616,47 @@ class NotchListener : NotificationListenerService() {
         val n = (players.firstOrNull {
             it.notification.extras.getParcelable(Notification.EXTRA_MEDIA_SESSION, android.media.session.MediaSession.Token::class.java) == token
         } ?: players.firstOrNull { it.notification.getLargeIcon() != null })?.notification ?: return null
-        // Right after a skip the notification may still show the song before: its cover isn't this song's.
-        val shows = n.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
-        if (title != null && shows != null && shows != title) return null
+        // Right after a skip the notification may still show the song before: compare leniently if multiple players.
+        val shows = n.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim()
+        if (players.size > 1 && title != null && shows != null && !shows.equals(title.trim(), ignoreCase = true)) return null
         val drawable = n.getLargeIcon()?.loadDrawable(this) ?: return null
         png(drawable, 256)
     }.getOrNull()
 
     fun mediaAction(action: String, position: Long?) {
         if (NotchBridge.isDeviceLocked(this)) return
-        val t = controller?.transportControls ?: return
+        val c = controller ?: return
+        val t = c.transportControls ?: return
         when (action) {
             "play" -> t.play()
             "pause" -> t.pause()
-            "toggle" -> if (controller?.playbackState?.state == PlaybackState.STATE_PLAYING) t.pause() else t.play()
+            "toggle" -> if (c.playbackState?.state == PlaybackState.STATE_PLAYING) t.pause() else t.play()
             "next" -> t.skipToNext()
             "previous" -> t.skipToPrevious()
             "seek" -> if (position != null) t.seekTo(position)
+            "like" -> {
+                val custom = likeCustomAction(c.playbackState)
+                if (custom != null) {
+                    t.sendCustomAction(custom, custom.extras)
+                    NotchBridge.handler.postDelayed({ sendMedia() }, 350)
+                    return
+                }
+                val rating = c.metadata?.getRating(MediaMetadata.METADATA_KEY_USER_RATING)
+                if (c.ratingType == android.media.Rating.RATING_HEART) {
+                    t.setRating(android.media.Rating.newHeartRating(!(rating?.hasHeart() == true)))
+                    NotchBridge.handler.postDelayed({ sendMedia() }, 350)
+                    return
+                }
+                if (c.ratingType == android.media.Rating.RATING_THUMB_UP_DOWN) {
+                    t.setRating(android.media.Rating.newThumbRating(!(rating?.isThumbUp == true)))
+                    NotchBridge.handler.postDelayed({ sendMedia() }, 350)
+                    return
+                }
+                likeNotificationAction(c.packageName)?.actionIntent?.let { pi ->
+                    runCatching { sendPendingIntent(pi) }
+                    NotchBridge.handler.postDelayed({ sendMedia() }, 350)
+                }
+            }
         }
     }
 

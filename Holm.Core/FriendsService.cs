@@ -95,6 +95,27 @@ internal sealed partial class FriendsService
     /// <summary>Another of our own devices reacted to a message in this friend's chat (UI thread).</summary>
     public event Action<Friend, string, string?>? OwnReactionSynced;
 
+    /// <summary>An E2E group chat invite/update arrived from a friend (UI thread).</summary>
+    public event Action<ChatGroup, string>? GroupInviteReceived;
+
+    /// <summary>An E2E-encrypted group chat message arrived: groupId, senderKey, senderName, messageId, ciphertext, sent, isGif (UI thread).</summary>
+    public event Action<string, string, string, string, string, long, bool>? GroupChatReceived;
+
+    /// <summary>A reaction in a group chat arrived: groupId, senderKey, messageId, emoji (UI thread).</summary>
+    public event Action<string, string, string, string?>? GroupReactionReceived;
+
+    /// <summary>A member left a group chat: groupId, memberKey, memberName (UI thread).</summary>
+    public event Action<string, string, string>? GroupLeaveReceived;
+
+    /// <summary>Another of our own devices sent a group chat message (UI thread).</summary>
+    public event Action<string, string, string, long, bool>? OwnGroupChatSynced;
+
+    /// <summary>Our public key, if an identity exists.</summary>
+    public string? MyPublicKey => Me?.PublicKey;
+
+    /// <summary>Derives a 32-byte AES-256 key for encrypting local chat history at rest.</summary>
+    public byte[]? ChatStorageKey() => Me is { } me ? ChatCrypto.DeriveStorageKey(me) : null;
+
     /// <summary>Someone used our invite code and is now a friend, without asking (UI thread).</summary>
     public event Action<Friend>? InviteAccepted;
     /// <summary>A request of ours was answered after we stopped waiting for it: yes (true) or no (UI thread).</summary>
@@ -721,6 +742,12 @@ internal sealed partial class FriendsService
                                               && note.MessageId is { } reactId:
                 OwnReactionSynced?.Invoke(reactFriend, reactId, note.Text);
                 break;
+            case FriendNoteKind.GroupInvite when note.GroupId is not null && GroupInvitePayload.Parse(note.Text) is { } syncedGroup:
+                GroupInviteReceived?.Invoke(syncedGroup, me.PublicKey);
+                break;
+            case FriendNoteKind.GroupChat when note.GroupId is { } grpId && note.MessageId is { } grpMsgId && note.Text is { } grpCipher:
+                OwnGroupChatSynced?.Invoke(grpId, grpMsgId, grpCipher, note.Sent, note.Gif != null);
+                break;
             case FriendNoteKind.Clipboard when age <= 30 && note.Text is { } clipText:
                 if (_devices.Saw(id, note.From, DateTime.UtcNow)) OwnDevicesChanged?.Invoke();
                 OwnClipboardReceived?.Invoke(_devices.Find(id) ?? new OwnDevice(id, note.From, DateTime.UtcNow), clipText);
@@ -1000,6 +1027,76 @@ internal sealed partial class FriendsService
         {
             Diag.Log("Own chat sync echo failed: " + ex.Message);
         }
+    }
+
+    /// <summary>Distributes an E2E group invite/update (including its AES-256 group key) to all members over pairwise sealed channels.</summary>
+    public async Task SendGroupInviteAsync(ChatGroup group, CancellationToken ct)
+    {
+        var me = EnsureMe();
+        long sent = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        string json = GroupInvitePayload.FromGroup(group).Serialize();
+        var note = new FriendNote(FriendNoteKind.GroupInvite, me.Name, sent, Text: json, GroupId: group.Id);
+        var targets = group.Members.Where(m => m.Key != me.PublicKey).Select(m => m.ToFriend()).Where(FriendIdentity.IsValidFriend).ToList();
+        await PostToGroupMembersAsync(me, targets, note, ct).ConfigureAwait(false);
+        var echo = new FriendNote(FriendNoteKind.GroupInvite, DeviceName(), sent, Text: json, GroupId: group.Id, Device: DeviceId);
+        _ = EchoOwnAsync(me, echo);
+    }
+
+    /// <summary>Sends an E2E-encrypted group chat message to all members of the group.</summary>
+    public async Task SendGroupChatAsync(ChatGroup group, string messageId, string ciphertext, long sent, bool isGif, CancellationToken ct)
+    {
+        var me = EnsureMe();
+        var note = new FriendNote(FriendNoteKind.GroupChat, me.Name, sent, Text: ciphertext, MessageId: messageId,
+                                  Gif: isGif ? "1" : null, GroupId: group.Id);
+        var targets = group.Members.Where(m => m.Key != me.PublicKey).Select(m => m.ToFriend()).Where(FriendIdentity.IsValidFriend).ToList();
+        await PostToGroupMembersAsync(me, targets, note, ct).ConfigureAwait(false);
+        var echo = new FriendNote(FriendNoteKind.GroupChat, DeviceName(), sent, Text: ciphertext, MessageId: messageId,
+                                  Gif: isGif ? "1" : null, GroupId: group.Id, Device: DeviceId);
+        _ = EchoOwnAsync(me, echo);
+    }
+
+    /// <summary>Sends a reaction to a group chat message to all members.</summary>
+    public async Task SendGroupReactionAsync(ChatGroup group, string messageId, string? emoji, CancellationToken ct)
+    {
+        var me = EnsureMe();
+        long sent = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var note = new FriendNote(FriendNoteKind.GroupReaction, me.Name, sent, Text: emoji, MessageId: messageId, GroupId: group.Id);
+        var targets = group.Members.Where(m => m.Key != me.PublicKey).Select(m => m.ToFriend()).Where(FriendIdentity.IsValidFriend).ToList();
+        await PostToGroupMembersAsync(me, targets, note, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Notifies all other members that we left the group.</summary>
+    public async Task SendGroupLeaveAsync(ChatGroup group, CancellationToken ct)
+    {
+        var me = EnsureMe();
+        long sent = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var note = new FriendNote(FriendNoteKind.GroupLeave, me.Name, sent, GroupId: group.Id);
+        var targets = group.Members.Where(m => m.Key != me.PublicKey).Select(m => m.ToFriend()).Where(FriendIdentity.IsValidFriend).ToList();
+        if (targets.Count > 0)
+            try { await PostToGroupMembersAsync(me, targets, note, ct).ConfigureAwait(false); }
+            catch (IOException) { }
+    }
+
+    static async Task PostToGroupMembersAsync(FriendIdentity me, IReadOnlyList<Friend> targets, FriendNote note, CancellationToken ct)
+    {
+        if (targets.Count == 0) return;
+        Exception? lastError = null;
+        int succeeded = 0;
+        var tasks = targets.Select(async member =>
+        {
+            try
+            {
+                await FriendInbox.PostAsync(member, FriendNotes.Seal(me, member, note), ct).ConfigureAwait(false);
+                Interlocked.Increment(ref succeeded);
+            }
+            catch (Exception ex) when (ex is IOException or OperationCanceledException)
+            {
+                lastError = ex;
+                Diag.Log($"Group note to {member.Name} failed: {ex.Message}");
+            }
+        });
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+        if (succeeded == 0 && lastError != null) throw lastError;
     }
 
     /// <summary>Asks one friend whether their Holm runs (if not asked a minute ago); <see cref="FriendOnline"/> follows if so.</summary>
@@ -1295,6 +1392,25 @@ internal sealed partial class FriendsService
                 _settings.Save();
                 ProfileReceived?.Invoke(friend);
                 SyncProfiles(); // they may not have ours yet, e.g. added before profiles existed
+                break;
+            case FriendNoteKind.GroupInvite when friend == null:
+                Diag.Log("Friends: a group invite from someone who isn't a friend");
+                break;
+            case FriendNoteKind.GroupInvite when GroupInvitePayload.Parse(note.Text) is { } invitedGroup:
+                if (liveAge <= FreshSeconds) SawOnline(friend);
+                GroupInviteReceived?.Invoke(invitedGroup, sender);
+                break;
+            case FriendNoteKind.GroupChat when note.GroupId is { } grpId && note.MessageId is { } grpMsgId && note.Text is { } grpCipher:
+                if (friend != null && liveAge <= FreshSeconds) SawOnline(friend);
+                GroupChatReceived?.Invoke(grpId, sender, friend?.Name ?? note.From, grpMsgId, grpCipher, note.Sent, note.Gif != null);
+                break;
+            case FriendNoteKind.GroupReaction when note.GroupId is { } rGrpId && note.MessageId is { } rMsgId:
+                if (friend != null && liveAge <= FreshSeconds) SawOnline(friend);
+                GroupReactionReceived?.Invoke(rGrpId, sender, rMsgId, note.Text);
+                break;
+            case FriendNoteKind.GroupLeave when note.GroupId is { } lGrpId:
+                if (friend != null && liveAge <= FreshSeconds) SawOnline(friend);
+                GroupLeaveReceived?.Invoke(lGrpId, sender, friend?.Name ?? note.From);
                 break;
         }
     }

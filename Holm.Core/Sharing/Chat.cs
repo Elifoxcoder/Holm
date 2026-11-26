@@ -134,20 +134,22 @@ public static class ChatGif
     }
 
     /// <summary>
-    /// Whether a received link may be fetched without a click. Only the GIPHY/Tenor CDNs are allowed; other HTTPS
+    /// Whether a received link may be fetched without a click. Only the KLIPY/GIPHY/Tenor CDNs are allowed; other HTTPS
     /// links can still travel in chat, but opening one is an explicit user action.
     /// </summary>
     public static bool MayAutoLoad(string? url)
     {
         if (Clean(url) is not { } clean) return false;
         string host = new Uri(clean).Host.ToLowerInvariant();
-        return host is "giphy.com" or "www.giphy.com" or "tenor.com" or "www.tenor.com"
-            || host.EndsWith(".giphy.com", StringComparison.Ordinal) || host.EndsWith(".tenor.com", StringComparison.Ordinal);
+        return host is "klipy.com" or "www.klipy.com" or "giphy.com" or "www.giphy.com" or "tenor.com" or "www.tenor.com"
+            || host.EndsWith(".klipy.com", StringComparison.Ordinal)
+            || host.EndsWith(".giphy.com", StringComparison.Ordinal)
+            || host.EndsWith(".tenor.com", StringComparison.Ordinal);
     }
 
     /// <summary>
     /// Whether a typed or pasted text is a link to a GIF, so it goes as one: a link ending in .gif, or a page on
-    /// GIPHY or Tenor (turned into the link of the picture where that is possible).
+    /// KLIPY, GIPHY or Tenor (turned into the link of the picture where that is possible).
     /// </summary>
     public static string? FromTyped(string? text)
     {
@@ -156,6 +158,7 @@ public static class ChatGif
         string host = uri.Host.ToLowerInvariant();
         string path = uri.AbsolutePath;
         if (path.EndsWith(".gif", StringComparison.OrdinalIgnoreCase)) return url;
+        if (host is "static.klipy.com" || host.EndsWith(".klipy.com", StringComparison.Ordinal) && path.EndsWith(".gif", StringComparison.OrdinalIgnoreCase)) return url;
         // giphy.com/gifs/some-words-ID  or  giphy.com/gifs/ID  →  the picture itself
         if (host is "giphy.com" or "www.giphy.com" && path.StartsWith("/gifs/", StringComparison.Ordinal))
         {
@@ -189,31 +192,130 @@ public sealed class FriendMessage
     public string? TheirReaction { get; set; }
     /// <summary>The link to the GIF this message is; <see cref="Text"/> holds it too, for Holm before 1.9.2.</summary>
     public string? Gif { get; set; }
+    /// <summary>For group chat messages: the sender's public key.</summary>
+    public string? SenderKey { get; set; }
+    /// <summary>For group chat messages: the sender's display name.</summary>
+    public string? SenderName { get; set; }
+    /// <summary>For group chat messages: reactions keyed by member public key.</summary>
+    public Dictionary<string, string>? GroupReactions { get; set; }
 }
 
-/// <summary>The conversations with friends, by their public key, and which have unread messages. UI thread only.</summary>
+/// <summary>The conversations with friends and groups, and which have unread messages. UI thread only.</summary>
 public sealed class ChatStore
 {
     /// <summary>Older messages are dropped: a notch chat, not an archive.</summary>
     public const int Keep = 300;
+    public const string GroupKeyPrefix = "group:";
+
+    public static string GroupKey(string groupId) => GroupKeyPrefix + groupId;
+    public static bool IsGroupKey(string key) => key.StartsWith(GroupKeyPrefix, StringComparison.Ordinal);
 
     readonly string? _path;
+    byte[]? _storageKey;
     Data _data = new();
 
-    /// <summary>A message was added or changed; the friend's key.</summary>
+    /// <summary>Whether the chat history on disk is encrypted with AES-256-GCM.</summary>
+    public bool IsEncryptedAtRest => _storageKey != null;
+
+    /// <summary>A message or group was added or changed; the conversation key (friend public key or group:id).</summary>
     public event Action<string>? Changed;
 
     /// <param name="path">Where the history is kept; null keeps it in memory only (snapshots, tests).</param>
-    public ChatStore(string? path)
+    /// <param name="storageKey">Optional 32-byte key to encrypt the history file at rest with AES-256-GCM.</param>
+    public ChatStore(string? path, byte[]? storageKey = null)
     {
         _path = path;
+        _storageKey = storageKey is { Length: 32 } ? (byte[])storageKey.Clone() : null;
         if (path == null || !File.Exists(path)) return;
-        try { _data = JsonSerializer.Deserialize<Data>(PrivateStorage.ReadAllText(path), Json) ?? new Data(); }
+        LoadFromDisk();
+    }
+
+    /// <summary>Enables AES-256-GCM encryption at rest and re-saves any existing plaintext history encrypted.</summary>
+    public void EnableEncryption(byte[] storageKey)
+    {
+        if (storageKey.Length != 32) throw new ArgumentException("Storage key must be 32 bytes.", nameof(storageKey));
+        _storageKey = (byte[])storageKey.Clone();
+        if (_path != null && File.Exists(_path))
+        {
+            string raw = PrivateStorage.ReadAllText(_path);
+            if (raw.StartsWith(ChatCrypto.StorageHeader, StringComparison.Ordinal))
+                LoadFromDisk();
+            else
+                Save(); // migrate legacy plaintext chats.json to encrypted format
+        }
+    }
+
+    void LoadFromDisk()
+    {
+        if (_path == null || !File.Exists(_path)) return;
+        try
+        {
+            string raw = PrivateStorage.ReadAllText(_path);
+            string? json = raw.StartsWith(ChatCrypto.StorageHeader, StringComparison.Ordinal)
+                ? (_storageKey != null ? ChatCrypto.DecryptStorage(_storageKey, raw) : null)
+                : raw;
+            if (json == null)
+            {
+                Diag.Log("Chats encrypted and key not yet ready or wrong");
+                _data = new Data();
+                return;
+            }
+            _data = JsonSerializer.Deserialize<Data>(json, Json) ?? new Data();
+        }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
             Diag.Log("Chats unreadable, starting empty: " + ex.Message);
             _data = new Data();
         }
+    }
+
+    public IReadOnlyList<ChatGroup> Groups => _data.Groups;
+
+    public ChatGroup? GetGroup(string groupId) => _data.Groups.FirstOrDefault(g => g.Id == groupId);
+
+    public void SaveGroup(ChatGroup group)
+    {
+        int idx = _data.Groups.FindIndex(g => g.Id == group.Id);
+        if (idx >= 0) _data.Groups[idx] = group;
+        else _data.Groups.Add(group);
+        Save();
+        Changed?.Invoke(GroupKey(group.Id));
+    }
+
+    public void RemoveGroup(string groupId)
+    {
+        string key = GroupKey(groupId);
+        bool had = _data.Groups.RemoveAll(g => g.Id == groupId) > 0 | _data.Chats.Remove(key) | _data.Unread.Remove(key);
+        if (!had) return;
+        Save();
+        Changed?.Invoke(key);
+    }
+
+    public bool SetGroupReaction(string groupId, string messageId, string reactorKey, bool mine, string? emoji)
+    {
+        string key = GroupKey(groupId);
+        if (With(key).FirstOrDefault(m => m.Id == messageId) is not { } message) return false;
+        string? clean = ChatReaction.Clean(emoji);
+        message.GroupReactions ??= new Dictionary<string, string>(StringComparer.Ordinal);
+        bool changed = false;
+        if (clean == null)
+        {
+            changed = message.GroupReactions.Remove(reactorKey);
+        }
+        else if (!message.GroupReactions.TryGetValue(reactorKey, out var existing) || existing != clean)
+        {
+            message.GroupReactions[reactorKey] = clean;
+            changed = true;
+        }
+        if (mine && message.MyReaction != clean)
+        {
+            message.MyReaction = clean;
+            changed = true;
+        }
+        if (!changed) return false;
+        Save();
+        Changed?.Invoke(key);
+        return true;
     }
 
     public IReadOnlyList<FriendMessage> With(string key) => _data.Chats.TryGetValue(key, out var list) ? list : Array.Empty<FriendMessage>();
@@ -286,7 +388,9 @@ public sealed class ChatStore
         if (_path == null || AppSettings.ReadOnly) return;
         try
         {
-            PrivateStorage.WriteAllTextAtomic(_path, JsonSerializer.Serialize(_data, Json));
+            string json = JsonSerializer.Serialize(_data, Json);
+            string payload = _storageKey != null ? ChatCrypto.EncryptStorage(_storageKey, json) : json;
+            PrivateStorage.WriteAllTextAtomic(_path, payload);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -300,5 +404,6 @@ public sealed class ChatStore
     {
         public Dictionary<string, List<FriendMessage>> Chats { get; set; } = new();
         public Dictionary<string, int> Unread { get; set; } = new();
+        public List<ChatGroup> Groups { get; set; } = new();
     }
 }

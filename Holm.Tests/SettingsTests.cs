@@ -81,6 +81,17 @@ public class SettingsTests
         Assert.Equal(1.3, reloaded.ExpandedScale);
     }
 
+    [Fact]
+    public void Optional_notch_modules_default_off()
+    {
+        var settings = Read("{}");
+        Assert.False(settings.Reminders);
+        Assert.False(settings.Calculator);
+        Assert.False(settings.ClipboardHistory);
+        Assert.False(settings.AiUsage);
+        Assert.False(settings.AppVolume);
+    }
+
     static AppSettings Read(string json) => JsonSerializer.Deserialize<AppSettings>(json)!;
 }
 

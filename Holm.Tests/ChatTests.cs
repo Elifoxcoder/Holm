@@ -126,4 +126,86 @@ public class ChatTests
         }
         finally { File.Delete(path); }
     }
+
+    [Fact]
+    public void Chat_store_encrypts_at_rest_and_migrates_plaintext()
+    {
+        string path = Path.Combine(Path.GetTempPath(), "holm-chat-enc-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            using var id = FriendIdentity.Create("Elias", null);
+            byte[] key = ChatCrypto.DeriveStorageKey(id);
+
+            // Legacy plaintext file migrates to encrypted format on EnableEncryption.
+            var legacy = new ChatStore(path);
+            legacy.Add("k", new FriendMessage { Id = "1", Mine = true, Text = "secret message", Sent = 10, State = ChatState.Sent }, unread: false);
+            Assert.Contains("secret message", File.ReadAllText(path));
+
+            legacy.EnableEncryption(key);
+            string encryptedOnDisk = File.ReadAllText(path);
+            Assert.StartsWith(ChatCrypto.StorageHeader, encryptedOnDisk);
+            Assert.DoesNotContain("secret message", encryptedOnDisk);
+
+            var reloaded = new ChatStore(path, key);
+            Assert.True(reloaded.IsEncryptedAtRest);
+            Assert.Equal("secret message", reloaded.With("k")[0].Text);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void Group_chat_E2E_encrypts_decrypts_and_rejects_tampering()
+    {
+        using var alice = FriendIdentity.Create("Alice", null);
+        using var bob = FriendIdentity.Create("Bob", null);
+        string groupId = Id();
+        string msgId = Id();
+        string keyStr = ChatCrypto.NewGroupKey();
+        Assert.True(ChatCrypto.TryDecodeGroupKey(keyStr, out byte[] groupKey));
+
+        string cipher = ChatCrypto.EncryptGroupMessage(groupKey, groupId, alice.PublicKey, msgId, "hello group 🔐");
+        Assert.StartsWith(ChatCrypto.GroupCipherPrefix, cipher);
+        Assert.DoesNotContain("hello group", cipher);
+
+        Assert.Equal("hello group 🔐", ChatCrypto.DecryptGroupMessage(groupKey, groupId, alice.PublicKey, msgId, cipher));
+        // Wrong sender key (AAD mismatch) or wrong message id fails decryption.
+        Assert.Null(ChatCrypto.DecryptGroupMessage(groupKey, groupId, bob.PublicKey, msgId, cipher));
+        Assert.Null(ChatCrypto.DecryptGroupMessage(groupKey, groupId, alice.PublicKey, Id(), cipher));
+
+        // Safety numbers are symmetric for both peers.
+        Assert.Equal(ChatCrypto.SafetyNumber(alice.PublicKey, bob.PublicKey), ChatCrypto.SafetyNumber(bob.PublicKey, alice.PublicKey));
+        Assert.Equal(35, ChatCrypto.GroupFingerprint(groupKey, groupId).Length); // 6 groups of 5 digits + 5 spaces
+    }
+
+    [Fact]
+    public void Group_invite_and_group_chat_notes_round_trip_sealed()
+    {
+        using var alice = FriendIdentity.Create("Alice", "https://holynotch.example");
+        using var bob = FriendIdentity.Create("Bob", "https://holynotch.example");
+        var group = new ChatGroup
+        {
+            Id = Id(), Name = "Squad", Key = ChatCrypto.NewGroupKey(), KeyEpoch = 1, CreatorKey = alice.PublicKey,
+            Members = new() { GroupMember.FromFriend(alice.AsFriend()), GroupMember.FromFriend(bob.AsFriend()) },
+        };
+        string inviteJson = GroupInvitePayload.FromGroup(group).Serialize();
+        string sealedInvite = FriendNotes.Seal(alice, bob.AsFriend(), new FriendNote(FriendNoteKind.GroupInvite, "Alice", 100, Text: inviteJson, GroupId: group.Id));
+        var openedInvite = FriendNotes.Open(bob, sealedInvite, out string sender);
+        Assert.NotNull(openedInvite);
+        Assert.Equal(FriendNoteKind.GroupInvite, openedInvite!.Kind);
+        Assert.Equal(alice.PublicKey, sender);
+        var parsed = GroupInvitePayload.Parse(openedInvite.Text);
+        Assert.NotNull(parsed);
+        Assert.Equal("Squad", parsed!.Name);
+        Assert.Equal(group.Key, parsed.Key);
+        Assert.Equal(2, parsed.Members.Count);
+
+        ChatCrypto.TryDecodeGroupKey(parsed.Key, out byte[] gKey);
+        string msgId = Id();
+        string cipher = ChatCrypto.EncryptGroupMessage(gKey, group.Id, alice.PublicKey, msgId, "yo!");
+        string sealedMsg = FriendNotes.Seal(alice, bob.AsFriend(), new FriendNote(FriendNoteKind.GroupChat, "Alice", 101, Text: cipher, MessageId: msgId, GroupId: group.Id));
+        var openedMsg = FriendNotes.Open(bob, sealedMsg, out _);
+        Assert.NotNull(openedMsg);
+        Assert.Equal(FriendNoteKind.GroupChat, openedMsg!.Kind);
+        Assert.Equal("yo!", ChatCrypto.DecryptGroupMessage(gKey, openedMsg.GroupId!, alice.PublicKey, openedMsg.MessageId!, openedMsg.Text!));
+    }
 }

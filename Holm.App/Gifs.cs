@@ -563,13 +563,16 @@ internal static class GifPlayer
 internal sealed record GifResult(string Preview, string Url, double Width, double Height);
 
 /// <summary>
-/// Searching GIFs on GIPHY. It needs an API key: one built into Holm (<see cref="BuiltInKey"/>) or one you add in
-/// the GIF picker. Without a key, GIF links can still be pasted and sent.
+/// Searching GIFs on KLIPY. Uses the built-in API key (<see cref="BuiltInKey"/>) or a custom key set in the GIF picker.
+/// Without a key, GIF links can still be pasted and sent.
 /// </summary>
 internal static class GifSearch
 {
+    public const string DefaultKlipyKey = "lAAlxI2rNeCvpDaQNCaR4UsGtoemVTPldzKhewUZNAj9b21X2Aft96uuSxsDGPVy";
+
     public static readonly string BuiltInKey = typeof(GifSearch).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
-        .FirstOrDefault(a => a.Key == "GiphyKey")?.Value?.Trim() ?? "";
+        .FirstOrDefault(a => a.Key is "KlipyKey" or "GiphyKey")?.Value?.Trim() is { Length: > 0 } meta
+        ? meta : DefaultKlipyKey;
 
     const int MaxJsonBytes = 4 * 1024 * 1024;
     static readonly HttpClient Http = new(NetSecurity.PublicHandler()) { Timeout = TimeSpan.FromSeconds(12), DefaultRequestHeaders = { { "User-Agent", "Holm-Chat/1" } } };
@@ -580,20 +583,21 @@ internal static class GifSearch
     public static async Task<List<GifResult>> SearchAsync(string key, string? words, CancellationToken ct)
     {
         string q = (words ?? "").Trim();
+        string escapedKey = Uri.EscapeDataString(key);
         string url = q.Length == 0
-            ? $"https://api.giphy.com/v1/gifs/trending?api_key={Uri.EscapeDataString(key)}&limit=24&rating=pg-13"
-            : $"https://api.giphy.com/v1/gifs/search?api_key={Uri.EscapeDataString(key)}&q={Uri.EscapeDataString(q)}&limit=24&rating=pg-13";
+            ? $"https://api.klipy.com/api/v1/{escapedKey}/gifs/trending?page=1&per_page=24&customer_id=holynotch"
+            : $"https://api.klipy.com/api/v1/{escapedKey}/gifs/search?page=1&per_page=24&q={Uri.EscapeDataString(q)}&customer_id=holynotch";
         try
         {
             using var response = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-            if ((int)response.StatusCode is 401 or 403) throw new IOException("GIPHY didn't accept the key");
-            if (!response.IsSuccessStatusCode) throw new IOException($"GIPHY answered {(int)response.StatusCode}");
-            if (response.Content.Headers.ContentLength > MaxJsonBytes) throw new IOException("GIPHY's answer is too large");
+            if ((int)response.StatusCode is 401 or 403) throw new IOException("KLIPY didn't accept the key");
+            if (!response.IsSuccessStatusCode) throw new IOException($"KLIPY answered {(int)response.StatusCode}");
+            if (response.Content.Headers.ContentLength > MaxJsonBytes) throw new IOException("KLIPY's answer is too large");
             await using var stream = await response.Content.ReadAsStreamAsync(ct);
             return Parse(Encoding.UTF8.GetString(await BoundedIo.ReadAllBytesAsync(stream, MaxJsonBytes, ct)));
         }
-        catch (Exception ex) when (ex is HttpRequestException or IOException) { throw new IOException("GIPHY can't be reached", ex); }
-        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new IOException("GIPHY took too long", ex); }
+        catch (Exception ex) when (ex is HttpRequestException or IOException) { throw new IOException("KLIPY can't be reached", ex); }
+        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested) { throw new IOException("KLIPY took too long", ex); }
     }
 
     internal static List<GifResult> Parse(string json)
@@ -602,14 +606,20 @@ internal static class GifSearch
         try
         {
             using var doc = JsonDocument.Parse(json);
-            if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array) return results;
-            foreach (var item in data.EnumerateArray())
+            if (!doc.RootElement.TryGetProperty("data", out var data)) return results;
+            // KLIPY v1 wraps the items array in data.data; also accept a direct array.
+            JsonElement items = data.ValueKind == JsonValueKind.Object && data.TryGetProperty("data", out var inner) ? inner : data;
+            if (items.ValueKind != JsonValueKind.Array) return results;
+            foreach (var item in items.EnumerateArray())
             {
-                if (!item.TryGetProperty("images", out var images)) continue;
-                string? send = Url(images, "fixed_height") ?? Url(images, "downsized");
-                string? preview = Url(images, "fixed_height_small") ?? send;
+                if (!item.TryGetProperty("file", out var file) || file.ValueKind != JsonValueKind.Object) continue;
+                var sendObj = GifVariant(file, "md") ?? GifVariant(file, "hd") ?? GifVariant(file, "sm");
+                var previewObj = GifVariant(file, "sm") ?? GifVariant(file, "xs") ?? sendObj;
+                string? send = Url(sendObj);
+                string? preview = Url(previewObj) ?? send;
                 if (ChatGif.Clean(send) is not { } clean || ChatGif.Clean(preview) is not { } small) continue;
-                double w = Number(images, "fixed_height_small", "width"), h = Number(images, "fixed_height_small", "height");
+                double w = Number(previewObj, "width"), h = Number(previewObj, "height");
+                if (w <= 0 || h <= 0) { w = Number(sendObj, "width"); h = Number(sendObj, "height"); }
                 results.Add(new GifResult(small, clean, w > 0 ? w : 100, h > 0 ? h : 100));
             }
         }
@@ -617,11 +627,16 @@ internal static class GifSearch
         return results;
     }
 
-    static string? Url(JsonElement images, string name)
-        => images.TryGetProperty(name, out var image) && image.TryGetProperty("url", out var url) && url.ValueKind == JsonValueKind.String ? url.GetString() : null;
+    static JsonElement? GifVariant(JsonElement file, string size)
+        => file.TryGetProperty(size, out var bucket) && bucket.ValueKind == JsonValueKind.Object
+           && bucket.TryGetProperty("gif", out var gif) && gif.ValueKind == JsonValueKind.Object
+            ? gif : null;
 
-    static double Number(JsonElement images, string name, string field)
-        => images.TryGetProperty(name, out var image) && image.TryGetProperty(field, out var value)
+    static string? Url(JsonElement? gif)
+        => gif is { } g && g.TryGetProperty("url", out var url) && url.ValueKind == JsonValueKind.String ? url.GetString() : null;
+
+    static double Number(JsonElement? gif, string field)
+        => gif is { } g && g.TryGetProperty(field, out var value)
            && double.TryParse(value.ValueKind == JsonValueKind.String ? value.GetString() : value.GetRawText(), System.Globalization.NumberStyles.Float,
                               System.Globalization.CultureInfo.InvariantCulture, out double n) ? n : 0;
 }

@@ -1,5 +1,40 @@
 # Changelog
 
+## 2.5.1 – 2026-11-26
+
+### Added
+
+- **Spotify notifications toggle (Desktop):** *Settings › Pop-outs › Spotify notifications* (off by default) stops Spotify track-change toasts from popping out of the notch.
+- **Android 1.4.8:**
+  - **iPhone-style incoming call pill** with caller photo, red decline button and green accept button.
+  - **iPhone-style Google Maps navigation** (compact ETA pill + expanded turn-by-turn card with big turn arrow, distance, street and ETA).
+  - **Hotspot** activity (compact bubble beside other activities, like earbuds) and **Silent / Vibrate / Ring** toggle alerts.
+  - **Like button** in the media player (Spotify, Apple Music, YouTube Music).
+  - Tapping any open activity or Overview item now opens its app.
+  - Notch border now appears only when >50% of the background behind the notch is pure black (≤ 1% tolerance).
+
+### Fixed
+
+- **Android 1.4.8:** fixed notification action buttons & call accept/decline on Android 14+, fixed album-art cover detection and bottom gradient, removed tap delay on the notch, fixed bottom activity switcher, and tapping a short activity (e.g. volume) now expands that exact activity.
+
+## 2.5.0 – 2026-11-26
+
+### Added
+
+- **Group chats (E2E encrypted):** create group chats with your friends, add members, send text, reactions and GIFs, all end-to-end encrypted with per-message HKDF-SHA256 + AES-256-GCM keys distributed over pairwise ECDH P-256 channels.
+- **End-to-end encryption everywhere:** local chat history (`chats.json`) is encrypted at rest with AES-256-GCM, and every chat header shows a lock icon with verifiable safety numbers (1:1) or group key fingerprints.
+- **Back button** in the Settings/Hub header with navigation history (`Alt+Left` and mouse back button supported).
+
+### Changed
+
+- **Settings window:** removed transparency (fully opaque surface) and made the window resizable from all edges/corners with a Maximize/Restore button.
+- **Cleaner default notch:** Reminders, Calculator, Clipboard history, Volume per app, and AI usage are now off by default (still available in Settings).
+- **KLIPY GIF search:** replaced GIPHY with the KLIPY API v1 and added `klipy.com` / `static.klipy.com` to the GIF auto-load allowlist.
+
+### Fixed
+
+- **Phone tab auto-height:** dismissing or clearing phone notifications in the desktop notch now shrinks the notch smoothly to fit the remaining content.
+
 ## 2.4.8 – 2026-11-26
 
 ### Changed

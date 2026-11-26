@@ -80,16 +80,16 @@ internal sealed class AppSettings
     public bool Notes { get; set; } = true;
     /// <summary>The note itself. It stays on this PC.</summary>
     public string NoteText { get; set; } = "";
-    /// <summary>Reminders typed into the open notch ("20 min laundry").</summary>
-    public bool Reminders { get; set; } = true;
+    /// <summary>Reminders typed into the open notch ("20 min laundry"). Off by default.</summary>
+    public bool Reminders { get; set; }
     /// <summary>The reminders waiting; they stay on this PC.</summary>
     public List<Reminder> ReminderList { get; set; } = new();
-    /// <summary>The calculator in the open notch.</summary>
-    public bool Calculator { get; set; } = true;
-    /// <summary>The last 20 things copied, in the open notch. The list itself is never saved.</summary>
-    public bool ClipboardHistory { get; set; } = true;
-    /// <summary>The mixer in the open notch: a slider per app.</summary>
-    public bool AppVolume { get; set; } = true;
+    /// <summary>The calculator in the open notch. Off by default.</summary>
+    public bool Calculator { get; set; }
+    /// <summary>The last 20 things copied, in the open notch. The list itself is never saved. Off by default.</summary>
+    public bool ClipboardHistory { get; set; }
+    /// <summary>The mixer in the open notch: a slider per app. Off by default.</summary>
+    public bool AppVolume { get; set; }
     /// <summary>A password copied from a password manager leaves the clipboard after 30 seconds, if it is still there.</summary>
     public bool ClearPasswords { get; set; } = true;
     /// <summary>The color picker button in the open notch.</summary>
@@ -112,6 +112,8 @@ internal sealed class AppSettings
     public bool AllNotifications { get; set; }
     /// <summary>With <see cref="AllNotifications"/>: Microsoft Teams' notifications pop out too. Off mutes Teams in the notch.</summary>
     public bool TeamsPopups { get; set; } = true;
+    /// <summary>With <see cref="AllNotifications"/>: Spotify notifications pop out too. Off by default (Spotify sends a toast on every track change).</summary>
+    public bool SpotifyPopups { get; set; }
     /// <summary>A login code the phone found in a notification pops out with Copy (the phone app's "Codes to your PC").</summary>
     public bool PhoneCodes { get; set; } = true;
     /// <summary>Holm takes the volume and media keys, so Windows' own pop-up stays away and only the notch shows them. Off by default.</summary>
@@ -138,8 +140,8 @@ internal sealed class AppSettings
     public string Design { get; set; } = "";
     /// <summary>The accent colour as "#RRGGBB", or empty for the design's own. Applies at the next start.</summary>
     public string AccentColor { get; set; } = "";
-    /// <summary>A small ring beside the notch with Claude Code's and Codex's usage, read from their logs on this PC.</summary>
-    public bool AiUsage { get; set; } = true;
+    /// <summary>A small ring beside the notch with Claude Code's and Codex's usage, read from their logs on this PC. Off by default.</summary>
+    public bool AiUsage { get; set; }
     /// <summary>With <see cref="AiUsage"/> on: the rings at the ends of the closed notch. Off, the usage shows only on the AI page.</summary>
     public bool AiRings { get; set; } = true;
     /// <summary>Large clock view: show seconds next to the time.</summary>

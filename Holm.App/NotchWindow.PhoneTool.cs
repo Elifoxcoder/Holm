@@ -108,8 +108,7 @@ public sealed partial class NotchWindow
         ToolTip.SetTip(_phoneClearAllBtn, "Close all notifications, here and on the phone");
         _phoneClearAllBtn.Click += () =>
         {
-            HoldOpenAfterUiRebuild();
-            _phoneLinked.MinHeight = Math.Max(_phoneLinked.MinHeight, _phoneLinked.Bounds.Height);
+            HoldOpenAfterUiRebuild(800);
             if (_myPhone is { } phone) _friends.DismissAllOnPhone(phone);
             _phoneNews.Clear();
             ShowPhoneToolPage();
@@ -175,9 +174,7 @@ public sealed partial class NotchWindow
             ToolTip.SetTip(close, "Close, here and on the phone");
             close.Click += () =>
             {
-                HoldOpenAfterUiRebuild();
-                // The page keeps its height while open: shrinking would leave the pointer outside, and the notch would close.
-                _phoneLinked.MinHeight = Math.Max(_phoneLinked.MinHeight, _phoneLinked.Bounds.Height);
+                HoldOpenAfterUiRebuild(800);
                 _phoneNews.Remove(news);
                 if (key != null && _myPhone is { } currentPhone) _friends.DismissOnPhone(currentPhone, key);
                 ShowPhoneToolPage();
@@ -187,6 +184,7 @@ public sealed partial class NotchWindow
             _phoneNewsRows.Children.Add(row);
         }
         _phoneNewsHeader.IsVisible = _phoneNews.Count > 0;
+        if (_tool == Tool.Phone && _state == NotchState.Expanded) ApplyState(animate: true);
     }
 
     /// <summary>No phone yet: says what is missing for the two to link, with the one thing to do about it.</summary>

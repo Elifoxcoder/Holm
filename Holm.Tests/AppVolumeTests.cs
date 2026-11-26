@@ -90,6 +90,6 @@ public class AppVolumeTests
     {
         var old = JsonSerializer.Deserialize<AppSettings>("{\"Weather\":false}")!;
         Assert.False(old.Weather);
-        Assert.True(old.AppVolume);
+        Assert.False(old.AppVolume);
     }
 }

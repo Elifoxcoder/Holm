@@ -53,6 +53,8 @@ enum ActivityKind {
   volume('Volume', 'The notch shows the volume instead of Android’s slider'),
   charging('Charging', 'Plugged in and unplugged, with the battery level'),
   wifi('Wi-Fi', 'Connected and disconnected'),
+  hotspot('Hotspot', 'While your personal hotspot is on, small beside everything else'),
+  ringer('Silent & ringer', 'When switching between silent, vibrate and ring'),
   bluetooth('Bluetooth', 'Headphones connecting, with their battery'),
   buds('Earbuds', 'While connected: your earbuds in 3D with their battery, small beside everything else'),
   vpn('VPN', 'On and off, with Mullvad’s mole'),

@@ -339,7 +339,7 @@ void main() {
     };
     c.handle({...notification('call', pkg: 'com.google.android.dialer', ongoing: true), 'title': 'Lena', 'callType': 1});
     expect(c.primary!.kind, ActivityKind.call);
-    expect(c.expanded, isTrue);
+    expect(c.primary!.callPill, isTrue);
     expect(told, ['call:Lena']);
     c.handle({...notification('call', pkg: 'com.google.android.dialer', ongoing: true, chrono: true), 'title': 'Lena', 'callType': 2});
     expect(c.primary!.callType, 2);
@@ -474,6 +474,38 @@ void main() {
     c.handle({'type': 'wifi', 'connected': true});
     c.handle({'type': 'bluetooth', 'connected': true, 'name': 'AirPods'});
     expect(extra, {'net': 'wifi', 'bt': 'AirPods'});
+    c.dispose();
+  });
+
+  test('hotspot stays small beside other activities, and ringer mode shows a wide alert', () {
+    final c = NotchController();
+    c.handle({'type': 'hotspot', 'on': true});
+    expect(c.primary!.kind, ActivityKind.hotspot);
+    c.handle({'type': 'media', 'active': true, 'package': 'com.spotify.music', 'title': 'Song', 'playing': true});
+    expect(c.primary!.kind, ActivityKind.music);
+    expect(c.budsBubble?.kind, ActivityKind.hotspot);
+
+    c.handle({'type': 'ringer', 'mode': 0});
+    expect(c.primary!.kind, ActivityKind.ringer);
+    expect(c.primary!.title, 'Silent');
+    expect(c.primary!.wide, isTrue);
+    c.dispose();
+  });
+
+  test('tapping a short activity expands it, and focus switches even over an alert', () {
+    final c = NotchController();
+    c.handle({'type': 'media', 'active': true, 'package': 'com.spotify.music', 'title': 'Song', 'playing': true});
+    c.handle({'type': 'volume', 'level': 0.6});
+    final vol = c.primary!;
+    expect(vol.kind, ActivityKind.volume);
+    c.expand(vol);
+    expect(c.expanded, isTrue);
+    expect(c.primary!.kind, ActivityKind.volume);
+
+    final second = c.visible[1];
+    expect(second.kind, ActivityKind.music);
+    c.focus(second);
+    expect(c.primary!.kind, ActivityKind.music);
     c.dispose();
   });
 }

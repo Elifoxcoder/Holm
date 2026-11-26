@@ -30,11 +30,16 @@ public sealed partial class NotchWindow
 
     void InitHub()
     {
-        _chats = new ChatStore(Path.Combine(Diag.Folder, "chats.json"));
+        _chats = new ChatStore(Path.Combine(Diag.Folder, "chats.json"), _friends.ChatStorageKey());
         _chats.Changed += _ => Dispatcher.UIThread.Post(() => _settingsWindow?.RefreshBadges());
         _friends.ChatReceived += OnChatReceived;
         _friends.GifReceived += OnGifReceived;
         _friends.ReactionReceived += OnReactionReceived;
+        _friends.GroupInviteReceived += OnGroupInviteReceived;
+        _friends.GroupChatReceived += OnGroupChatReceived;
+        _friends.GroupReactionReceived += OnGroupReactionReceived;
+        _friends.GroupLeaveReceived += OnGroupLeaveReceived;
+        _friends.OwnGroupChatSynced += OnOwnGroupChatSynced;
         _friends.OwnChatSynced += (friend, id, text, sent, gif) =>
         {
             _chats.Add(friend.Key, new FriendMessage { Id = id, Mine = true, Text = gif ?? text, Gif = gif, Sent = sent, State = ChatState.Sent }, unread: false);
@@ -112,6 +117,15 @@ public sealed partial class NotchWindow
         RecentGifs = () => _settings.RecentGifs,
         GifKey = () => GifSearch.Key(_settings),
         SetGifKey = key => { _settings.GifSearchKey = string.IsNullOrWhiteSpace(key) ? null : key.Trim(); _settings.Save(); },
+        MyKey = () => _friends.MyPublicKey,
+        Groups = () => _chats.Groups,
+        CreateGroup = CreateGroupAsync,
+        SendGroup = SendGroupChat,
+        SendGroupGif = SendGroupGif,
+        RetryGroup = RetryGroupChat,
+        ReactGroup = ReactToGroup,
+        AddGroupMember = AddGroupMemberAsync,
+        LeaveGroup = LeaveGroupAsync,
         Animate = () => _settings.Animations,
         Copy = TrySetClipboardAsync,
         Open = (page, friend) => { _hubFriend = friend; ShowHub(page); },
@@ -420,5 +434,239 @@ public sealed partial class NotchWindow
             Diag.Log("Chat message not sent: " + ex.Message);
             _chats.SetState(friend.Key, message.Id, ChatState.Failed);
         }
+    }
+
+    // ───────────── group chat (E2E encrypted) ─────────────
+
+    bool ReadingGroup(string groupId)
+        => _settingsWindow is { IsActive: true, ShownView: ChatPage page } && page.Group?.Id == groupId;
+
+    void EnsureChatEncryption()
+    {
+        if (!_chats.IsEncryptedAtRest && _friends.ChatStorageKey() is { } key)
+            _chats.EnableEncryption(key);
+    }
+
+    async Task<ChatGroup?> CreateGroupAsync(string name, IReadOnlyList<Friend> selectedFriends)
+    {
+        if (ChatGroup.CleanName(name) is not { } cleanName || selectedFriends.Count == 0) return null;
+        var me = _friends.EnsureMe();
+        EnsureChatEncryption();
+        var members = new List<GroupMember> { GroupMember.FromFriend(me.AsFriend()) };
+        foreach (var f in selectedFriends)
+            if (members.Count < ChatGroup.MaxMembers && members.All(m => m.Key != f.Key))
+                members.Add(GroupMember.FromFriend(f));
+        if (members.Count < 2) return null;
+        var groupColor = AvatarColors[Math.Abs(cleanName.GetHashCode()) % AvatarColors.Length];
+        var group = new ChatGroup
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            Name = cleanName,
+            Color = $"#{groupColor.R:X2}{groupColor.G:X2}{groupColor.B:X2}",
+            Key = ChatCrypto.NewGroupKey(),
+            KeyEpoch = 1,
+            CreatorKey = me.PublicKey,
+            Members = members,
+            Created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+        };
+        _chats.SaveGroup(group);
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await _friends.SendGroupInviteAsync(group, cts.Token);
+        }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException)
+        {
+            Diag.Log("Group invite delivery partial/failed: " + ex.Message);
+        }
+        _social?.Raise();
+        return group;
+    }
+
+    async Task AddGroupMemberAsync(ChatGroup group, Friend friend)
+    {
+        if (group.Members.Count >= ChatGroup.MaxMembers || group.Members.Any(m => m.Key == friend.Key)) return;
+        group.Members.Add(GroupMember.FromFriend(friend));
+        group.KeyEpoch++;
+        _chats.SaveGroup(group);
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await _friends.SendGroupInviteAsync(group, cts.Token);
+        }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException)
+        {
+            Diag.Log("Group member add invite failed: " + ex.Message);
+        }
+        _social?.Raise();
+    }
+
+    async Task LeaveGroupAsync(ChatGroup group)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await _friends.SendGroupLeaveAsync(group, cts.Token);
+        _chats.RemoveGroup(group.Id);
+        _social?.Raise();
+    }
+
+    void OnGroupInviteReceived(ChatGroup group, string senderKey)
+    {
+        EnsureChatEncryption();
+        var existing = _chats.GetGroup(group.Id);
+        if (existing != null && group.KeyEpoch < existing.KeyEpoch) return;
+        _chats.SaveGroup(group);
+        _social?.Raise();
+        if (existing == null && senderKey != _friends.MyPublicKey && _settings.ChatPopups)
+            ShowPeek(FriendGlyph, $"Added to group “{group.Name}”", $"{group.Members.Count} members · End-to-end encrypted", null, seconds: 5);
+    }
+
+    void OnGroupChatReceived(string groupId, string senderKey, string senderName, string messageId, string ciphertext, long sent, bool isGif)
+    {
+        if (_chats.GetGroup(groupId) is not { } group) return;
+        if (!group.Members.Any(m => m.Key == senderKey)) return;
+        if (!ChatCrypto.TryDecodeGroupKey(group.Key, out byte[] groupKey)) return;
+        string? plain = ChatCrypto.DecryptGroupMessage(groupKey, groupId, senderKey, messageId, ciphertext);
+        if (plain == null) return;
+        string? gifUrl = isGif ? ChatGif.Clean(plain) : null;
+        string? cleanText = gifUrl ?? ChatText.Clean(plain);
+        if (cleanText == null) return;
+
+        bool reading = ReadingGroup(groupId);
+        var msg = new FriendMessage
+        {
+            Id = messageId, Mine = false, Text = cleanText, Gif = gifUrl, Sent = sent,
+            State = ChatState.Received, SenderKey = senderKey, SenderName = senderName,
+        };
+        if (!_chats.Add(ChatStore.GroupKey(groupId), msg, unread: !reading)) return;
+        if (gifUrl != null) RememberGif(gifUrl);
+        if (reading || !_settings.ChatPopups) return;
+        if (_busy || _taskVisible || _sharing || _hiddenForFullscreen)
+        {
+            ShowPeek(null, $"{group.Name} · {senderName}", "", null, seconds: 4);
+            return;
+        }
+        string preview = gifUrl != null ? $"{senderName}: Sent a GIF" : $"{senderName}: {cleanText.Replace('\n', ' ')}";
+        if (preview.Length > 80) preview = preview[..80] + "…";
+        ShowTask(FaceText(group.Name), FaceBrush(group.Name), group.Name, preview, null,
+                 ("Reply", () => { HideTask(); ShowHub("chat"); }), ("Dismiss", HideTask), textIcon: true);
+        _taskHide.Interval = TimeSpan.FromSeconds(10);
+        _taskHide.Start();
+    }
+
+    void OnOwnGroupChatSynced(string groupId, string messageId, string ciphertext, long sent, bool isGif)
+    {
+        if (_chats.GetGroup(groupId) is not { } group || _friends.MyPublicKey is not { } myKey) return;
+        if (!ChatCrypto.TryDecodeGroupKey(group.Key, out byte[] groupKey)) return;
+        string? plain = ChatCrypto.DecryptGroupMessage(groupKey, groupId, myKey, messageId, ciphertext);
+        if (plain == null) return;
+        string? gifUrl = isGif ? ChatGif.Clean(plain) : null;
+        string? cleanText = gifUrl ?? ChatText.Clean(plain);
+        if (cleanText == null) return;
+        _chats.Add(ChatStore.GroupKey(groupId), new FriendMessage
+        {
+            Id = messageId, Mine = true, Text = cleanText, Gif = gifUrl, Sent = sent, State = ChatState.Sent, SenderKey = myKey,
+        }, unread: false);
+        if (gifUrl != null) RememberGif(gifUrl);
+    }
+
+    void OnGroupReactionReceived(string groupId, string senderKey, string messageId, string? emoji)
+    {
+        if (_chats.GetGroup(groupId) is not { } group) return;
+        if (!group.Members.Any(m => m.Key == senderKey)) return;
+        _chats.SetGroupReaction(groupId, messageId, senderKey, mine: false, emoji);
+    }
+
+    void OnGroupLeaveReceived(string groupId, string memberKey, string memberName)
+    {
+        if (_chats.GetGroup(groupId) is not { } group) return;
+        if (group.Members.RemoveAll(m => m.Key == memberKey) > 0)
+        {
+            _chats.SaveGroup(group);
+            _social?.Raise();
+        }
+    }
+
+    void SendGroupChat(ChatGroup group, string text)
+    {
+        if (ChatGif.FromTyped(text) is { } gif)
+        {
+            SendGroupGif(group, gif);
+            return;
+        }
+        EnsureChatEncryption();
+        string? myKey = _friends.EnsureMe().PublicKey;
+        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        foreach (string part in ChatText.Split(text))
+        {
+            var message = new FriendMessage
+            {
+                Id = Guid.NewGuid().ToString("N"), Mine = true, Text = part, Sent = now,
+                State = ChatState.Sending, SenderKey = myKey,
+            };
+            _chats.Add(ChatStore.GroupKey(group.Id), message, unread: false);
+            _ = DeliverGroupAsync(group, message);
+            Achieve(AchievementBook.Messages);
+        }
+    }
+
+    void SendGroupGif(ChatGroup group, string url)
+    {
+        if (ChatGif.Clean(url) is not { } clean) return;
+        EnsureChatEncryption();
+        string? myKey = _friends.EnsureMe().PublicKey;
+        var message = new FriendMessage
+        {
+            Id = Guid.NewGuid().ToString("N"), Mine = true, Text = clean, Gif = clean,
+            Sent = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), State = ChatState.Sending, SenderKey = myKey,
+        };
+        _chats.Add(ChatStore.GroupKey(group.Id), message, unread: false);
+        RememberGif(clean);
+        _ = DeliverGroupAsync(group, message);
+        Achieve(AchievementBook.Messages);
+    }
+
+    void RetryGroupChat(ChatGroup group, FriendMessage message)
+    {
+        _chats.SetState(ChatStore.GroupKey(group.Id), message.Id, ChatState.Sending);
+        _ = DeliverGroupAsync(group, message);
+    }
+
+    async Task DeliverGroupAsync(ChatGroup group, FriendMessage message)
+    {
+        try
+        {
+            var me = _friends.EnsureMe();
+            if (!ChatCrypto.TryDecodeGroupKey(group.Key, out byte[] groupKey))
+                throw new IOException("Invalid group encryption key");
+            string payload = message.Gif ?? message.Text;
+            string ciphertext = ChatCrypto.EncryptGroupMessage(groupKey, group.Id, me.PublicKey, message.Id, payload);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await _friends.SendGroupChatAsync(group, message.Id, ciphertext, message.Sent, message.Gif != null, cts.Token);
+            _chats.SetState(ChatStore.GroupKey(group.Id), message.Id, ChatState.Sent);
+        }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException)
+        {
+            Diag.Log("Group chat message not sent: " + ex.Message);
+            _chats.SetState(ChatStore.GroupKey(group.Id), message.Id, ChatState.Failed);
+        }
+    }
+
+    void ReactToGroup(ChatGroup group, FriendMessage message, string? emoji)
+    {
+        if (_friends.MyPublicKey is not { } myKey) return;
+        string? clean = ChatReaction.Clean(emoji);
+        if (!_chats.SetGroupReaction(group.Id, message.Id, myKey, mine: true, clean)) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                await _friends.SendGroupReactionAsync(group, message.Id, clean, cts.Token);
+            }
+            catch (Exception ex) when (ex is IOException or OperationCanceledException)
+            {
+                Diag.Log("Group reaction not sent: " + ex.Message);
+            }
+        });
     }
 }

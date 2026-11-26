@@ -46,12 +46,15 @@ internal sealed class ChatPage : HubView
     readonly Border _conversationView;
     readonly TextBox _input = null!, _search = null!;
     readonly TextBlock _counter = null!;
-    readonly Border _send = null!;
+    readonly Border _send = null!, _attach = null!;
     Friend? _friend;
+    ChatGroup? _group;
     string? _justReacted;
     readonly Dictionary<string, (string Look, Control View)> _bubbles = new();
     int _shown = ShownAtFirst;
     HashSet<string>? _changed;
+
+    string? CurrentKey => _group != null ? ChatStore.GroupKey(_group.Id) : _friend?.Key;
 
     public ChatPage(SocialContext social, Friend? with)
     {
@@ -61,7 +64,7 @@ internal sealed class ChatPage : HubView
 
         // ── Left: search and conversations ──
         var left = new Grid { Background = ListBack, RowDefinitions = new RowDefinitions("Auto,*") };
-        var searchRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Margin = new Thickness(12, 12, 12, 8) };
+        var searchRow = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"), Margin = new Thickness(12, 12, 12, 8) };
         var searchHost = new Grid { VerticalAlignment = VerticalAlignment.Center };
         _search = HubTheme.Field("Search");
         _search.Padding = new Thickness(30, 6, 6, 6);
@@ -75,11 +78,17 @@ internal sealed class ChatPage : HubView
         searchHost.Children.Add(magnifier);
         _search.TextChanged += (_, _) => ShowList();
         searchRow.Children.Add(searchHost);
+        var newGroup = RoundButton(HubTheme.Glyph("\uE716", 14), "New group chat", 34, HubTheme.Card, HubTheme.Selected);
+        newGroup.VerticalAlignment = VerticalAlignment.Center;
+        newGroup.Margin = new Thickness(6, 0, 0, 0);
+        newGroup.PointerReleased += (_, e) => { e.Handled = true; ShowCreateGroupFlyout(newGroup); };
+        Grid.SetColumn(newGroup, 1);
+        searchRow.Children.Add(newGroup);
         var addFriend = RoundButton(HubTheme.Glyph("", 14), "Add a friend", 34, HubTheme.Card, HubTheme.Selected);
         addFriend.VerticalAlignment = VerticalAlignment.Center;
         addFriend.Margin = new Thickness(6, 0, 0, 0);
         addFriend.PointerReleased += (_, e) => { e.Handled = true; social.Open?.Invoke("add", null); };
-        Grid.SetColumn(addFriend, 1);
+        Grid.SetColumn(addFriend, 2);
         searchRow.Children.Add(addFriend);
         left.Children.Add(searchRow);
         _list.Margin = new Thickness(8, 0, 2, 8);
@@ -106,10 +115,10 @@ internal sealed class ChatPage : HubView
 
         // The message box: attachments on the left, GIF and send on the right.
         var box = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto,Auto") };
-        var attach = RoundButton(HubTheme.Glyph("", 14, HubTheme.Dim), "Send files", 30, Brushes.Transparent, HubTheme.Hover);
-        attach.Margin = new Thickness(5, 0, 0, 0);
-        attach.VerticalAlignment = VerticalAlignment.Center;
-        attach.PointerReleased += async (_, e) =>
+        _attach = RoundButton(HubTheme.Glyph("", 14, HubTheme.Dim), "Send files", 30, Brushes.Transparent, HubTheme.Hover);
+        _attach.Margin = new Thickness(5, 0, 0, 0);
+        _attach.VerticalAlignment = VerticalAlignment.Center;
+        _attach.PointerReleased += async (_, e) =>
         {
             e.Handled = true;
             if (_friend is not { } to || TopLevel.GetTopLevel(this)?.StorageProvider is not { } storage) return;
@@ -118,13 +127,18 @@ internal sealed class ChatPage : HubView
             if (paths.Length > 0) _social.SendFiles(to, paths);
             _input.Focus();
         };
-        box.Children.Add(attach);
+        box.Children.Add(_attach);
         var gif = Chip("GIF", "Send a GIF");
         gif.Margin = new Thickness(2, 0, 2, 0);
         gif.VerticalAlignment = VerticalAlignment.Center;
         gif.PointerReleased += (_, e) =>
         {
             e.Handled = true;
+            if (_group is { } grp)
+            {
+                ChatExtras.ShowGifPicker(gif, _social, url => { _social.SendGroupGif(grp, url); _input.Focus(); });
+                return;
+            }
             if (_friend is not { } to) return;
             ChatExtras.ShowGifPicker(gif, _social, url => { _social.SendGif(to, url); _input.Focus(); });
         };
@@ -190,6 +204,9 @@ internal sealed class ChatPage : HubView
     /// <summary>The friend whose conversation is shown.</summary>
     public Friend? Friend => _friend;
 
+    /// <summary>The group whose conversation is shown.</summary>
+    public ChatGroup? Group => _group;
+
     public override void Detach()
     {
         _social.Chats.Changed -= OnChanged;
@@ -199,7 +216,7 @@ internal sealed class ChatPage : HubView
     /// <summary>Marks the shown conversation read when the window comes forward.</summary>
     public void Seen()
     {
-        if (_friend != null && TopLevel.GetTopLevel(this) is Window { IsActive: true }) _social.Chats.MarkRead(_friend.Key);
+        if (CurrentKey is { } key && TopLevel.GetTopLevel(this) is Window { IsActive: true }) _social.Chats.MarkRead(key);
     }
 
     void OnFriendsChanged() => Dispatcher.UIThread.Post(() => { if (Parent != null) RefreshFriends(); });
@@ -207,11 +224,27 @@ internal sealed class ChatPage : HubView
     void RefreshFriends()
     {
         var friends = _social.Friends();
+        var groups = _social.Groups();
+        if (_group is { } currentGroup && groups.FirstOrDefault(g => g.Id == currentGroup.Id) is { } updatedGroup && Child == _conversationView)
+        {
+            _group = updatedGroup;
+            ShowHeader();
+            ShowList();
+            return;
+        }
         if (_friend is { } current && friends.FirstOrDefault(f => f.Key == current.Key) is { } updated && Child == _conversationView)
         {
             _friend = updated;
             ShowHeader();
             ShowList();
+            return;
+        }
+
+        if (_group != null && groups.FirstOrDefault(g => g.Id == _group.Id) is { } keepGroup)
+        {
+            _input.Text = "";
+            Child = _conversationView;
+            SelectGroup(keepGroup);
             return;
         }
 
@@ -223,9 +256,16 @@ internal sealed class ChatPage : HubView
             Child = _conversationView;
             Select(next);
         }
-        else if (_friend != null || Child == null)
+        else if (groups.Count > 0)
+        {
+            _input.Text = "";
+            Child = _conversationView;
+            SelectGroup(groups[0]);
+        }
+        else if (_friend != null || _group != null || Child == null)
         {
             _friend = null;
+            _group = null;
             _header.Child = null;
             _messages.Children.Clear();
             _list.Children.Clear();
@@ -270,26 +310,28 @@ internal sealed class ChatPage : HubView
         var changed = _changed;
         _changed = null;
         if (changed == null || Parent == null) return; // the page was left meanwhile
-        if (_friend != null && changed.Contains(_friend.Key))
+        if (CurrentKey is { } key && changed.Contains(key))
         {
             // A reaction to an older message mustn't jump to the end; a new message at the end does.
             bool atEnd = _scroll.Offset.Y >= _scroll.Extent.Height - _scroll.Viewport.Height - 24;
             var offset = _scroll.Offset;
             ShowMessages(scrollToEnd: atEnd);
             if (!atEnd) _scroll.Offset = offset;
-            if (TopLevel.GetTopLevel(this) is Window { IsActive: true }) _social.Chats.MarkRead(_friend.Key);
+            if (TopLevel.GetTopLevel(this) is Window { IsActive: true }) _social.Chats.MarkRead(key);
         }
         ShowList();
     }
 
     public void Select(Friend friend)
     {
-        if (_friend?.Key != friend.Key)
+        if (_friend?.Key != friend.Key || _group != null)
         {
             _bubbles.Clear();
             _shown = ShownAtFirst;
         }
+        _group = null;
         _friend = _social.Friends().FirstOrDefault(f => f.Key == friend.Key) ?? friend;
+        _attach.IsVisible = true;
         ShowHeader();
         ShowMessages();
         _social.Chats.MarkRead(_friend.Key); // the page is open on them
@@ -297,9 +339,33 @@ internal sealed class ChatPage : HubView
         _input.Focus();
     }
 
+    public void SelectGroup(ChatGroup group)
+    {
+        if (_group?.Id != group.Id || _friend != null)
+        {
+            _bubbles.Clear();
+            _shown = ShownAtFirst;
+        }
+        _friend = null;
+        _group = _social.Groups().FirstOrDefault(g => g.Id == group.Id) ?? group;
+        _attach.IsVisible = false;
+        ShowHeader();
+        ShowMessages();
+        _social.Chats.MarkRead(ChatStore.GroupKey(_group.Id));
+        ShowList();
+        _input.Focus();
+    }
+
     void SendInput()
     {
-        if (_friend == null || (_input.Text ?? "").Trim().Length == 0) return;
+        if ((_input.Text ?? "").Trim().Length == 0) return;
+        if (_group != null)
+        {
+            _social.SendGroup(_group, _input.Text!);
+            _input.Text = "";
+            return;
+        }
+        if (_friend == null) return;
         _social.Send(_friend, _input.Text!);
         _input.Text = "";
     }
@@ -320,16 +386,229 @@ internal sealed class ChatPage : HubView
     {
         _list.Children.Clear();
         string filter = (_search.Text ?? "").Trim();
-        var friends = _social.Friends()
-            .Where(f => filter.Length == 0 || f.Name.Contains(filter, StringComparison.CurrentCultureIgnoreCase))
-            .OrderByDescending(f => _social.Chats.Last(f.Key)?.Sent ?? 0).ThenBy(f => f.Name)
-            .ToList();
-        if (friends.Count == 0)
+        var entries = new List<(long Sent, string Name, Control Row)>();
+        foreach (var g in _social.Groups())
         {
-            _list.Children.Add(new TextBlock { Text = $"No one called “{filter}”", Foreground = HubTheme.Dim, FontSize = 12, Margin = new Thickness(10, 12, 10, 0), TextWrapping = TextWrapping.Wrap });
+            if (filter.Length > 0 && !g.Name.Contains(filter, StringComparison.CurrentCultureIgnoreCase)) continue;
+            long sent = _social.Chats.Last(ChatStore.GroupKey(g.Id))?.Sent ?? g.Created;
+            entries.Add((sent, g.Name, GroupRow(g)));
+        }
+        foreach (var f in _social.Friends())
+        {
+            if (filter.Length > 0 && !f.Name.Contains(filter, StringComparison.CurrentCultureIgnoreCase)) continue;
+            long sent = _social.Chats.Last(f.Key)?.Sent ?? 0;
+            entries.Add((sent, f.Name, Row(f)));
+        }
+        if (entries.Count == 0)
+        {
+            _list.Children.Add(new TextBlock { Text = $"No chat called “{filter}”", Foreground = HubTheme.Dim, FontSize = 12, Margin = new Thickness(10, 12, 10, 0), TextWrapping = TextWrapping.Wrap });
             return;
         }
-        foreach (var friend in friends) _list.Children.Add(Row(friend));
+        foreach (var entry in entries.OrderByDescending(e => e.Sent).ThenBy(e => e.Name))
+            _list.Children.Add(entry.Row);
+    }
+
+    Control GroupRow(ChatGroup group)
+    {
+        string key = ChatStore.GroupKey(group.Id);
+        int unread = _social.Chats.Unread(key);
+        var last = _social.Chats.Last(key);
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
+        row.Children.Add(GroupFace(group, 44));
+
+        var words = new Grid { Margin = new Thickness(11, 0, 2, 0), VerticalAlignment = VerticalAlignment.Center, ColumnDefinitions = new ColumnDefinitions("*,Auto"), RowDefinitions = new RowDefinitions("Auto,Auto") };
+        words.Children.Add(new TextBlock { Text = group.Name, FontSize = 13.5, FontWeight = unread > 0 ? FontWeight.Bold : FontWeight.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
+        if (last != null)
+        {
+            var when = new TextBlock
+            {
+                Text = ListTime(DateTimeOffset.FromUnixTimeSeconds(last.Sent).LocalDateTime), FontSize = 11, Margin = new Thickness(8, 1, 0, 0),
+                Foreground = unread > 0 ? HubTheme.Accent : HubTheme.Faint, FontWeight = unread > 0 ? FontWeight.SemiBold : FontWeight.Normal,
+            };
+            Grid.SetColumn(when, 1);
+            words.Children.Add(when);
+        }
+        IBrush previewColor = unread > 0 ? Look.Ink : HubTheme.Dim;
+        string senderPrefix = last == null ? "" : last.Mine ? "You: " : (last.SenderName is { Length: > 0 } sn ? sn + ": " : "");
+        string text = last == null ? $"{group.Members.Count} members · End-to-end encrypted"
+                    : last.Gif != null ? senderPrefix + "GIF"
+                    : senderPrefix + last.Text.Replace('\n', ' ');
+        var preview = new TextBlock
+        {
+            Text = text, FontSize = 12, Foreground = previewColor, TextTrimming = TextTrimming.CharacterEllipsis,
+            FontWeight = unread > 0 ? FontWeight.SemiBold : FontWeight.Normal, Margin = new Thickness(0, 3, 0, 0),
+        };
+        Grid.SetRow(preview, 1);
+        words.Children.Add(preview);
+        if (unread > 0)
+        {
+            var badge = new Border
+            {
+                Background = HubTheme.Accent, CornerRadius = new CornerRadius(9), MinWidth = 18, Height = 18, Padding = new Thickness(5, 0, 5, 0),
+                Margin = new Thickness(8, 3, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+                Child = new TextBlock { Text = unread > 99 ? "99+" : unread.ToString(CultureInfo.CurrentCulture), FontSize = 10.5, FontWeight = FontWeight.Bold, Foreground = HubTheme.OnAccent, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center },
+            };
+            Grid.SetRow(badge, 1);
+            Grid.SetColumn(badge, 1);
+            words.Children.Add(badge);
+        }
+        Grid.SetColumn(words, 1);
+        row.Children.Add(words);
+
+        bool selected = group.Id == _group?.Id;
+        var item = new Border
+        {
+            Padding = new Thickness(8, 7, 8, 7), CornerRadius = new CornerRadius(10), Cursor = new Cursor(StandardCursorType.Hand), Child = row,
+            Background = selected ? HubTheme.Selected : Brushes.Transparent, Margin = new Thickness(0, 0, 0, 1),
+        };
+        item.PointerEntered += (_, _) => { if (!selected) item.Background = HubTheme.Hover; };
+        item.PointerExited += (_, _) => { if (!selected) item.Background = Brushes.Transparent; };
+        item.ContextMenu = GroupMenu(group);
+        item.PointerReleased += (_, e) => { if (e.InitialPressMouseButton == MouseButton.Left) SelectGroup(group); };
+        return item;
+    }
+
+    ContextMenu GroupMenu(ChatGroup group)
+    {
+        var leave = new MenuItem { Header = "Leave group…" };
+        leave.Click += (_, _) => Dispatcher.UIThread.Post(() =>
+        {
+            if (TopLevel.GetTopLevel(this) is SettingsWindow window)
+                window.ShowDialog($"Leave {group.Name}?", "You will leave this group chat and delete its local history.",
+                    ("Cancel", () => { }), ("Leave group", () => _ = _social.LeaveGroup(group)));
+        }, DispatcherPriority.Background);
+        return new ContextMenu { Items = { leave } };
+    }
+
+    void ShowCreateGroupFlyout(Control target)
+    {
+        var friends = _social.Friends();
+        var panel = new StackPanel { Width = 300, Spacing = 8, Margin = new Thickness(6) };
+        panel.Children.Add(new TextBlock { Text = "New E2E Group Chat", FontSize = 14, FontWeight = FontWeight.SemiBold });
+        var nameBox = HubTheme.Field("Group name");
+        panel.Children.Add(nameBox);
+
+        var selected = new HashSet<string>(StringComparer.Ordinal);
+        var memberList = new StackPanel { Spacing = 4 };
+        if (friends.Count == 0)
+        {
+            memberList.Children.Add(new TextBlock { Text = "Add friends first to create a group.", Foreground = HubTheme.Dim, FontSize = 12 });
+        }
+        else
+        {
+            foreach (var f in friends)
+            {
+                var cb = new CheckBox { Content = f.Name, FontSize = 13 };
+                cb.IsCheckedChanged += (_, _) => { if (cb.IsChecked == true) selected.Add(f.Key); else selected.Remove(f.Key); };
+                memberList.Children.Add(cb);
+            }
+        }
+        var scroller = HubTheme.Scroller(memberList);
+        scroller.MaxHeight = 200;
+        panel.Children.Add(scroller);
+
+        var create = HubTheme.Action("Create group", primary: true);
+        create.HorizontalAlignment = HorizontalAlignment.Right;
+        panel.Children.Add(create);
+
+        var flyout = new Flyout
+        {
+            Placement = PlacementMode.BottomEdgeAlignedLeft,
+            ShowMode = FlyoutShowMode.Transient,
+            Content = new Border
+            {
+                Background = HubTheme.Raised, BorderBrush = Look.InkA(0x30), BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(14), Padding = new Thickness(10), Child = panel,
+            },
+        };
+        flyout.FlyoutPresenterClasses.Add("bare");
+        create.Click += async (_, _) =>
+        {
+            string groupName = (nameBox.Text ?? "").Trim();
+            var chosen = friends.Where(f => selected.Contains(f.Key)).ToList();
+            if (groupName.Length == 0 || chosen.Count == 0) return;
+            flyout.Hide();
+            if (await _social.CreateGroup(groupName, chosen) is { } created)
+            {
+                Child = _conversationView;
+                SelectGroup(created);
+            }
+        };
+        flyout.Opened += (_, _) => nameBox.Focus();
+        flyout.ShowAt(target);
+    }
+
+    void ShowGroupMembersFlyout(Control target, ChatGroup group)
+    {
+        var panel = new StackPanel { Width = 280, Spacing = 8, Margin = new Thickness(6) };
+        panel.Children.Add(new TextBlock { Text = $"{group.Name} ({group.Members.Count})", FontSize = 14, FontWeight = FontWeight.SemiBold });
+        var list = new StackPanel { Spacing = 4 };
+        string? myKey = _social.MyKey();
+        foreach (var m in group.Members)
+            list.Children.Add(new TextBlock { Text = m.Key == myKey ? $"{m.Name} (You)" : m.Name, FontSize = 12.5, Foreground = Look.Ink });
+        panel.Children.Add(list);
+
+        var addable = _social.Friends().Where(f => group.Members.All(m => m.Key != f.Key)).ToList();
+        var flyout = new Flyout
+        {
+            Placement = PlacementMode.BottomEdgeAlignedRight,
+            ShowMode = FlyoutShowMode.Transient,
+            Content = new Border
+            {
+                Background = HubTheme.Raised, BorderBrush = Look.InkA(0x30), BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(14), Padding = new Thickness(10), Child = panel,
+            },
+        };
+        flyout.FlyoutPresenterClasses.Add("bare");
+        if (addable.Count > 0 && group.Members.Count < ChatGroup.MaxMembers)
+        {
+            panel.Children.Add(new Border { Height = 1, Background = HubTheme.Line, Margin = new Thickness(0, 4) });
+            panel.Children.Add(new TextBlock { Text = "ADD FRIEND", FontSize = 10.5, FontWeight = FontWeight.SemiBold, Foreground = HubTheme.Dim });
+            foreach (var f in addable)
+            {
+                var addBtn = HubTheme.Action($"+ {f.Name}");
+                addBtn.HorizontalAlignment = HorizontalAlignment.Stretch;
+                addBtn.Click += async (_, _) => { flyout.Hide(); await _social.AddGroupMember(group, f); };
+                panel.Children.Add(addBtn);
+            }
+        }
+        panel.Children.Add(new Border { Height = 1, Background = HubTheme.Line, Margin = new Thickness(0, 4) });
+        var leaveBtn = HubTheme.Action("Leave group");
+        leaveBtn.Foreground = HubTheme.Red;
+        leaveBtn.HorizontalAlignment = HorizontalAlignment.Right;
+        leaveBtn.Click += (_, _) =>
+        {
+            flyout.Hide();
+            if (TopLevel.GetTopLevel(this) is SettingsWindow window)
+                window.ShowDialog($"Leave {group.Name}?", "You will leave this group chat and delete its local history.",
+                    ("Cancel", () => { }), ("Leave group", () => _ = _social.LeaveGroup(group)));
+        };
+        panel.Children.Add(leaveBtn);
+        flyout.ShowAt(target);
+    }
+
+    void ShowEncryptionDialog()
+    {
+        if (TopLevel.GetTopLevel(this) is not SettingsWindow window) return;
+        if (_group is { } group)
+        {
+            string fp = ChatCrypto.TryDecodeGroupKey(group.Key, out var rawKey)
+                ? ChatCrypto.GroupFingerprint(rawKey, group.Id)
+                : "Unavailable";
+            window.ShowDialog("End-to-end encrypted group",
+                $"Messages in “{group.Name}” are encrypted with per-message HKDF-SHA256 + AES-256-GCM keys and distributed over pairwise ECDH P-256 channels. Local chat history is encrypted on disk.\n\nGroup key fingerprint (Epoch {group.KeyEpoch}):\n{fp}",
+                ("OK", () => { }));
+            return;
+        }
+        if (_friend is { } friend)
+        {
+            string safety = _social.MyKey() is { } myKey
+                ? ChatCrypto.SafetyNumber(myKey, friend.Key)
+                : "Unavailable";
+            window.ShowDialog("End-to-end encrypted chat",
+                $"Messages with {friend.Name} are encrypted with ECDH P-256 + AES-256-GCM in transit and encrypted locally on disk.\n\nCompare this safety number with {friend.Name} to verify your connection:\n\n{safety}",
+                ("OK", () => { }));
+        }
     }
 
     Control Row(Friend friend)
@@ -433,6 +712,30 @@ internal sealed class ChatPage : HubView
 
     void ShowHeader()
     {
+        if (_group is { } group)
+        {
+            var gRow = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
+            gRow.ContextMenu = GroupMenu(group);
+            gRow.Children.Add(GroupFace(group, 38));
+            var gWords = new StackPanel { Margin = new Thickness(11, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
+            gWords.Children.Add(new TextBlock { Text = group.Name, FontSize = 15, FontWeight = FontWeight.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
+            string memberNames = string.Join(", ", group.Members.Select(m => m.Key == _social.MyKey() ? "You" : m.Name));
+            gWords.Children.Add(new TextBlock { Text = $"{group.Members.Count} members · {memberNames}", FontSize = 11.5, Foreground = HubTheme.Dim, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 1, 0, 0) });
+            Grid.SetColumn(gWords, 1);
+            gRow.Children.Add(gWords);
+            var gActions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            var gLock = RoundButton(HubTheme.Glyph("\uE72E", 13, HubTheme.Green), "End-to-end encrypted · Click to verify", 34, Brushes.Transparent, HubTheme.CardStrong);
+            gLock.PointerReleased += (_, e) => { e.Handled = true; ShowEncryptionDialog(); };
+            gActions.Children.Add(gLock);
+            var membersBtn = RoundButton(HubTheme.Glyph("\uE716", 14), "Group members & settings", 34, Brushes.Transparent, HubTheme.CardStrong);
+            membersBtn.Margin = new Thickness(4, 0, 0, 0);
+            membersBtn.PointerReleased += (_, e) => { e.Handled = true; ShowGroupMembersFlyout(membersBtn, group); };
+            gActions.Children.Add(membersBtn);
+            Grid.SetColumn(gActions, 2);
+            gRow.Children.Add(gActions);
+            _header.Child = gRow;
+            return;
+        }
         if (_friend == null) return;
         var friend = _friend;
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
@@ -449,6 +752,9 @@ internal sealed class ChatPage : HubView
         Grid.SetColumn(words, 1);
         row.Children.Add(words);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        var e2eLock = RoundButton(HubTheme.Glyph("\uE72E", 13, HubTheme.Green), "End-to-end encrypted · Click to verify safety number", 34, Brushes.Transparent, HubTheme.CardStrong);
+        e2eLock.PointerReleased += (_, e) => { e.Handled = true; ShowEncryptionDialog(); };
+        actions.Children.Add(e2eLock);
         var wave = RoundButton(new TextBlock { Text = "\U0001F44B", FontSize = 15, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center },
                                $"Wave at {friend.Name}", 34, Brushes.Transparent, HubTheme.CardStrong);
         wave.Margin = new Thickness(4, 0, 0, 0);
@@ -469,11 +775,11 @@ internal sealed class ChatPage : HubView
     void ShowMessages(bool scrollToEnd = true)
     {
         _messages.Children.Clear();
-        if (_friend == null) return;
-        var messages = _social.Chats.With(_friend.Key);
+        if (CurrentKey is not { } chatKey) return;
+        var messages = _social.Chats.With(chatKey);
         if (messages.Count == 0)
         {
-            _messages.Children.Add(Welcome(_friend));
+            _messages.Children.Add(_group != null ? GroupWelcome(_group) : Welcome(_friend!));
             return;
         }
         int first = Math.Max(0, messages.Count - _shown);
@@ -494,8 +800,8 @@ internal sealed class ChatPage : HubView
             };
             _messages.Children.Add(earlier);
         }
-        // The face and the friend's name at the top, as messengers start a conversation.
-        else _messages.Children.Add(Welcome(_friend, small: true));
+        // The face and the friend's/group's name at the top, as messengers start a conversation.
+        else _messages.Children.Add(_group != null ? GroupWelcome(_group, small: true) : Welcome(_friend!, small: true));
         var used = new HashSet<string>();
         for (int i = first; i < messages.Count; i++)
         {
@@ -520,11 +826,16 @@ internal sealed class ChatPage : HubView
     }
 
     internal static string BubbleLook(FriendMessage message, bool joinsPrevious, bool joinsNext, bool lastOfMine)
-        => string.Join("\u001F", message.State, message.MyReaction, message.TheirReaction, message.Gif, message.Text, message.Sent, joinsPrevious, joinsNext, lastOfMine);
+    {
+        string grpReacts = message.GroupReactions is { Count: > 0 } gr
+            ? string.Join(",", gr.OrderBy(p => p.Key).Select(p => p.Key + "=" + p.Value))
+            : "";
+        return string.Join("\u001F", message.State, message.MyReaction, message.TheirReaction, grpReacts, message.Gif, message.Text, message.Sent, message.SenderName, joinsPrevious, joinsNext, lastOfMine);
+    }
 
     static bool Together(FriendMessage? a, FriendMessage? b)
-        => a != null && b != null && a.Mine == b.Mine && b.Sent - a.Sent < GroupSeconds
-           && a.MyReaction == null && a.TheirReaction == null; // a reaction pill needs room under its bubble
+        => a != null && b != null && a.Mine == b.Mine && a.SenderKey == b.SenderKey && b.Sent - a.Sent < GroupSeconds
+           && a.MyReaction == null && a.TheirReaction == null && (a.GroupReactions == null || a.GroupReactions.Count == 0); // a reaction pill needs room under its bubble
 
     /// <summary>The top of a conversation: their face, name and a word on how private it is (or a way to start).</summary>
     Control Welcome(Friend friend, bool small = false)
@@ -534,11 +845,14 @@ internal sealed class ChatPage : HubView
         face.HorizontalAlignment = HorizontalAlignment.Center;
         stack.Children.Add(face);
         stack.Children.Add(new TextBlock { Text = friend.Name, FontSize = small ? 15 : 18, FontWeight = FontWeight.SemiBold, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 8, 0, 0) });
-        stack.Children.Add(new TextBlock
+        var e2eNote = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Spacing = 5, Margin = new Thickness(0, 4, 0, 0) };
+        e2eNote.Children.Add(HubTheme.Glyph("\uE72E", 11, HubTheme.Green));
+        e2eNote.Children.Add(new TextBlock
         {
-            Text = "Messages are sealed so only the two of you can read them.", FontSize = 11.5, Foreground = HubTheme.Faint,
-            HorizontalAlignment = HorizontalAlignment.Center, TextAlignment = TextAlignment.Center, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 0),
+            Text = "End-to-end encrypted · Only you and " + friend.Name + " can read these messages.", FontSize = 11.5, Foreground = HubTheme.Faint,
+            TextAlignment = TextAlignment.Center, TextWrapping = TextWrapping.Wrap,
         });
+        stack.Children.Add(e2eNote);
         if (!small)
         {
             var hi = Chip("Say hi 👋", $"Send {friend.Name} a wave");
@@ -550,33 +864,65 @@ internal sealed class ChatPage : HubView
         return stack;
     }
 
-    static TextBlock TimeLabel(DateTime at) => new()
+    Control GroupWelcome(ChatGroup group, bool small = false)
     {
-        Text = (at.Date == DateTime.Today ? "Today" : at.Date == DateTime.Today.AddDays(-1) ? "Yesterday" : at.ToString("ddd d MMM", CultureInfo.CurrentCulture))
-               + " " + at.ToString("t", CultureInfo.CurrentCulture),
-        FontSize = 11, FontWeight = FontWeight.SemiBold, Foreground = HubTheme.Faint,
-        HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 14, 0, 6),
-    };
+        var stack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(20, small ? 18 : 40, 20, small ? 10 : 0) };
+        var face = GroupFace(group, small ? 56 : 84);
+        face.HorizontalAlignment = HorizontalAlignment.Center;
+        stack.Children.Add(face);
+        stack.Children.Add(new TextBlock { Text = group.Name, FontSize = small ? 15 : 18, FontWeight = FontWeight.SemiBold, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 8, 0, 0) });
+        var e2eNote = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Spacing = 5, Margin = new Thickness(0, 4, 0, 0) };
+        e2eNote.Children.Add(HubTheme.Glyph("\uE72E", 11, HubTheme.Green));
+        e2eNote.Children.Add(new TextBlock
+        {
+            Text = $"End-to-end encrypted group · {group.Members.Count} members", FontSize = 11.5, Foreground = HubTheme.Faint,
+            TextAlignment = TextAlignment.Center, TextWrapping = TextWrapping.Wrap,
+        });
+        stack.Children.Add(e2eNote);
+        return stack;
+    }
 
     void React(FriendMessage message, string? emoji)
     {
+        if (_group is { } grp)
+        {
+            _justReacted = emoji == null ? null : message.Id;
+            _social.ReactGroup(grp, message, emoji);
+            return;
+        }
         if (_friend == null) return;
         _justReacted = emoji == null ? null : message.Id;
         _social.React(_friend, message, emoji);
     }
 
-    /// <summary>The reactions under a bubble: a small pill over its lower edge with both sides' emoji. A click takes ours away.</summary>
+    /// <summary>The reactions under a bubble: a small pill over its lower edge with emoji. A click takes ours away.</summary>
     Control? Reactions(FriendMessage message)
     {
-        var emoji = new[] { message.TheirReaction, message.MyReaction }.Where(e => e != null).Distinct().ToList();
+        List<string> emoji;
+        int count;
+        var who = new List<string>();
+        if (_group != null && message.GroupReactions is { Count: > 0 } gr)
+        {
+            emoji = gr.Values.Distinct().ToList();
+            count = gr.Count;
+            string? myKey = _social.MyKey();
+            foreach (var (k, e) in gr)
+            {
+                string name = k == myKey ? "You" : _group.Members.FirstOrDefault(m => m.Key == k)?.Name ?? "Member";
+                who.Add(k == myKey ? $"You {e} · click to remove" : $"{name} {e}");
+            }
+        }
+        else
+        {
+            emoji = new[] { message.TheirReaction, message.MyReaction }.Where(e => e != null).Distinct().Select(e => e!).ToList();
+            count = (message.TheirReaction != null ? 1 : 0) + (message.MyReaction != null ? 1 : 0);
+            if (message.MyReaction != null) who.Add($"You {message.MyReaction} · click to remove");
+            if (message.TheirReaction != null) who.Add($"{_friend?.Name} {message.TheirReaction}");
+        }
         if (emoji.Count == 0) return null;
         var row = new StackPanel { Orientation = Orientation.Horizontal };
-        foreach (string e in emoji!) row.Children.Add(new TextBlock { Text = e, FontSize = 13 });
-        int count = (message.TheirReaction != null ? 1 : 0) + (message.MyReaction != null ? 1 : 0);
+        foreach (string e in emoji) row.Children.Add(new TextBlock { Text = e, FontSize = 13 });
         if (count > 1) row.Children.Add(new TextBlock { Text = count.ToString(CultureInfo.CurrentCulture), FontSize = 11, Foreground = HubTheme.Dim, Margin = new Thickness(3, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
-        var who = new List<string>();
-        if (message.MyReaction != null) who.Add($"You {message.MyReaction} · click to remove");
-        if (message.TheirReaction != null) who.Add($"{_friend?.Name} {message.TheirReaction}");
         var pill = new Border
         {
             Background = TheirBubble, BorderBrush = B(0xFF18181A), BorderThickness = new Thickness(2), CornerRadius = new CornerRadius(11),
@@ -667,7 +1013,8 @@ internal sealed class ChatPage : HubView
         if (!message.Mine)
         {
             // Their face sits beside the last bubble of their group; the others keep its room.
-            Control face = joinsNext || _friend == null ? new Border { Width = 28 } : SmallFace(_friend, 28);
+            string faceName = _group != null ? (message.SenderName ?? "?") : (_friend?.Name ?? "?");
+            Control face = joinsNext ? new Border { Width = 28 } : SmallFaceByName(faceName, 28);
             face.VerticalAlignment = VerticalAlignment.Bottom;
             face.Margin = new Thickness(0, 0, 8, pill != null ? 14 : 0);
             DockPanel.SetDock(face, Dock.Left);
@@ -684,6 +1031,8 @@ internal sealed class ChatPage : HubView
             HorizontalAlignment = message.Mine ? HorizontalAlignment.Right : HorizontalAlignment.Left,
             Margin = new Thickness(0, joinsPrevious ? 2 : 8, 0, 0),
         };
+        if (_group != null && !message.Mine && !joinsPrevious && message.SenderName is { Length: > 0 } senderLabel)
+            stack.Children.Add(new TextBlock { Text = senderLabel, FontSize = 11, FontWeight = FontWeight.SemiBold, Foreground = HubTheme.Dim, Margin = new Thickness(38, 0, 0, 2) });
         stack.Children.Add(line);
         if (message.State == ChatState.Failed)
         {
@@ -692,7 +1041,11 @@ internal sealed class ChatPage : HubView
                 Text = "Not sent · Click to try again", FontSize = 11, Foreground = HubTheme.Red, Cursor = new Cursor(StandardCursorType.Hand),
                 HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 3, 6, 0),
             };
-            retry.PointerReleased += (_, _) => { if (_friend != null) _social.Retry(_friend, message); };
+            retry.PointerReleased += (_, _) =>
+            {
+                if (_group != null) _social.RetryGroup(_group, message);
+                else if (_friend != null) _social.Retry(_friend, message);
+            };
             stack.Children.Add(retry);
         }
         else if (message.State == ChatState.Sending || lastOfMine)
@@ -735,11 +1088,36 @@ internal sealed class ChatPage : HubView
         return chip;
     }
 
-    Control SmallFace(Friend friend, double size)
+    Control SmallFaceByName(string name, double size)
     {
-        var (text, fill) = _social.Face(friend.Name);
+        var (text, fill) = _social.Face(name);
         return HubTheme.Face(text, fill, size);
     }
+
+    Control GroupFace(ChatGroup group, double size)
+    {
+        var (text, fill) = _social.Face(group.Name);
+        if (group.Color != null && Color.TryParse(group.Color, out var c))
+            fill = new SolidColorBrush(c).ToImmutable();
+        var grid = new Grid { Width = size, Height = size };
+        grid.Children.Add(HubTheme.Face(text, fill, size));
+        grid.Children.Add(new Border
+        {
+            Width = size * 0.42, Height = size * 0.42, CornerRadius = new CornerRadius(size * 0.21),
+            Background = HubTheme.Raised, BorderBrush = DotEdge, BorderThickness = new Thickness(1.5),
+            HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom,
+            Child = HubTheme.Glyph("\uE716", Math.Max(8, size * 0.21), Look.Ink),
+        });
+        return grid;
+    }
+
+    static TextBlock TimeLabel(DateTime at) => new()
+    {
+        Text = (at.Date == DateTime.Today ? "Today" : at.Date == DateTime.Today.AddDays(-1) ? "Yesterday" : at.ToString("ddd d MMM", CultureInfo.CurrentCulture))
+               + " " + at.ToString("t", CultureInfo.CurrentCulture),
+        FontSize = 11, FontWeight = FontWeight.SemiBold, Foreground = HubTheme.Faint,
+        HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 14, 0, 6),
+    };
 
     Control FaceWithDot(Friend friend, double size)
     {

@@ -78,6 +78,6 @@ public class CalculatorTests
     {
         var old = JsonSerializer.Deserialize<AppSettings>("{\"Animations\":false,\"Notes\":false}")!;
         Assert.False(old.Notes);
-        Assert.True(old.Calculator);
+        Assert.False(old.Calculator);
     }
 }

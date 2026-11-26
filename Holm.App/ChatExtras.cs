@@ -193,13 +193,13 @@ internal static class ChatExtras
     }
 
     /// <summary>
-    /// The GIF picker: search GIPHY (with a key), or pick one sent lately. A GIF link pasted into the message box goes
-    /// as a GIF too, key or not.
+    /// The GIF picker: search KLIPY, or pick one sent lately. A GIF link pasted into the message box goes
+    /// as a GIF too.
     /// </summary>
     public static void ShowGifPicker(Control target, SocialContext social, Action<string> send)
     {
         var layout = new Grid { Width = 380, Height = 380, Margin = new Thickness(4), RowDefinitions = new RowDefinitions("Auto,*,Auto") };
-        var search = HubTheme.Field("Search GIPHY");
+        var search = HubTheme.Field("Search KLIPY GIFs");
         layout.Children.Add(search);
         var results = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
         var scroll = HubTheme.Scroller(results);
@@ -208,7 +208,7 @@ internal static class ChatExtras
         var footer = new TextBlock
         {
             FontSize = 10.5, Foreground = HubTheme.Faint, Margin = new Thickness(2, 6, 2, 0), TextWrapping = TextWrapping.Wrap,
-            Text = "Powered by GIPHY · Tip: paste a GIF link into the message to send it.",
+            Text = "Powered by KLIPY · Tip: paste a GIF link into the message to send it.",
         };
         Grid.SetRow(footer, 2);
         layout.Children.Add(footer);
@@ -241,8 +241,8 @@ internal static class ChatExtras
 
         void AskForKey()
         {
-            Note("To search GIFs, HolyNotch needs a free GIPHY API key: make one at developers.giphy.com (an “API” app), then paste it here. It stays on this PC.");
-            var key = HubTheme.Field("GIPHY API key");
+            Note("To search GIFs, HolyNotch needs a KLIPY API key: paste it here. It stays on this PC.");
+            var key = HubTheme.Field("KLIPY API key");
             key.Width = 260;
             key.Margin = new Thickness(4, 0, 6, 8);
             var save = HubTheme.Action("Save", primary: true);

@@ -2,7 +2,7 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <!-- The cross-platform rewrite's own version, ahead of the WPF app's (WinNotch.csproj) it is meant to follow. -->
-    <Version>2.4.8</Version>
+    <Version>2.5.1</Version>
     <ReleaseIsland>Brecqhou</ReleaseIsland>
     <!-- The updater installs only an exe whose product name is "Holm" (UpdateService.ValidateExecutable). -->
     <Product>HolyNotch</Product>
@@ -32,15 +32,13 @@
     <AssemblyMetadata Include="ReleaseIsland" Value="$(ReleaseIsland)" />
   </ItemGroup>
 
-  <!-- A GIPHY API key for GIF search, built into the app but never into the public source: from -p:GiphyKey=â€¦, the
-       GIPHY_API_KEY environment variable (the release workflow's secret) or a giphy.key file next to the solution
-       (git ignores it). Without one, people add their own key in the GIF picker. -->
+  <!-- A KLIPY API key for GIF search, optionally overridden via -p:KlipyKey=…, KLIPY_API_KEY env var, or klipy.key. -->
   <PropertyGroup>
-    <GiphyKey Condition="'$(GiphyKey)' == ''">$(GIPHY_API_KEY)</GiphyKey>
-    <GiphyKey Condition="'$(GiphyKey)' == '' and Exists('$(MSBuildProjectDirectory)/../giphy.key')">$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)/../giphy.key').Trim())</GiphyKey>
+    <KlipyKey Condition="'$(KlipyKey)' == ''">$(KLIPY_API_KEY)</KlipyKey>
+    <KlipyKey Condition="'$(KlipyKey)' == '' and Exists('$(MSBuildProjectDirectory)/../klipy.key')">$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)/../klipy.key').Trim())</KlipyKey>
   </PropertyGroup>
-  <ItemGroup Condition="'$(GiphyKey)' != ''">
-    <AssemblyMetadata Include="GiphyKey" Value="$(GiphyKey)" />
+  <ItemGroup Condition="'$(KlipyKey)' != ''">
+    <AssemblyMetadata Include="KlipyKey" Value="$(KlipyKey)" />
   </ItemGroup>
 
   <PropertyGroup Condition="Exists('Assets\notch.ico')">

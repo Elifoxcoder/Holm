@@ -282,7 +282,7 @@ public sealed partial class NotchWindow
         else if (tool == Tool.Clipboard) ShowClipboardPage();
         else if (tool == Tool.Mixer) ShowMixerPage();
         else if (tool == Tool.Ai) FillAiPage();
-        else if (tool == Tool.Phone) { _phoneLinked.MinHeight = 0; ShowPhoneToolPage(); }
+        else if (tool == Tool.Phone) ShowPhoneToolPage();
         if (changed && _hovered && _state == NotchState.Expanded)
         {
             if (activePage != null) AnimateToolSwitch(activePage);
