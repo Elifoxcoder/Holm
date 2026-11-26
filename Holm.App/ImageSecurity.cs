@@ -57,12 +57,22 @@ internal static class ImageSecurity
             double scale = targetWidth > 0 ? Math.Min(1.0, targetWidth / (double)source.Width) : 1.0;
             int width = Math.Max(1, (int)Math.Round(source.Width * scale));
             int height = Math.Max(1, (int)Math.Round(source.Height * scale));
+            // SKCodec.GetPixels only scales JPEG at discrete DCT fractions; PNG/BMP/WebP return InvalidScale if asked
+            // for a different size. Ask the codec for its supported scaled size first, then resize cleanly in Skia.
+            var decodeSize = scale < 1.0 ? codec.GetScaledDimensions((float)scale) : new SKSizeI(source.Width, source.Height);
+            if (decodeSize.Width <= 0 || decodeSize.Height <= 0 || decodeSize.Width > maxSide || decodeSize.Height > maxSide)
+                decodeSize = new SKSizeI(source.Width, source.Height);
+            var decodeInfo = new SKImageInfo(decodeSize.Width, decodeSize.Height, SKColorType.Bgra8888, SKAlphaType.Premul);
+            var decoded = new SKBitmap(decodeInfo);
+            if (decoded.GetPixels() == IntPtr.Zero) { decoded.Dispose(); return null; }
+            var result = codec.GetPixels(decodeInfo, decoded.GetPixels(), new SKCodecOptions(0));
+            if (result is not (SKCodecResult.Success or SKCodecResult.IncompleteInput)) { decoded.Dispose(); return null; }
+            if (decoded.Width == width && decoded.Height == height) return decoded;
+
             var output = new SKImageInfo(width, height, SKColorType.Bgra8888, SKAlphaType.Premul);
-            var bitmap = new SKBitmap(output);
-            if (bitmap.GetPixels() == IntPtr.Zero) { bitmap.Dispose(); return null; }
-            var result = codec.GetPixels(output, bitmap.GetPixels(), new SKCodecOptions(0));
-            if (result is not (SKCodecResult.Success or SKCodecResult.IncompleteInput)) { bitmap.Dispose(); return null; }
-            return bitmap;
+            var resized = decoded.Resize(output, new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear));
+            decoded.Dispose();
+            return resized;
         }
         catch (Exception ex) when (ex is not (StackOverflowException or AccessViolationException))
         {

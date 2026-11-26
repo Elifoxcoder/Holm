@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.5.5 / Android 1.4.15 – 2026-11-26
+
+### Fixed
+
+- **Desktop Spotify album cover art:** fixed `ImageSecurity.DecodeScaled` rejecting PNG covers larger than 160 px with `SKCodecResult.InvalidScale` by decoding at the codec's supported dimensions before resizing in Skia.
+
+### Changed
+
+- **Friend invite codes:** updated format to `HN-XXXX-XXXX` across Desktop and Android (while keeping backwards compatibility for legacy `HOLM-XXXXX-XXXXX` codes).
+
 ## Android 1.4.14 – 2026-11-26
 
 ### Fixed

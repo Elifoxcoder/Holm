@@ -35,6 +35,8 @@ void main() {
   test('invite topic and proof match FriendInvite.cs', () {
     expect(Invite.topic('HOLM-7KQ2X-9XF4M'), 'holm-inv-qcnze7nfkvswry7f7e5d');
     expect(Invite.proof('HOLM-7KQ2X-9XF4M'), '8712e671199feb7ee20ad6dd346d5ef8');
+    expect(Invite.find('hn 7kq2 9xf4'), 'HN-7KQ2-9XF4');
+    expect(Invite.find('7KQ2-9XFO'), 'HN-7KQ2-9XF0');
     expect(Invite.find('holm 7kq2x 9xf4m'), 'HOLM-7KQ2X-9XF4M');
     expect(Invite.find('7KQ2X-9XF4O'), 'HOLM-7KQ2X-9XF40');
     expect(Invite.find('hello'), isNull);

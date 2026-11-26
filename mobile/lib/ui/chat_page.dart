@@ -82,7 +82,7 @@ class ChatListPage extends StatelessWidget {
                     'No friends yet',
                     state.account == null
                         ? 'Sign in to your HolyNotch account to sync your friends and link your PC automatically, or add a friend with their invite code.'
-                        : 'Add a friend with their invite code (HOLM-XXXXX-XXXXX). Your own PCs link automatically through your account.',
+                        : 'Add a friend with their invite code (HN-XXXX-XXXX). Your own PCs link automatically through your account.',
                   ),
                   Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                     PillButton('Add friend', icon: Icons.person_add_alt_rounded, onPressed: () => showAddFriend(context, state)),
@@ -183,14 +183,14 @@ Future<void> showAddFriend(BuildContext context, AppState state) async {
           child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
             const Text('Add friend', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600)),
             const SizedBox(height: 6),
-            const Text('Paste a friend’s invite code (HOLM-XXXXX-XXXXX) or friend code. Your own PCs link automatically through your HolyNotch account.',
+            const Text('Paste a friend’s invite code (HN-XXXX-XXXX) or friend code. Your own PCs link automatically through your HolyNotch account.',
                 style: TextStyle(color: HolmColors.dim)),
             const SizedBox(height: 16),
             TextField(
               controller: controller,
               minLines: 1,
               maxLines: 4,
-              decoration: const InputDecoration(hintText: 'HOLM-7KQ2X-9XF4M'),
+              decoration: const InputDecoration(hintText: 'HN-7KQ2-9XF4'),
             ),
             if (message != null) ...[
               const SizedBox(height: 10),

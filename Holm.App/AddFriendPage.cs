@@ -69,7 +69,7 @@ internal sealed class AddFriendPage : HubView
             Foreground = HubTheme.Dim, FontSize = 13, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 12, 0, 14),
         });
         var entry = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
-        _input = HubTheme.Field("HOLM-XXXXX-XXXXX");
+        _input = HubTheme.Field("HN-XXXX-XXXX");
         _input.VerticalContentAlignment = VerticalAlignment.Center;
         _input.FontSize = 16;
         _input.TemplateApplied += (_, e) =>

@@ -14,43 +14,51 @@ public class FriendInviteTests
         for (int i = 0; i < 200; i++)
         {
             string code = FriendInvite.New();
-            Assert.Matches("^HOLM-[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}$", code);
+            Assert.Matches("^HN-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$", code);
             Assert.Equal(code, FriendInvite.Find(code));
         }
         Assert.NotEqual(FriendInvite.New(), FriendInvite.New());
     }
 
     [Theory]
-    [InlineData("HOLM-7KQ2X-9XF4M")]
-    [InlineData("holm-7kq2x-9xf4m")]
-    [InlineData("  HOLM 7KQ2X 9XF4M ")]
-    [InlineData("7KQ2X-9XF4M")]
-    [InlineData("7kq2x9xf4m")]
-    [InlineData("Add me as a friend on Holm: HOLM-7KQ2X-9XF4M (get Holm at github.com/ademerci/Holm)")]
-    public void A_code_is_found_however_it_was_typed_or_pasted(string text) => Assert.Equal("HOLM-7KQ2X-9XF4M", FriendInvite.Find(text));
+    [InlineData("HN-7KQ2-9XF4")]
+    [InlineData("hn-7kq2-9xf4")]
+    [InlineData("  HN 7KQ2 9XF4 ")]
+    [InlineData("7KQ2-9XF4")]
+    [InlineData("7kq29xf4")]
+    [InlineData("Add me as a friend on HolyNotch: HN-7KQ2-9XF4")]
+    public void A_code_is_found_however_it_was_typed_or_pasted(string text) => Assert.Equal("HN-7KQ2-9XF4", FriendInvite.Find(text));
+
+    [Fact]
+    public void Legacy_holm_codes_are_still_accepted()
+    {
+        Assert.Equal("HOLM-7KQ2X-9XF4M", FriendInvite.Find("HOLM-7KQ2X-9XF4M"));
+        Assert.Equal("HOLM-7KQ2X-9XF4M", FriendInvite.Find("holm 7kq2x 9xf4m"));
+        Assert.Equal("HOLM-7KQ2X-9XF4M", FriendInvite.FindInMessage("my code is HOLM-7KQ2X-9XF4M!"));
+    }
 
     [Fact]
     public void Letters_people_mix_up_are_read_as_what_they_look_like()
     {
-        Assert.Equal("HOLM-11K2X-9XF4M", FriendInvite.Find("HOLM-ILK2X-9XF4M"));
-        Assert.Equal("HOLM-00K2X-9XF4M", FriendInvite.Find("holm-oOk2x-9xf4m"));
+        Assert.Equal("HN-11K2-9XF4", FriendInvite.Find("HN-ILK2-9XF4"));
+        Assert.Equal("HN-00K2-9XF4", FriendInvite.Find("hn-oOk2-9xf4"));
     }
 
     [Theory]
     [InlineData(null)]
     [InlineData("")]
-    [InlineData("HOLM-7KQ2X")]
-    [InlineData("HOLM-7KQ2X-9XF4MM")]
-    [InlineData("HOLM-UUUUU-9XF4M")] // U isn't in the alphabet
+    [InlineData("HN-7KQ2")]
+    [InlineData("HN-7KQ2-9XF4M")]
+    [InlineData("HN-UUUU-9XF4")] // U isn't in the alphabet
     [InlineData("hi there")]
     public void Anything_else_is_no_code(string? text) => Assert.Null(FriendInvite.Find(text));
 
     [Fact]
-    public void Copied_text_only_counts_with_the_holm_prefix()
+    public void Copied_text_only_counts_with_the_prefix()
     {
-        Assert.Null(FriendInvite.FindInMessage("7KQ2X9XF4M"));
-        Assert.Null(FriendInvite.FindInMessage("password12"));
-        Assert.Equal("HOLM-7KQ2X-9XF4M", FriendInvite.FindInMessage("my code is HOLM-7KQ2X-9XF4M!"));
+        Assert.Null(FriendInvite.FindInMessage("7KQ29XF4"));
+        Assert.Null(FriendInvite.FindInMessage("password"));
+        Assert.Equal("HN-7KQ2-9XF4", FriendInvite.FindInMessage("my code is HN-7KQ2-9XF4!"));
     }
 
     [Fact]

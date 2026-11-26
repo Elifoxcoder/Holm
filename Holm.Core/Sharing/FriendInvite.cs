@@ -20,17 +20,20 @@ public static class FriendInvite
 {
     /// <summary>Crockford's base32: no I, L, O or U, so a code read out or typed by hand is hard to get wrong.</summary>
     const string Alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-    /// <summary>Ten characters: 50 random bits.</summary>
-    public const int Length = 10;
+    /// <summary>Eight characters: 40 random bits (HN-XXXX-XXXX).</summary>
+    public const int Length = 8;
+    const int LegacyLength = 10;
     /// <summary>How long a code works: as long as the server keeps the card.</summary>
     public static readonly TimeSpan Lifetime = TimeSpan.FromHours(12);
     public const string Prefix = "hinv1 ";
 
-    static readonly Regex InText = new(@"(?<![A-Za-z0-9])HOLM[-\s]?([0-9A-Za-z]{5})[-\s]?([0-9A-Za-z]{5})(?![A-Za-z0-9])",
+    static readonly Regex InText = new(@"(?<![A-Za-z0-9])HN[-\s]?([0-9A-Za-z]{4})[-\s]?([0-9A-Za-z]{4})(?![A-Za-z0-9])",
                                        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    static readonly Regex LegacyInText = new(@"(?<![A-Za-z0-9])HOLM[-\s]?([0-9A-Za-z]{5})[-\s]?([0-9A-Za-z]{5})(?![A-Za-z0-9])",
+                                             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     static readonly byte[] Salt = Encoding.ASCII.GetBytes("Holm friend invite v1");
 
-    /// <summary>A new code: ten random characters.</summary>
+    /// <summary>A new code: eight random characters (HN-XXXX-XXXX).</summary>
     public static string New()
     {
         var chars = new char[Length];
@@ -39,29 +42,33 @@ public static class FriendInvite
         return Format(new string(chars));
     }
 
-    /// <summary>"HOLM-" and the ten characters in two groups of five.</summary>
-    public static string Format(string chars) => $"HOLM-{chars[..5]}-{chars[5..]}";
+    /// <summary>"HN-" and the eight characters in two groups of four.</summary>
+    public static string Format(string chars) => chars.Length == LegacyLength
+        ? $"HOLM-{chars[..5]}-{chars[5..]}"
+        : $"HN-{chars[..4]}-{chars[4..]}";
 
     /// <summary>
-    /// The code in what someone typed or pasted: "HOLM-7KQ2X-9XF4M" anywhere in a message, or just the ten characters
-    /// with or without a dash, in any case. Letters people mix up are read as what they look like (O as 0, I and L as 1).
-    /// Null if there's no valid code.
+    /// The code in what someone typed or pasted: "HN-7KQ2-9XF4" anywhere in a message, or just the eight characters
+    /// with or without a dash, in any case. Also accepts legacy "HOLM-XXXXX-XXXXX" codes. Letters people mix up are
+    /// read as what they look like (O as 0, I and L as 1). Null if there's no valid code.
     /// </summary>
     public static string? Find(string? text)
     {
         if (string.IsNullOrWhiteSpace(text) || text.Length > 10_000) return null;
-        var match = InText.Match(text);
         string raw;
+        var match = InText.Match(text);
         if (match.Success) raw = match.Groups[1].Value + match.Groups[2].Value;
+        else if (LegacyInText.Match(text) is { Success: true } legacy) raw = legacy.Groups[1].Value + legacy.Groups[2].Value;
         else
         {
-            // Typed into the Add friend box: just the characters.
+            // Typed into the Add friend box: just the characters (with or without prefix).
             raw = text.Trim().Replace("-", "").Replace(" ", "");
-            if (raw.StartsWith("HOLM", StringComparison.OrdinalIgnoreCase)) raw = raw[4..];
-            if (raw.Length != Length) return null;
+            if (raw.StartsWith("HN", StringComparison.OrdinalIgnoreCase) && raw.Length == 2 + Length) raw = raw[2..];
+            else if (raw.StartsWith("HOLM", StringComparison.OrdinalIgnoreCase) && raw.Length == 4 + LegacyLength) raw = raw[4..];
+            if (raw.Length != Length && raw.Length != LegacyLength) return null;
         }
-        var chars = new char[Length];
-        for (int i = 0; i < Length; i++)
+        var chars = new char[raw.Length];
+        for (int i = 0; i < raw.Length; i++)
         {
             char c = char.ToUpperInvariant(raw[i]) switch { 'O' => '0', 'I' or 'L' => '1', var x => x };
             if (Alphabet.IndexOf(c) < 0) return null;
@@ -70,9 +77,9 @@ public static class FriendInvite
         return Format(new string(chars));
     }
 
-    /// <summary>A code with its "HOLM-" prefix in copied text, as from a chat; plain words never count.</summary>
+    /// <summary>A code with its "HN-" (or legacy "HOLM-") prefix in copied text, as from a chat; plain words never count.</summary>
     public static string? FindInMessage(string? text)
-        => text != null && text.Length <= 10_000 && InText.IsMatch(text) ? Find(text) : null;
+        => text != null && text.Length <= 10_000 && (InText.IsMatch(text) || LegacyInText.IsMatch(text)) ? Find(text) : null;
 
     static byte[] Derive(string code, string purpose, int length)
         => HKDF.DeriveKey(HashAlgorithmName.SHA256, Encoding.ASCII.GetBytes(code), length, Salt, Encoding.ASCII.GetBytes(purpose));

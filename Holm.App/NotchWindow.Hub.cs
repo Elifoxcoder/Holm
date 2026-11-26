@@ -219,7 +219,7 @@ public sealed partial class NotchWindow
             Diag.Log("Couldn't use a friend code: " + ex.Message);
             return (false, "That friend code has an unsupported key or inbox address. Ask for a new code.");
         }
-        return (false, "That isn't a HolyNotch code. Codes look like HOLM-7KQ2X-9XF4M.");
+        return (false, "That isn't a HolyNotch code. Codes look like HN-7KQ2-9XF4.");
     }
 
     async Task AnswerFromHubAsync(Friend card, string requestId, bool accept)

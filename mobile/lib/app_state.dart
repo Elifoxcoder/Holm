@@ -1110,7 +1110,7 @@ class AppState extends ChangeNotifier {
     } else {
       card = parseFriendCode(text);
     }
-    if (card == null) return 'Paste a HolyNotch friend code (WNF1.…) or an invite code (HOLM-XXXXX-XXXXX)';
+    if (card == null) return 'Paste a HolyNotch friend code (WNF1.…) or an invite code (HN-XXXX-XXXX)';
     if (card.key == me.publicKey) return "That's your own code";
     if (friendByKey(card.key) != null) return '${card.name} is already your friend';
     final requestId = newGuidN();

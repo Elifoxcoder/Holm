@@ -350,22 +350,31 @@ class Notes {
   }
 }
 
-/// Short invite codes like HOLM-7KQ2X-9XF4M (FriendInvite.cs).
+/// Short invite codes like HN-7KQ2-9XF4 (and legacy HOLM-7KQ2X-9XF4M) (FriendInvite.cs).
 class Invite {
   static const _alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
   static final _salt = ascii.encode('Holm friend invite v1');
-  static final _inText = RegExp(r'(?<![A-Za-z0-9])HOLM[-\s]?([0-9A-Za-z]{5})[-\s]?([0-9A-Za-z]{5})(?![A-Za-z0-9])', caseSensitive: false);
+  static final _inText = RegExp(r'(?<![A-Za-z0-9])HN[-\s]?([0-9A-Za-z]{4})[-\s]?([0-9A-Za-z]{4})(?![A-Za-z0-9])', caseSensitive: false);
+  static final _legacyInText = RegExp(r'(?<![A-Za-z0-9])HOLM[-\s]?([0-9A-Za-z]{5})[-\s]?([0-9A-Za-z]{5})(?![A-Za-z0-9])', caseSensitive: false);
 
   static String? find(String? text) {
     if (text == null || text.trim().isEmpty || text.length > 10000) return null;
     String raw;
     final m = _inText.firstMatch(text);
+    final legacy = m == null ? _legacyInText.firstMatch(text) : null;
     if (m != null) {
       raw = m.group(1)! + m.group(2)!;
+    } else if (legacy != null) {
+      raw = legacy.group(1)! + legacy.group(2)!;
     } else {
       raw = text.trim().replaceAll('-', '').replaceAll(' ', '');
-      if (raw.toUpperCase().startsWith('HOLM')) raw = raw.substring(4);
-      if (raw.length != 10) return null;
+      final upper = raw.toUpperCase();
+      if (upper.startsWith('HN') && raw.length == 10) {
+        raw = raw.substring(2);
+      } else if (upper.startsWith('HOLM') && raw.length == 14) {
+        raw = raw.substring(4);
+      }
+      if (raw.length != 8 && raw.length != 10) return null;
     }
     final chars = StringBuffer();
     for (final ch in raw.toUpperCase().split('')) {
@@ -374,7 +383,9 @@ class Invite {
       chars.write(c);
     }
     final s = chars.toString();
-    return 'HOLM-${s.substring(0, 5)}-${s.substring(5)}';
+    return s.length == 10
+        ? 'HOLM-${s.substring(0, 5)}-${s.substring(5)}'
+        : 'HN-${s.substring(0, 4)}-${s.substring(4)}';
   }
 
   static List<int> _derive(String code, String purpose, int length) =>
