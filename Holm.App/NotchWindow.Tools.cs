@@ -22,7 +22,7 @@ namespace Holm.App;
 /// </summary>
 public sealed partial class NotchWindow
 {
-    enum Tool { None, Notes, Reminders, Calculator, Clipboard, Mixer, Ai, Beam, Phone }
+    enum Tool { None, Notes, Reminders, Calculator, Totp, Clipboard, Mixer, Ai, Beam, Phone }
 
     static readonly IBrush ToolLit = Look.InkA(0x29);
 
@@ -32,7 +32,7 @@ public sealed partial class NotchWindow
         Margin = Look.Pick(new Thickness(8, 0, 4, 0), new Thickness(36, 0, 36, 0)),
     };
     readonly Grid _toolPage = new() { IsVisible = false };
-    NotchButton _notesToolBtn = null!, _remindersToolBtn = null!, _calculatorToolBtn = null!, _chatsToolBtn = null!;
+    NotchButton _homeToolBtn = null!, _notesToolBtn = null!, _remindersToolBtn = null!, _calculatorToolBtn = null!, _chatsToolBtn = null!;
     Tool _tool;
     bool _typing;
     bool _typingUntouched; // the field took the keyboard when its tool opened and nothing was typed yet
@@ -113,6 +113,10 @@ public sealed partial class NotchWindow
     /// <summary>The tool row at the top of the open notch.</summary>
     Control BuildToolRow()
     {
+        _homeToolBtn = ToolWord("Home", "\uE80F");
+        ToolTip.SetTip(_homeToolBtn, "Home (notch start screen)");
+        _homeToolBtn.Click += () => ShowTool(Tool.None);
+        _toolBar.Children.Add(_homeToolBtn);
         _notesToolBtn = ToolButton("Notes", "", Tool.Notes, "Notes");
         _remindersToolBtn = ToolButton("Reminders", BellGlyph, Tool.Reminders, "Reminders");
         _calculatorToolBtn = ToolButton("Calc", "", Tool.Calculator, "Calculator");
@@ -124,6 +128,7 @@ public sealed partial class NotchWindow
             Dispatcher.UIThread.Post(() => OpenChat(null), DispatcherPriority.Background);
         };
         _toolBar.Children.Add(_chatsToolBtn);
+        _totpToolBtn = ToolButton("2FA", TotpGlyph, Tool.Totp, "Authenticator (TOTP codes)");
         _beamToolBtn = ToolButton("Beam", "", Tool.Beam, "Beam: send and receive files");
         _clipboardToolBtn = ToolButton("Clipboard", ClipboardGlyph, Tool.Clipboard, "Clipboard history");
         _mixerToolBtn = ToolButton("Mixer", MixerGlyph, Tool.Mixer, "Volume per app");
@@ -216,6 +221,7 @@ public sealed partial class NotchWindow
         _toolPage.Children.Add(_notesPage);
         _toolPage.Children.Add(BuildRemindersPage());
         _toolPage.Children.Add(_calculatorPage);
+        _toolPage.Children.Add(BuildTotpPage());
         _toolPage.Children.Add(BuildClipboardPage());
         _toolPage.Children.Add(BuildMixerPage());
         _toolPage.Children.Add(_aiPage);
@@ -232,6 +238,7 @@ public sealed partial class NotchWindow
         (_notesPage, _notesToolBtn, Tool.Notes),
         (_remindersPage, _remindersToolBtn, Tool.Reminders),
         (_calculatorPage, _calculatorToolBtn, Tool.Calculator),
+        (_totpPage, _totpToolBtn, Tool.Totp),
         (_clipboardPage, _clipboardToolBtn, Tool.Clipboard),
         (_mixerPage, _mixerToolBtn, Tool.Mixer),
         (_aiPage, _aiToolBtn, Tool.Ai),
@@ -266,6 +273,9 @@ public sealed partial class NotchWindow
         Control? activePage = null;
         ShowHomeSections();
         _toolPage.IsVisible = tool != Tool.None;
+        _homeToolBtn.Rest = Look.Aero
+            ? (tool == Tool.None ? HubTheme.Selected : HubTheme.ActionSurface)
+            : (tool == Tool.None ? ToolLit : Brushes.Transparent);
         foreach (var (page, button, which) in ToolPages())
         {
             bool match = which == tool;
@@ -276,9 +286,11 @@ public sealed partial class NotchWindow
             if (match) activePage = page;
         }
         if (tool != Tool.Mixer) HideMixer();
+        if (tool != Tool.Totp) _totpTick.Stop();
         if (tool == Tool.Notes) ShowNotes();
         else if (tool == Tool.Reminders) ShowRemindersPage();
         else if (tool == Tool.Calculator) OnCalcChanged();
+        else if (tool == Tool.Totp) ShowTotpPage();
         else if (tool == Tool.Clipboard) ShowClipboardPage();
         else if (tool == Tool.Mixer) ShowMixerPage();
         else if (tool == Tool.Ai) FillAiPage();
@@ -294,10 +306,12 @@ public sealed partial class NotchWindow
     /// <summary>Which tools are switched on; the bar hides when none is.</summary>
     void RefreshToolBar()
     {
+        _homeToolBtn.IsVisible = true;
         _notesToolBtn.IsVisible = _settings.Notes && !_home.IsToolHidden(HomeLayout.Notes);
         _remindersToolBtn.IsVisible = _settings.Reminders && !_home.IsToolHidden(HomeLayout.Reminders);
         _calculatorToolBtn.IsVisible = _settings.Calculator && !_home.IsToolHidden(HomeLayout.Calculator);
         _chatsToolBtn.IsVisible = !_home.IsToolHidden(HomeLayout.Chats);
+        _totpToolBtn.IsVisible = _settings.Totp && !_home.IsToolHidden(HomeLayout.Totp);
         _beamToolBtn.IsVisible = _settings.Beam && !_home.IsToolHidden(HomeLayout.Beam);
         _clipboardToolBtn.IsVisible = _settings.ClipboardHistory && !_home.IsToolHidden(HomeLayout.Clipboard);
         _mixerToolBtn.IsVisible = _settings.AppVolume && !_home.IsToolHidden(HomeLayout.Mixer);

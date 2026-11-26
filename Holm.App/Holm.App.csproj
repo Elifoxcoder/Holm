@@ -2,7 +2,7 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <!-- The cross-platform rewrite's own version, ahead of the WPF app's (WinNotch.csproj) it is meant to follow. -->
-    <Version>2.5.1</Version>
+    <Version>2.5.2</Version>
     <ReleaseIsland>Brecqhou</ReleaseIsland>
     <!-- The updater installs only an exe whose product name is "Holm" (UpdateService.ValidateExecutable). -->
     <Product>HolyNotch</Product>
@@ -52,6 +52,8 @@
     <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.6" />
     <!-- QR codes for Beam to a phone, as the WPF app makes them. -->
     <PackageReference Include="QRCoder" Version="1.7.0" />
+    <!-- Pure-managed QR decoding for screen-snipped TOTP codes (Windows + Linux). -->
+    <PackageReference Include="ZXing.Net" Version="0.16.10" />
     <PackageReference Include="AvaloniaUI.DiagnosticsSupport" Version="2.2.3">
       <IncludeAssets Condition="'$(Configuration)' != 'Debug'">None</IncludeAssets>
       <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>

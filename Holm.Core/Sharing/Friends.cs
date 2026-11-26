@@ -366,6 +366,12 @@ public enum FriendNoteKind
     GroupReaction,
     /// <summary>A member left a group chat.</summary>
     GroupLeave,
+    /// <summary>An edit to a previously sent 1:1 chat message.</summary>
+    ChatEdit,
+    /// <summary>An edit to a previously sent group chat message.</summary>
+    GroupChatEdit,
+    /// <summary>E2E-encrypted TOTP authenticator entries synced between own devices.</summary>
+    TotpSync,
 }
 
 public static class FriendNotes
@@ -456,6 +462,9 @@ public static class FriendNotes
                 FriendNoteKind.GroupChat => "group-chat",
                 FriendNoteKind.GroupReaction => "group-react",
                 FriendNoteKind.GroupLeave => "group-leave",
+                FriendNoteKind.ChatEdit => "chat-edit",
+                FriendNoteKind.GroupChatEdit => "group-chat-edit",
+                FriendNoteKind.TotpSync => "totp-sync",
                 _ => throw new ArgumentOutOfRangeException(nameof(note)),
             },
             F = note.From,
@@ -612,6 +621,16 @@ public static class FriendNotes
                                       MessageId: dto.I, GroupId: dto.E),
                 "group-leave" when Guid.TryParseExact(dto.E, "N", out _)
                     => new FriendNote(FriendNoteKind.GroupLeave, from, dto.T, GroupId: dto.E),
+                "chat-edit" when ChatText.Clean(ChatText.FromNote(dto.M)) is { } editedText && Guid.TryParseExact(dto.I, "N", out _)
+                    => new FriendNote(FriendNoteKind.ChatEdit, from, dto.T, Code: dto.C, Text: editedText, MessageId: dto.I),
+                "group-chat-edit" when Guid.TryParseExact(dto.E, "N", out _) && Guid.TryParseExact(dto.I, "N", out _)
+                                       && DecodeBoundedUtf8(dto.M, 2400) is { Length: > 0 } editedGroupCipher
+                                       && editedGroupCipher.StartsWith(ChatCrypto.GroupCipherPrefix, StringComparison.Ordinal)
+                    => new FriendNote(FriendNoteKind.GroupChatEdit, from, dto.T, Text: editedGroupCipher, MessageId: dto.I, GroupId: dto.E),
+                "totp-sync" when OwnDevice.IsId(dto.D) && (dto.H == true || DecodeBoundedUtf8(dto.M, 2400) is { Length: > 0 })
+                    => new FriendNote(FriendNoteKind.TotpSync, from, dto.T,
+                                      Text: dto.M != null ? DecodeBoundedUtf8(dto.M, 2400) : null,
+                                      Query: dto.H == true ? true : null),
                 _ => null, // a kind from a newer Holm: left unopened, as older ones leave "wave"
             };
             if (note != null)

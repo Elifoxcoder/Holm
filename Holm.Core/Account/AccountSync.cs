@@ -141,7 +141,7 @@ internal static class SettingsSync
         nameof(AppSettings.QuietHours), nameof(AppSettings.QuietFrom), nameof(AppSettings.QuietUntil), nameof(AppSettings.QuietVips),
         nameof(AppSettings.Downloads), nameof(AppSettings.Vpn), nameof(AppSettings.Privacy), nameof(AppSettings.Calls),
         nameof(AppSettings.PauseForCalls), nameof(AppSettings.Screenshots), nameof(AppSettings.ScreenshotText), nameof(AppSettings.SleepTimer),
-        nameof(AppSettings.Notes), nameof(AppSettings.Reminders), nameof(AppSettings.Calculator), nameof(AppSettings.ClipboardHistory),
+        nameof(AppSettings.Notes), nameof(AppSettings.Totp), nameof(AppSettings.Reminders), nameof(AppSettings.Calculator), nameof(AppSettings.ClipboardHistory),
         nameof(AppSettings.AppVolume), nameof(AppSettings.ClearPasswords), nameof(AppSettings.ColorPicker), nameof(AppSettings.Focumon),
         nameof(AppSettings.CapsLock), nameof(AppSettings.AllNotifications), nameof(AppSettings.TeamsPopups), nameof(AppSettings.SpotifyPopups), nameof(AppSettings.PhoneCodes), nameof(AppSettings.NotchOnlyPopups), nameof(AppSettings.Dictation),
         nameof(AppSettings.HotKey), nameof(AppSettings.DiskWarning), nameof(AppSettings.UsbDrives), nameof(AppSettings.Connectivity),

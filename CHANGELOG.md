@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.5.2 – 2026-11-26
+
+### Added
+
+- **TOTP Authenticator (Desktop + Android 1.4.9, E2E synced):**
+  - Compact `2FA` tab in the open notch showing title + large monospace code with click-to-copy.
+  - *Tools › Authenticator* in Settings: Snipping-Tool style screen QR scanner (`QrSnipWindow`), manual setup key / `otpauth://` URI entry, and import from Google Authenticator (`otpauth-migration://`), Aegis JSON, 2FAS JSON, or URI lists.
+  - Automatic clipboard suggestion: copying/selecting a TOTP key or `otpauth://` URI offers to add it to HolyNotch.
+  - **Android 1.4.9:** replaces Notes with the **2FA Authenticator** tab (stacked compact codes, tap to copy, `+` button for camera QR scanner, paste, and Google Authenticator / Aegis / 2FAS import).
+- **Home button** at the far left of the notch action row to return directly to the notch start screen.
+- **Message editing** in 1:1 and group chats (Desktop + Android 1.4.9, E2E encrypted, with `Edited` indicator).
+- **Android 1.4.9 Chat:** KLIPY GIF picker and inline animated GIF display.
+
+### Fixed
+
+- **Settings window:** restored rounded corners while keeping the surface fully opaque and resizable.
+
 ## 2.5.1 – 2026-11-26
 
 ### Added

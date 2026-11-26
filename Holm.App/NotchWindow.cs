@@ -127,6 +127,7 @@ public sealed partial class NotchWindow : Window
         InitMessages(platform);
         InitBeam(platform);
         InitHub();
+        InitTotp();
         InitAchievements();
         InitVerity();
         InitAccount();

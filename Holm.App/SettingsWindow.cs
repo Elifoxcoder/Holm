@@ -98,8 +98,9 @@ sealed partial class SettingsWindow : Window
         var design = Look.Current;
         var opaquePanel = B(design.Panel | 0xFF000000);
         var opaqueSidebar = B(design.Sidebar | 0xFF000000);
-        TransparencyLevelHint = new[] { WindowTransparencyLevel.None };
-        Background = opaquePanel;
+        double corner = HubTheme.Round(16);
+        TransparencyLevelHint = new[] { WindowTransparencyLevel.Transparent };
+        Background = Brushes.Transparent;
         CanResize = true;
         MinWidth = 720;
         MinHeight = 520;
@@ -203,7 +204,8 @@ sealed partial class SettingsWindow : Window
             Background = Look.Aero ? Sidebar : opaqueSidebar,
             BorderBrush = Line,
             BorderThickness = new Thickness(0, 0, 1, 0),
-            ClipToBounds = Look.Aero, Child = sideContent,
+            CornerRadius = new CornerRadius(corner, 0, 0, corner),
+            ClipToBounds = true, Child = sideContent,
         };
 
         // ── content ──
@@ -286,11 +288,13 @@ sealed partial class SettingsWindow : Window
         _surface = new Border
         {
             Background = Look.Aero ? Panel : opaquePanel, BorderBrush = Edge, BorderThickness = new Thickness(design.Edge != 0 ? design.EdgeWidth : 1),
+            CornerRadius = new CornerRadius(corner), ClipToBounds = true,
             Child = columns,
         };
         _dialog = new Border
         {
             Background = new SolidColorBrush(Color.FromArgb(140, 0, 0, 0)),
+            CornerRadius = new CornerRadius(corner),
             IsVisible = false,
         };
         var layers = new Grid();

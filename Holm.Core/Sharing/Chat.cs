@@ -198,6 +198,8 @@ public sealed class FriendMessage
     public string? SenderName { get; set; }
     /// <summary>For group chat messages: reactions keyed by member public key.</summary>
     public Dictionary<string, string>? GroupReactions { get; set; }
+    /// <summary>Whether the message text was edited after being sent.</summary>
+    public bool Edited { get; set; }
 }
 
 /// <summary>The conversations with friends and groups, and which have unread messages. UI thread only.</summary>
@@ -366,6 +368,19 @@ public sealed class ChatStore
     }
 
     public FriendMessage? Find(string key, string id) => With(key).FirstOrDefault(m => m.Id == id);
+
+    /// <summary>Updates a text message's body and marks it as edited; returns false if not found or unchanged.</summary>
+    public bool Edit(string key, string id, string newText)
+    {
+        if (ChatText.Clean(newText) is not { } clean) return false;
+        if (With(key).FirstOrDefault(m => m.Id == id) is not { } message || message.Gif != null) return false;
+        if (message.Text == clean && message.Edited) return false;
+        message.Text = clean;
+        message.Edited = true;
+        Save();
+        Changed?.Invoke(key);
+        return true;
+    }
 
     public void MarkRead(string key)
     {

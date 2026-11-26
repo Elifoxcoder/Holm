@@ -13,7 +13,7 @@ import 'ui/devices_page.dart';
 import 'ui/file_confirmation.dart';
 import 'ui/notch_page.dart';
 import 'ui/offer_confirmation.dart';
-import 'ui/notes_page.dart';
+import 'ui/totp_page.dart';
 import 'ui/theme.dart';
 import 'ui/widgets.dart';
 
@@ -71,7 +71,8 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
     NotchLink.onShared = _takeShared;
     WidgetsBinding.instance.addPostFrameCallback((_) => _takeShared());
     NotchLink.onOpen = (page) {
-      final i = const ['devices', 'chat', 'clipboard', 'notes', 'notch'].indexOf(page);
+      final mapped = page == 'notes' ? 'totp' : page;
+      final i = const ['devices', 'chat', 'clipboard', 'totp', 'notch'].indexOf(mapped);
       if (i >= 0 && mounted) setState(() => _page = i);
     };
   }
@@ -242,7 +243,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final pages = [DevicesPage(s), ChatListPage(s), ClipboardPage(s), NotesPage(s), NotchPage(s)];
+    final pages = [DevicesPage(s), ChatListPage(s), ClipboardPage(s), TotpPage(s), NotchPage(s)];
     return Scaffold(
       body: SafeArea(
         bottom: false,
@@ -351,7 +352,7 @@ class _ToolBar extends StatelessWidget {
     (Icons.devices_outlined, Icons.devices_rounded, 'Devices'),
     (Icons.chat_bubble_outline_rounded, Icons.chat_bubble_rounded, 'Chat'),
     (Icons.content_paste_outlined, Icons.content_paste_rounded, 'Clipboard'),
-    (Icons.sticky_note_2_outlined, Icons.sticky_note_2_rounded, 'Notes'),
+    (Icons.key_outlined, Icons.key_rounded, '2FA'),
     (Icons.crop_7_5_outlined, Icons.crop_7_5_rounded, 'Notch'),
   ];
 

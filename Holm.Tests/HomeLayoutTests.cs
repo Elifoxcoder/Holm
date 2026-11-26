@@ -13,7 +13,7 @@ public class HomeLayoutTests
 
         Assert.True(layout.IsUsual);
         Assert.Equal(new[] { "tools", "main", "today", "live", "shelf", "status" }, layout.Sections);
-        Assert.Equal(new[] { "notes", "reminders", "calculator", "chats", "clipboard", "mixer", "ai", "color", "beam", "phone" }, layout.ToolOrder);
+        Assert.Equal(new[] { "notes", "reminders", "calculator", "chats", "totp", "clipboard", "mixer", "ai", "color", "beam", "phone" }, layout.ToolOrder);
         Assert.Empty(layout.Hidden);
         Assert.Empty(layout.Swapped);
         Assert.Empty(layout.HiddenTools);
@@ -130,7 +130,7 @@ public class HomeLayoutTests
     [Fact]
     public void Moving_back_where_it_was_is_the_usual_layout_again()
     {
-        var layout = HomeLayout.Usual.Move(HomeLayout.Status, 0).Move(HomeLayout.Status, 5).MoveTool(HomeLayout.Ai, 0).MoveTool(HomeLayout.Ai, 6);
+        var layout = HomeLayout.Usual.Move(HomeLayout.Status, 0).Move(HomeLayout.Status, 5).MoveTool(HomeLayout.Ai, 0).MoveTool(HomeLayout.Ai, 7);
 
         Assert.True(layout.IsUsual);
         var settings = new AppSettings { HomeSections = new() { "status" } };

@@ -16,6 +16,7 @@ static class Fonts
 
     public static readonly FontFamily Text = Inter;
     public static readonly FontFamily Display = Inter;
+    public static readonly FontFamily Mono = new("avares://Holm.App/Assets/IBMPlexMono#IBM Plex Mono");
     public static readonly FontFamily Icons = new("avares://Holm.App/Assets/HolmIcons.ttf#Holm Icons");
 
     /// <summary>

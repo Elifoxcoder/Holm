@@ -42,6 +42,7 @@ public sealed partial class NotchWindow
             () => { _settings.Reminders = true; CheckReminders(); ShowIdleStatus(); }),
         new(HomeLayout.Calculator, "Calculator", (brush, size) => ToolIcon("", brush, size), () => _settings.Calculator, () => _settings.Calculator = true),
         new(HomeLayout.Chats, "Chats", (brush, size) => ToolIcon(ChatsGlyph, brush, size)),
+        new(HomeLayout.Totp, "Authenticator (2FA)", (brush, size) => ToolIcon(TotpGlyph, brush, size), () => _settings.Totp, () => _settings.Totp = true),
         new(HomeLayout.Clipboard, "Clipboard history", (brush, size) => ToolIcon(ClipboardGlyph, brush, size), () => _settings.ClipboardHistory,
             DisabledHint: "Enable clipboard recording in Settings › Calls and privacy to use this tool."),
         new(HomeLayout.Mixer, "Volume per app", (brush, size) => ToolIcon(MixerGlyph, brush, size), () => _settings.AppVolume, () => _settings.AppVolume = true),
@@ -100,10 +101,11 @@ public sealed partial class NotchWindow
         var buttons = new Dictionary<string, Control>
         {
             [HomeLayout.Notes] = _notesToolBtn, [HomeLayout.Reminders] = _remindersToolBtn, [HomeLayout.Calculator] = _calculatorToolBtn,
-            [HomeLayout.Chats] = _chatsToolBtn, [HomeLayout.Beam] = _beamToolBtn, [HomeLayout.Phone] = _phoneToolBtn, [HomeLayout.Clipboard] = _clipboardToolBtn, [HomeLayout.Mixer] = _mixerToolBtn,
+            [HomeLayout.Chats] = _chatsToolBtn, [HomeLayout.Totp] = _totpToolBtn, [HomeLayout.Beam] = _beamToolBtn, [HomeLayout.Phone] = _phoneToolBtn, [HomeLayout.Clipboard] = _clipboardToolBtn, [HomeLayout.Mixer] = _mixerToolBtn,
             [HomeLayout.Ai] = _aiToolBtn, [HomeLayout.ColorPicker] = _colorPickerBtn,
         };
-        var wanted = _home.ToolOrder.Select(tool => buttons[tool]).ToList();
+        var wanted = new List<Control> { _homeToolBtn };
+        wanted.AddRange(_home.ToolOrder.Select(tool => buttons[tool]));
         wanted.AddRange(_toolBar.Children.Where(child => !wanted.Contains(child)).ToList());
         if (_toolBar.Children.SequenceEqual(wanted)) return;
         _toolBar.Children.Clear();

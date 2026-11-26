@@ -20,6 +20,8 @@
     <!-- Answer, decline and hang up in the notch (asked for, optional) -->
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- TOTP QR code scanner -->
+    <uses-permission android:name="android.permission.CAMERA"/>
     <application
         android:label="HolyNotch"
         android:name="${applicationName}"

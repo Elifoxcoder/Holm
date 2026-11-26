@@ -47,8 +47,11 @@ internal sealed class ChatPage : HubView
     readonly TextBox _input = null!, _search = null!;
     readonly TextBlock _counter = null!;
     readonly Border _send = null!, _attach = null!;
+    readonly Border _editBar = null!;
+    readonly TextBlock _editPreview = new() { FontSize = 11.5, Foreground = HubTheme.Dim, TextTrimming = TextTrimming.CharacterEllipsis };
     Friend? _friend;
     ChatGroup? _group;
+    FriendMessage? _editing;
     string? _justReacted;
     readonly Dictionary<string, (string Look, Control View)> _bubbles = new();
     int _shown = ShownAtFirst;
@@ -156,6 +159,12 @@ internal sealed class ChatPage : HubView
         _input.AcceptsReturn = false;
         _input.KeyDown += (_, e) =>
         {
+            if (e.Key == Key.Escape && _editing != null)
+            {
+                e.Handled = true;
+                CancelEdit();
+                return;
+            }
             // Enter sends, Shift+Enter starts a new line.
             if (e.Key != Key.Enter) return;
             e.Handled = true;
@@ -186,8 +195,28 @@ internal sealed class ChatPage : HubView
             Background = Composer, BorderBrush = ComposerEdge, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(21),
             MinHeight = 42, Margin = new Thickness(14, 6, 14, 14), Child = box,
         };
-        Grid.SetRow(composer, 2);
-        conversation.Children.Add(composer);
+        var editRow = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto") };
+        editRow.Children.Add(HubTheme.Glyph("\uE70F", 12, HubTheme.Accent));
+        var editStack = new StackPanel { Margin = new Thickness(8, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
+        editStack.Children.Add(new TextBlock { Text = "Editing message", FontSize = 11.5, FontWeight = FontWeight.SemiBold, Foreground = HubTheme.Accent });
+        editStack.Children.Add(_editPreview);
+        Grid.SetColumn(editStack, 1);
+        editRow.Children.Add(editStack);
+        var cancelEdit = RoundButton(HubTheme.Glyph("\uE711", 10, HubTheme.Dim), "Cancel edit (Esc)", 24, Brushes.Transparent, HubTheme.Hover);
+        cancelEdit.PointerReleased += (_, e) => { e.Handled = true; CancelEdit(); };
+        Grid.SetColumn(cancelEdit, 2);
+        editRow.Children.Add(cancelEdit);
+        _editBar = new Border
+        {
+            Background = HubTheme.Card, BorderBrush = HubTheme.Line, BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12), Padding = new Thickness(12, 6),
+            Margin = new Thickness(14, 4, 14, 0), IsVisible = false, Child = editRow,
+        };
+        var composerHost = new StackPanel();
+        composerHost.Children.Add(_editBar);
+        composerHost.Children.Add(composer);
+        Grid.SetRow(composerHost, 2);
+        conversation.Children.Add(composerHost);
         Grid.SetColumn(conversation, 2);
         layout.Children.Add(conversation);
 
@@ -356,9 +385,35 @@ internal sealed class ChatPage : HubView
         _input.Focus();
     }
 
+    void BeginEdit(FriendMessage message)
+    {
+        if (!message.Mine || message.Gif != null) return;
+        _editing = message;
+        _editPreview.Text = message.Text.Replace('\n', ' ');
+        _editBar.IsVisible = true;
+        _input.Text = message.Text;
+        _input.CaretIndex = _input.Text.Length;
+        _input.Focus();
+    }
+
+    void CancelEdit()
+    {
+        _editing = null;
+        _editBar.IsVisible = false;
+        _input.Text = "";
+    }
+
     void SendInput()
     {
         if ((_input.Text ?? "").Trim().Length == 0) return;
+        if (_editing is { } editing)
+        {
+            string updated = _input.Text!;
+            if (_group != null) _social.EditGroup(_group, editing, updated);
+            else if (_friend != null) _social.Edit(_friend, editing, updated);
+            CancelEdit();
+            return;
+        }
         if (_group != null)
         {
             _social.SendGroup(_group, _input.Text!);
@@ -830,7 +885,7 @@ internal sealed class ChatPage : HubView
         string grpReacts = message.GroupReactions is { Count: > 0 } gr
             ? string.Join(",", gr.OrderBy(p => p.Key).Select(p => p.Key + "=" + p.Value))
             : "";
-        return string.Join("\u001F", message.State, message.MyReaction, message.TheirReaction, grpReacts, message.Gif, message.Text, message.Sent, message.SenderName, joinsPrevious, joinsNext, lastOfMine);
+        return string.Join("\u001F", message.State, message.MyReaction, message.TheirReaction, grpReacts, message.Gif, message.Text, message.Edited, message.Sent, message.SenderName, joinsPrevious, joinsNext, lastOfMine);
     }
 
     static bool Together(FriendMessage? a, FriendMessage? b)
@@ -990,14 +1045,28 @@ internal sealed class ChatPage : HubView
         copy.Click += async (_, _) => { if (TopLevel.GetTopLevel(this)?.Clipboard is { } clipboard) try { await clipboard.SetTextAsync(message.Gif ?? message.Text); } catch { } };
         var reactItem = new MenuItem { Header = "React…" };
         reactItem.Click += (_, _) => ChatExtras.ShowReactionBar(bubble, _social, message.MyReaction, emoji => React(message, emoji));
-        bubble.ContextMenu = new ContextMenu { Items = { reactItem, copy } };
+        var menu = new ContextMenu();
+        menu.Items.Add(reactItem);
+        if (message.Mine && !gif)
+        {
+            var editItem = new MenuItem { Header = "Edit" };
+            editItem.Click += (_, _) => BeginEdit(message);
+            menu.Items.Add(editItem);
+        }
+        menu.Items.Add(copy);
+        bubble.ContextMenu = menu;
 
-        // The smiley beside the bubble on hover opens the reaction bar.
+        // Hover actions beside the bubble: react (and edit for our own text messages).
+        var hoverActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 6, 0), Opacity = 0 };
         var smiley = RoundButton(HubTheme.Glyph("", 13, HubTheme.Dim), "React", 26, HubTheme.Card, HubTheme.CardStrong);
-        smiley.VerticalAlignment = VerticalAlignment.Center;
-        smiley.Margin = new Thickness(6, 0, 6, 0);
-        smiley.Opacity = 0;
         smiley.PointerReleased += (_, e) => { e.Handled = true; ChatExtras.ShowReactionBar(bubble, _social, message.MyReaction, emoji => React(message, emoji)); };
+        hoverActions.Children.Add(smiley);
+        if (message.Mine && !gif)
+        {
+            var editBtn = RoundButton(HubTheme.Glyph("\uE70F", 12, HubTheme.Dim), "Edit message", 26, HubTheme.Card, HubTheme.CardStrong);
+            editBtn.PointerReleased += (_, e) => { e.Handled = true; BeginEdit(message); };
+            hoverActions.Children.Add(editBtn);
+        }
 
         var withReactions = new StackPanel();
         withReactions.Children.Add(bubble);
@@ -1020,11 +1089,11 @@ internal sealed class ChatPage : HubView
             DockPanel.SetDock(face, Dock.Left);
             line.Children.Add(face);
         }
-        DockPanel.SetDock(smiley, message.Mine ? Dock.Left : Dock.Right);
-        line.Children.Add(smiley);
+        DockPanel.SetDock(hoverActions, message.Mine ? Dock.Left : Dock.Right);
+        line.Children.Add(hoverActions);
         line.Children.Add(withReactions);
-        line.PointerEntered += (_, _) => smiley.Opacity = 1;
-        line.PointerExited += (_, _) => smiley.Opacity = 0;
+        line.PointerEntered += (_, _) => hoverActions.Opacity = 1;
+        line.PointerExited += (_, _) => hoverActions.Opacity = 0;
 
         var stack = new StackPanel
         {
@@ -1048,12 +1117,17 @@ internal sealed class ChatPage : HubView
             };
             stack.Children.Add(retry);
         }
-        else if (message.State == ChatState.Sending || lastOfMine)
+        else if (message.State == ChatState.Sending || lastOfMine || message.Edited)
         {
+            string status = message.State == ChatState.Sending ? "Sending…"
+                          : message.Edited && lastOfMine ? "Edited · Sent"
+                          : message.Edited ? "Edited"
+                          : "Sent";
             stack.Children.Add(new TextBlock
             {
-                Text = message.State == ChatState.Sending ? "Sending…" : "Sent", FontSize = 10.5, Foreground = HubTheme.Faint,
-                HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 3, 6, 0),
+                Text = status, FontSize = 10.5, Foreground = HubTheme.Faint,
+                HorizontalAlignment = message.Mine ? HorizontalAlignment.Right : HorizontalAlignment.Left,
+                Margin = message.Mine ? new Thickness(0, 3, 6, 0) : new Thickness(38, 3, 0, 0),
             });
         }
         return stack;

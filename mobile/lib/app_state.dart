@@ -16,6 +16,7 @@ import 'net/one_time_code.dart';
 import 'net/nearby.dart';
 import 'net/relay.dart';
 import 'net/secure_channel.dart';
+import 'net/totp.dart';
 import 'net/transfer.dart';
 import 'notch/link.dart';
 import 'notch/settings.dart';
@@ -26,16 +27,27 @@ enum ChatState { sending, sent, failed, received }
 class ChatMessage {
   final String id;
   final bool mine;
-  final String text;
+  String text;
   final int sent;
   ChatState state;
   String? myReaction, theirReaction;
+  final String? gif;
+  bool edited;
 
   ChatMessage({required this.id, required this.mine, required this.text, required this.sent, required this.state,
-      this.myReaction, this.theirReaction});
+      this.myReaction, this.theirReaction, this.gif, this.edited = false});
 
-  Map<String, dynamic> toJson() =>
-      {'id': id, 'mine': mine, 'text': text, 'sent': sent, 'state': state.name, 'my': myReaction, 'their': theirReaction};
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'mine': mine,
+        'text': text,
+        'sent': sent,
+        'state': state.name,
+        'my': myReaction,
+        'their': theirReaction,
+        if (gif != null) 'gif': gif,
+        if (edited) 'edited': true,
+      };
   factory ChatMessage.fromJson(Map<String, dynamic> j) => ChatMessage(
       id: j['id'] as String,
       mine: j['mine'] as bool,
@@ -43,7 +55,9 @@ class ChatMessage {
       sent: j['sent'] as int,
       state: ChatState.values.byName(j['state'] as String),
       myReaction: j['my'] as String?,
-      theirReaction: j['their'] as String?);
+      theirReaction: j['their'] as String?,
+      gif: j['gif'] as String?,
+      edited: j['edited'] == true);
 }
 
 class ClipItem {
@@ -170,6 +184,8 @@ class AppState extends ChangeNotifier {
   /// The note, as Holm's notepad on the desktop: one text, at most [maxNote] characters.
   String note = '';
   static const maxNote = 4000;
+  /// TOTP authenticator entries (replaces Notes in mobile UI), synced E2E with Desktop.
+  final Map<String, TotpEntry> _totp = {};
   final List<ReceivedFile> received = [];
   /// Transport ids plus authenticated note ids (or sealed-text hashes for old notes), persisted and hard-bounded.
   final BoundedIds _seen = BoundedIds(limit: BoundedIds.defaultLimit);
@@ -240,6 +256,10 @@ class AppState extends ChangeNotifier {
       clipboard.add(ClipItem.fromJson(c as Map<String, dynamic>));
     }
     note = j['note'] as String? ?? '';
+    for (final raw in (j['totp'] as List? ?? [])) {
+      final e = TotpEntry.fromJson(raw);
+      if (e != null) _totp[e.id] = e;
+    }
     for (final r in (j['received'] as List? ?? [])) {
       final file = ReceivedFile.fromJson(r as Map<String, dynamic>);
       if (File(file.path).existsSync()) received.add(file);
@@ -296,6 +316,7 @@ class AppState extends ChangeNotifier {
       'incoming': [for (final r in incoming) r.toJson()],
       'clipboard': [for (final c in clipboard) c.toJson()],
       'note': note,
+      'totp': [for (final e in _totp.values) e.toJson()],
       'received': [for (final r in received) r.toJson()],
       'seen': _seen.toJson(now: now),
       'seenTimes': _seen.timesToJson(now: now),
@@ -979,7 +1000,35 @@ class AppState extends ChangeNotifier {
         final msgId = note.messageId;
         final text = note.text;
         if (peerKey != null && friendByKey(peerKey) != null && msgId != null && text != null) {
-          _addMessage(peerKey, ChatMessage(id: msgId, mine: true, text: text, sent: note.sent, state: ChatState.sent), unreadToo: false);
+          _addMessage(peerKey,
+              ChatMessage(id: msgId, mine: true, text: text, sent: note.sent, state: ChatState.sent, gif: note.isGif ? text : null),
+              unreadToo: false);
+        }
+        return;
+      case 'chat-edit':
+        final peerKey = note.code;
+        final msgId = note.messageId;
+        final text = note.text;
+        if (peerKey != null && friendByKey(peerKey) != null && msgId != null && text != null) {
+          _applyEdit(peerKey, msgId, text);
+        }
+        return;
+      case 'totp-sync':
+        final list = <TotpEntry>[];
+        if (note.text != null && note.text!.isNotEmpty) {
+          try {
+            final decoded = jsonDecode(note.text!);
+            if (decoded is List) {
+              for (final raw in decoded) {
+                final e = TotpEntry.fromJson(raw);
+                if (e != null) list.add(e);
+              }
+            }
+          } catch (_) {}
+        }
+        if (list.isNotEmpty) _mergeTotp(list);
+        if (note.fields['H'] == true && _totp.isNotEmpty) {
+          syncTotpToOwnDevices(_totp.values.toList(), query: false);
         }
         return;
       case 'react':
@@ -1145,6 +1194,158 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  Future<void> sendGif(Friend f, String url) async {
+    final clean = url.trim();
+    if (!clean.startsWith('https://')) return;
+    final message = ChatMessage(id: newGuidN(), mine: true, text: clean, gif: clean, sent: unixNow(), state: ChatState.sending);
+    _addMessage(f.key, message, unreadToo: false);
+    await _deliver(f, message);
+  }
+
+  Future<void> editChat(Friend f, ChatMessage m, String newText) async {
+    final clean = newText.trim();
+    if (clean.isEmpty || m.gif != null || !m.mine) return;
+    _applyEdit(f.key, m.id, clean);
+    try {
+      await Inbox.post(f, Notes.seal(me, f, 'chat-edit', {'M': Notes.chatText(clean), 'I': m.id}));
+      if (account != null && f.key != me.publicKey) {
+        unawaited(Inbox.post(
+          _ownCard,
+          Notes.seal(me, _ownCard, 'chat-edit', {'D': deviceId, 'C': f.key, 'M': Notes.chatText(clean), 'I': m.id}, from: deviceName),
+        ).catchError((_) {}));
+      }
+    } catch (_) {}
+  }
+
+  void _applyEdit(String key, String id, String newText) {
+    final list = chats[key];
+    if (list == null) return;
+    for (final m in list) {
+      if (m.id == id && m.gif == null) {
+        m.text = newText;
+        m.edited = true;
+        _changed();
+        return;
+      }
+    }
+  }
+
+  // ───────────── TOTP authenticator (synced E2E with Desktop) ─────────────
+
+  List<TotpEntry> get activeTotp {
+    final list = _totp.values.where((e) => !e.deleted).toList();
+    list.sort((a, b) => a.displayTitle.toLowerCase().compareTo(b.displayTitle.toLowerCase()));
+    return list;
+  }
+
+  TotpEntry? addTotp(TotpEntry entry) {
+    final norm = TotpCode.normalizeSecret(entry.secret);
+    if (norm.length < 8 || TotpCode.decodeBase32(norm) == null) return null;
+    final now = unixNow();
+    for (final existing in _totp.values) {
+      if (!existing.deleted && existing.secret.toUpperCase() == norm) {
+        existing.title = entry.displayTitle;
+        existing.account = entry.account ?? existing.account;
+        existing.updatedAt = now;
+        _changed();
+        syncTotpToOwnDevices([existing]);
+        return existing;
+      }
+    }
+    final clean = TotpEntry(
+      id: entry.id,
+      title: entry.displayTitle,
+      account: entry.account,
+      secret: norm,
+      digits: entry.digits,
+      period: entry.period,
+      algorithm: entry.algorithm,
+      updatedAt: now,
+    );
+    _totp[clean.id] = clean;
+    _changed();
+    syncTotpToOwnDevices([clean]);
+    return clean;
+  }
+
+  int addTotpMany(List<TotpEntry> incoming) {
+    final added = <TotpEntry>[];
+    final now = unixNow();
+    for (final raw in incoming) {
+      final norm = TotpCode.normalizeSecret(raw.secret);
+      if (norm.length < 8 || TotpCode.decodeBase32(norm) == null) continue;
+      if (_totp.values.any((e) => !e.deleted && e.secret.toUpperCase() == norm)) continue;
+      final clean = TotpEntry(
+        title: raw.displayTitle,
+        account: raw.account,
+        secret: norm,
+        digits: raw.digits,
+        period: raw.period,
+        algorithm: raw.algorithm,
+        updatedAt: now,
+      );
+      _totp[clean.id] = clean;
+      added.add(clean);
+    }
+    if (added.isNotEmpty) {
+      _changed();
+      syncTotpToOwnDevices(added);
+    }
+    return added.length;
+  }
+
+  void deleteTotp(String id) {
+    final existing = _totp[id];
+    if (existing == null || existing.deleted) return;
+    existing.deleted = true;
+    final now = unixNow();
+    existing.updatedAt = now > existing.updatedAt ? now : existing.updatedAt + 1;
+    _changed();
+    syncTotpToOwnDevices([existing]);
+  }
+
+  void _mergeTotp(List<TotpEntry> remote) {
+    var changed = false;
+    for (final raw in remote) {
+      final local = _totp[raw.id];
+      if (local != null) {
+        if (raw.updatedAt > local.updatedAt || (raw.updatedAt == local.updatedAt && raw.deleted && !local.deleted)) {
+          _totp[raw.id] = raw;
+          changed = true;
+        }
+      } else {
+        if (!raw.deleted && _totp.values.any((e) => !e.deleted && e.secret.toUpperCase() == raw.secret.toUpperCase())) {
+          continue;
+        }
+        _totp[raw.id] = raw;
+        changed = true;
+      }
+    }
+    if (changed) _changed();
+  }
+
+  void syncTotpToOwnDevices(List<TotpEntry> entries, {bool query = false}) {
+    if (account == null) return;
+    final chunks = <String?>[];
+    if (entries.isEmpty && query) {
+      chunks.add(null);
+    } else {
+      const batch = 5;
+      for (var i = 0; i < entries.length; i += batch) {
+        final slice = entries.skip(i).take(batch).map((e) => e.toJson()).toList();
+        chunks.add(jsonEncode(slice));
+      }
+    }
+    for (var i = 0; i < chunks.length; i++) {
+      final fields = <String, dynamic>{
+        'D': deviceId,
+        if (chunks[i] != null) 'M': Notes.chatText(chunks[i]!),
+        if (query && i == 0) 'H': true,
+      };
+      unawaited(Inbox.post(_ownCard, Notes.seal(me, _ownCard, 'totp-sync', fields, from: deviceName)).catchError((_) {}));
+    }
+  }
+
   Future<void> retry(Friend f, ChatMessage m) async {
     m.state = ChatState.sending;
     _changed();
@@ -1153,12 +1354,12 @@ class AppState extends ChangeNotifier {
 
   Future<void> _deliver(Friend f, ChatMessage m) async {
     try {
-      await Inbox.post(f, Notes.seal(me, f, 'chat', {'M': Notes.chatText(m.text), 'I': m.id}));
+      await Inbox.post(f, Notes.seal(me, f, 'chat', {'M': Notes.chatText(m.text), 'I': m.id, if (m.gif != null) 'G': true}));
       m.state = ChatState.sent;
       if (account != null && f.key != me.publicKey) {
         unawaited(Inbox.post(
           _ownCard,
-          Notes.seal(me, _ownCard, 'chat', {'D': deviceId, 'C': f.key, 'M': Notes.chatText(m.text), 'I': m.id}, from: deviceName),
+          Notes.seal(me, _ownCard, 'chat', {'D': deviceId, 'C': f.key, 'M': Notes.chatText(m.text), 'I': m.id, if (m.gif != null) 'G': true}, from: deviceName),
         ).catchError((_) {}));
       }
     } catch (_) {
@@ -1243,6 +1444,7 @@ class AppState extends ChangeNotifier {
         askIfHere(f);
       }
       announceDevice(force: true);
+      syncTotpToOwnDevices(_totp.values.toList(), query: true);
       await for (final line in ws) {
         if (line is String) _handleLine(line);
       }
@@ -1311,8 +1513,14 @@ class AppState extends ChangeNotifier {
         if (text == null || id == null) return;
         sawOnline();
         _addMessage(friend.key,
-            ChatMessage(id: id, mine: false, text: text, sent: note.sent, state: ChatState.received),
+            ChatMessage(id: id, mine: false, text: text, sent: note.sent, state: ChatState.received, gif: note.isGif ? text : null),
             unreadToo: true);
+      case 'chat-edit' when friend != null:
+        final text = note.text;
+        final id = note.messageId;
+        if (text == null || id == null) return;
+        sawOnline();
+        _applyEdit(friend.key, id, text);
       case 'react' when friend != null:
         final list = chats[friend.key] ?? [];
         for (final m in list) {

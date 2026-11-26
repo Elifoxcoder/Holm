@@ -42,6 +42,8 @@ internal sealed class SocialContext
     public Action<Friend, string[]> SendFiles { get; init; } = (_, _) => { };
     /// <summary>Reacts to a message with an emoji, or takes our reaction away (null).</summary>
     public Action<Friend, FriendMessage, string?> React { get; init; } = (_, _, _) => { };
+    /// <summary>Edits one of our previously sent 1:1 text messages.</summary>
+    public Action<Friend, FriendMessage, string> Edit { get; init; } = (_, _, _) => { };
     /// <summary>The quick reactions in the reaction bar, in order.</summary>
     public Func<IReadOnlyList<string>> QuickReactions { get; init; } = () => ChatReaction.Defaults;
     /// <summary>Saves new quick reactions.</summary>
@@ -66,6 +68,8 @@ internal sealed class SocialContext
     public Action<ChatGroup, FriendMessage> RetryGroup { get; init; } = (_, _) => { };
     /// <summary>Reacts to a group chat message.</summary>
     public Action<ChatGroup, FriendMessage, string?> ReactGroup { get; init; } = (_, _, _) => { };
+    /// <summary>Edits one of our previously sent group text messages.</summary>
+    public Action<ChatGroup, FriendMessage, string> EditGroup { get; init; } = (_, _, _) => { };
     /// <summary>Adds a friend to an existing group chat and distributes the group key.</summary>
     public Func<ChatGroup, Friend, Task> AddGroupMember { get; init; } = (_, _) => Task.CompletedTask;
     /// <summary>Leaves and removes a group chat locally.</summary>

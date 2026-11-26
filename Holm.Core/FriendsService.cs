@@ -109,6 +109,16 @@ internal sealed partial class FriendsService
 
     /// <summary>Another of our own devices sent a group chat message (UI thread).</summary>
     public event Action<string, string, string, long, bool>? OwnGroupChatSynced;
+    /// <summary>A friend edited a 1:1 chat message (UI thread).</summary>
+    public event Action<Friend, string, string>? ChatEditReceived;
+    /// <summary>Another of our own devices edited a 1:1 chat message (UI thread).</summary>
+    public event Action<Friend, string, string>? OwnChatEditSynced;
+    /// <summary>A group member edited a group chat message (groupId, senderKey, messageId, ciphertext; UI thread).</summary>
+    public event Action<string, string, string, string>? GroupChatEditReceived;
+    /// <summary>Another of our own devices edited a group chat message (groupId, messageId, ciphertext; UI thread).</summary>
+    public event Action<string, string, string>? OwnGroupChatEditSynced;
+    /// <summary>Another of our own devices sent a TOTP sync payload or query (device, entries, isQuery; UI thread).</summary>
+    public event Action<OwnDevice, List<TotpEntry>, bool>? TotpSyncReceived;
 
     /// <summary>Our public key, if an identity exists.</summary>
     public string? MyPublicKey => Me?.PublicKey;
@@ -748,6 +758,23 @@ internal sealed partial class FriendsService
             case FriendNoteKind.GroupChat when note.GroupId is { } grpId && note.MessageId is { } grpMsgId && note.Text is { } grpCipher:
                 OwnGroupChatSynced?.Invoke(grpId, grpMsgId, grpCipher, note.Sent, note.Gif != null);
                 break;
+            case FriendNoteKind.ChatEdit when note.Code is { } editPeerKey && Find(editPeerKey) is { } editFriend
+                                              && note.MessageId is { } editMsgId && note.Text is { } editText:
+                OwnChatEditSynced?.Invoke(editFriend, editMsgId, editText);
+                break;
+            case FriendNoteKind.GroupChatEdit when note.GroupId is { } eGrpId && note.MessageId is { } eMsgId && note.Text is { } eCipher:
+                OwnGroupChatEditSynced?.Invoke(eGrpId, eMsgId, eCipher);
+                break;
+            case FriendNoteKind.TotpSync:
+                if (_devices.Saw(id, note.From, DateTime.UtcNow)) OwnDevicesChanged?.Invoke();
+                var totpList = new List<TotpEntry>();
+                if (!string.IsNullOrEmpty(note.Text))
+                {
+                    try { totpList = System.Text.Json.JsonSerializer.Deserialize<List<TotpEntry>>(note.Text) ?? new(); }
+                    catch { }
+                }
+                TotpSyncReceived?.Invoke(_devices.Find(id) ?? new OwnDevice(id, note.From, DateTime.UtcNow), totpList, note.Query == true);
+                break;
             case FriendNoteKind.Clipboard when age <= 30 && note.Text is { } clipText:
                 if (_devices.Saw(id, note.From, DateTime.UtcNow)) OwnDevicesChanged?.Invoke();
                 OwnClipboardReceived?.Invoke(_devices.Find(id) ?? new OwnDevice(id, note.From, DateTime.UtcNow), clipText);
@@ -1063,6 +1090,71 @@ internal sealed partial class FriendsService
         var note = new FriendNote(FriendNoteKind.GroupReaction, me.Name, sent, Text: emoji, MessageId: messageId, GroupId: group.Id);
         var targets = group.Members.Where(m => m.Key != me.PublicKey).Select(m => m.ToFriend()).Where(FriendIdentity.IsValidFriend).ToList();
         await PostToGroupMembersAsync(me, targets, note, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Sends an edit for a previously sent 1:1 chat message.</summary>
+    public async Task SendChatEditAsync(Friend friend, string messageId, string newText, CancellationToken ct)
+    {
+        var me = EnsureMe();
+        long sent = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var note = new FriendNote(FriendNoteKind.ChatEdit, me.Name, sent, Text: newText, MessageId: messageId);
+        await FriendInbox.PostAsync(friend, FriendNotes.Seal(me, friend, note), ct).ConfigureAwait(false);
+        var echo = new FriendNote(FriendNoteKind.ChatEdit, DeviceName(), sent, Code: friend.Key, Text: newText, MessageId: messageId, Device: DeviceId);
+        _ = EchoOwnAsync(me, echo);
+    }
+
+    /// <summary>Sends an edit for a previously sent group chat message.</summary>
+    public async Task SendGroupChatEditAsync(ChatGroup group, string messageId, string ciphertext, CancellationToken ct)
+    {
+        var me = EnsureMe();
+        long sent = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var note = new FriendNote(FriendNoteKind.GroupChatEdit, me.Name, sent, Text: ciphertext, MessageId: messageId, GroupId: group.Id);
+        var targets = group.Members.Where(m => m.Key != me.PublicKey).Select(m => m.ToFriend()).Where(FriendIdentity.IsValidFriend).ToList();
+        await PostToGroupMembersAsync(me, targets, note, ct).ConfigureAwait(false);
+        var echo = new FriendNote(FriendNoteKind.GroupChatEdit, DeviceName(), sent, Text: ciphertext, MessageId: messageId, GroupId: group.Id, Device: DeviceId);
+        _ = EchoOwnAsync(me, echo);
+    }
+
+    /// <summary>Broadcasts E2E-encrypted TOTP entries (or a sync query) to all other devices of this account.</summary>
+    public void SendTotpSyncToOwnDevices(IReadOnlyList<TotpEntry> entries, bool query = false)
+    {
+        if (_follow == null || Me is not { } me) return;
+        string name = DeviceName();
+        var own = OwnCard(me, name);
+        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+        var chunks = new List<string?>();
+        if (entries.Count == 0 && query)
+        {
+            chunks.Add(null);
+        }
+        else
+        {
+            const int batchSize = 5;
+            for (int i = 0; i < entries.Count; i += batchSize)
+            {
+                var slice = entries.Skip(i).Take(batchSize).ToList();
+                chunks.Add(System.Text.Json.JsonSerializer.Serialize(slice));
+            }
+        }
+
+        _ = Task.Run(async () =>
+        {
+            for (int i = 0; i < chunks.Count; i++)
+            {
+                try
+                {
+                    var note = new FriendNote(FriendNoteKind.TotpSync, name, now,
+                        Text: chunks[i], Device: DeviceId, Query: (query && i == 0) ? true : null);
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                    await FriendInbox.PostAsync(own, FriendNotes.Seal(me, own, note), cts.Token).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is IOException or OperationCanceledException)
+                {
+                    Diag.Log("TOTP sync post failed: " + ex.Message);
+                }
+            }
+        });
     }
 
     /// <summary>Notifies all other members that we left the group.</summary>
@@ -1411,6 +1503,14 @@ internal sealed partial class FriendsService
             case FriendNoteKind.GroupLeave when note.GroupId is { } lGrpId:
                 if (friend != null && liveAge <= FreshSeconds) SawOnline(friend);
                 GroupLeaveReceived?.Invoke(lGrpId, sender, friend?.Name ?? note.From);
+                break;
+            case FriendNoteKind.ChatEdit when friend != null && note.MessageId is { } editId && note.Text is { } editedBody:
+                if (liveAge <= FreshSeconds) SawOnline(friend);
+                ChatEditReceived?.Invoke(friend, editId, editedBody);
+                break;
+            case FriendNoteKind.GroupChatEdit when note.GroupId is { } egId && note.MessageId is { } egMsgId && note.Text is { } egCipher:
+                if (friend != null && liveAge <= FreshSeconds) SawOnline(friend);
+                GroupChatEditReceived?.Invoke(egId, sender, egMsgId, egCipher);
                 break;
         }
     }

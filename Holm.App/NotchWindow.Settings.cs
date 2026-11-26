@@ -145,7 +145,11 @@ public sealed partial class NotchWindow
                 new HubPage("phone", CellPhoneGlyph, "Phone", "Your linked phone and devices", BuildPhoneSettingsPage),
                 new HubPage("design", "\uE790", "Design", "How HolyNotch looks: the design, its accent colour, your own designs", DesignPage),
                 new HubPage("updates", "\uE896", "Updates", "New versions of HolyNotch", UpdatesPage) },
-            new[] { new HubPage("network", "\uE701", "Wi-Fi", "Speed test and connection details", () => new NetworkPage(CurrentLink, TrySetClipboardAsync)) },
+            new[]
+            {
+                new HubPage("totp", TotpGlyph, "Authenticator", "TOTP 2FA codes, screen QR scanner, and phone sync", BuildTotpSettingsPage),
+                new HubPage("network", "\uE701", "Wi-Fi", "Speed test and connection details", () => new NetworkPage(CurrentLink, TrySetClipboardAsync)),
+            },
             BuildAccountPage);
         if ((Screens.Primary ?? (Screens.All.Count > 0 ? Screens.All[0] : null)) is { } screen)
             _settingsWindow.Height = Math.Min(740, screen.WorkingArea.Height / screen.Scaling - 24);

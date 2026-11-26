@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
@@ -7,6 +10,8 @@ import '../net/friends.dart';
 import 'account_page.dart';
 import 'theme.dart';
 import 'widgets.dart';
+
+const _klipyApiKey = 'lAAlxI2rNeCvpDaQNCaR4UsGtoemVTPldzKhewUZNAj9b21X2Aft96uuSxsDGPVy';
 
 /// Holm's quick reactions, in its order (ChatReaction.Defaults).
 const quickReactions = ['❤️', '😂', '😮', '😢', '😡', '👍'];
@@ -105,7 +110,11 @@ class _FriendTile extends StatelessWidget {
     final unread = state.unread[friend.key] ?? 0;
     final preview = friend.retired
         ? "Unreachable · still on Holm's server"
-        : last == null ? 'Say hello' : (last.mine ? 'You: ${last.text}' : last.text);
+        : last == null
+            ? 'Say hello'
+            : last.gif != null
+                ? (last.mine ? 'You: GIF' : 'GIF')
+                : (last.mine ? 'You: ${last.text}' : last.text);
     return HolmCard(
       padding: const EdgeInsets.all(12),
       color: unread > 0 ? HolmColors.cardStrong : HolmColors.card,
@@ -210,6 +219,7 @@ class ConversationPage extends StatefulWidget {
 class _ConversationPageState extends State<ConversationPage> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
+  ChatMessage? _editing;
 
   AppState get s => widget.state;
   Friend get f => widget.friend;
@@ -234,11 +244,43 @@ class _ConversationPageState extends State<ConversationPage> {
     if ((s.unread[f.key] ?? 0) > 0) s.markRead(f);
   }
 
+  void _beginEdit(ChatMessage m) {
+    if (!m.mine || m.gif != null) return;
+    setState(() {
+      _editing = m;
+      _input.text = m.text;
+      _input.selection = TextSelection.collapsed(offset: m.text.length);
+    });
+  }
+
+  void _cancelEdit() {
+    setState(() {
+      _editing = null;
+      _input.clear();
+    });
+  }
+
   void _send() {
     final text = _input.text.trim();
     if (text.isEmpty) return;
+    final editing = _editing;
+    if (editing != null) {
+      setState(() => _editing = null);
+      _input.clear();
+      s.editChat(f, editing, text);
+      return;
+    }
     _input.clear();
     s.sendChat(f, text);
+  }
+
+  Future<void> _pickGif() async {
+    final url = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => const _GifPickerSheet(),
+    );
+    if (url != null && mounted) await s.sendGif(f, url);
   }
 
   Future<void> _sendFiles() async {
@@ -271,12 +313,21 @@ class _ConversationPageState extends State<ConversationPage> {
               ),
           ]),
           const SizedBox(height: 12),
+          if (m.mine && m.gif == null)
+            ListTile(
+              leading: const Icon(Icons.edit_rounded),
+              title: const Text('Edit'),
+              onTap: () {
+                Navigator.pop(context);
+                _beginEdit(m);
+              },
+            ),
           ListTile(
             leading: const Icon(Icons.copy_rounded),
-            title: const Text('Copy'),
+            title: Text(m.gif != null ? 'Copy GIF link' : 'Copy'),
             onTap: () {
               Navigator.pop(context);
-              s.copy(m.text);
+              s.copy(m.gif ?? m.text);
             },
           ),
           if (m.state == ChatState.failed)
@@ -369,44 +420,84 @@ class _ConversationPageState extends State<ConversationPage> {
                 top: false,
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
-                  child: Container(
-                    decoration: BoxDecoration(color: HolmColors.card, borderRadius: BorderRadius.circular(28)),
-                    padding: const EdgeInsets.fromLTRB(18, 4, 6, 4),
-                    child: Row(children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _input,
-                          minLines: 1,
-                          maxLines: 5,
-                          textCapitalization: TextCapitalization.sentences,
-                          decoration: const InputDecoration(
-                            hintText: 'Message…',
-                            filled: false,
-                            border: InputBorder.none,
-                            contentPadding: EdgeInsets.symmetric(vertical: 12),
-                          ),
-                          onSubmitted: (_) => _send(),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    if (_editing != null)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 6),
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: HolmColors.cardStrong,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: HolmColors.line),
                         ),
+                        child: Row(children: [
+                          const Icon(Icons.edit_rounded, size: 16, color: HolmColors.accent),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              const Text('Editing message', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: HolmColors.accent)),
+                              Text(_editing!.text.replaceAll('\n', ' '),
+                                  maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: HolmColors.dim)),
+                            ]),
+                          ),
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(Icons.close_rounded, size: 18, color: HolmColors.dim),
+                            onPressed: _cancelEdit,
+                          ),
+                        ]),
                       ),
-                      ValueListenableBuilder(
-                        valueListenable: _input,
-                        builder: (context, value, _) => AnimatedOpacity(
-                          duration: const Duration(milliseconds: 150),
-                          opacity: value.text.trim().isEmpty ? 0.45 : 1,
-                          child: Material(
-                            color: HolmColors.accent,
-                            shape: const CircleBorder(),
-                            child: InkWell(
-                              customBorder: const CircleBorder(),
-                              onTap: _send,
-                              child: const SizedBox(
-                                  width: 42, height: 42, child: Icon(Icons.send_rounded, size: 20, color: Colors.white)),
+                    Container(
+                      decoration: BoxDecoration(color: HolmColors.card, borderRadius: BorderRadius.circular(28)),
+                      padding: const EdgeInsets.fromLTRB(12, 4, 6, 4),
+                      child: Row(children: [
+                        if (_editing == null)
+                          TextButton(
+                            style: TextButton.styleFrom(
+                              minimumSize: const Size(42, 34),
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              foregroundColor: HolmColors.dim,
+                            ),
+                            onPressed: f.retired ? null : _pickGif,
+                            child: const Text('GIF', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                          ),
+                        Expanded(
+                          child: TextField(
+                            controller: _input,
+                            minLines: 1,
+                            maxLines: 5,
+                            textCapitalization: TextCapitalization.sentences,
+                            decoration: const InputDecoration(
+                              hintText: 'Message…',
+                              filled: false,
+                              border: InputBorder.none,
+                              contentPadding: EdgeInsets.symmetric(vertical: 12),
+                            ),
+                            onSubmitted: (_) => _send(),
+                          ),
+                        ),
+                        ValueListenableBuilder(
+                          valueListenable: _input,
+                          builder: (context, value, _) => AnimatedOpacity(
+                            duration: const Duration(milliseconds: 150),
+                            opacity: value.text.trim().isEmpty ? 0.45 : 1,
+                            child: Material(
+                              color: HolmColors.accent,
+                              shape: const CircleBorder(),
+                              child: InkWell(
+                                customBorder: const CircleBorder(),
+                                onTap: _send,
+                                child: SizedBox(
+                                    width: 42,
+                                    height: 42,
+                                    child: Icon(_editing != null ? Icons.check_rounded : Icons.send_rounded, size: 20, color: Colors.white)),
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                    ]),
-                  ),
+                      ]),
+                    ),
+                  ]),
                 ),
               ),
             ]),
@@ -472,7 +563,8 @@ class _Bubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final m = message;
-    final big = _onlyEmoji(m.text);
+    final isGif = m.gif != null;
+    final big = !isGif && _onlyEmoji(m.text);
     final reaction = m.mine ? m.theirReaction : m.myReaction;
     final otherReaction = m.mine ? m.myReaction : m.theirReaction;
     final reactions = [reaction, otherReaction].whereType<String>().toSet().join(' ');
@@ -480,21 +572,38 @@ class _Bubble extends StatelessWidget {
     final bubble = GestureDetector(
       onLongPress: onLongPress,
       onDoubleTap: onDoubleTap,
-      child: big
-          ? Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-              child: Text(m.text, style: const TextStyle(fontSize: 44)),
-            )
-          : Container(
-              constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.72),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
-              decoration: BoxDecoration(
-                gradient: m.mine ? HolmColors.sentGradient : null,
-                color: m.mine ? null : HolmColors.raised,
-                borderRadius: BorderRadius.circular(22),
+      child: isGif
+          ? ClipRRect(
+              borderRadius: BorderRadius.circular(18),
+              child: Image.network(
+                m.gif!,
+                width: 220,
+                height: 165,
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => Container(
+                  width: 180,
+                  height: 90,
+                  color: HolmColors.raised,
+                  alignment: Alignment.center,
+                  child: const Text('GIF unavailable', style: TextStyle(color: HolmColors.dim, fontSize: 13)),
+                ),
               ),
-              child: Text(m.text, style: const TextStyle(fontSize: 16, height: 1.3, color: Colors.white)),
-            ),
+            )
+          : big
+              ? Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                  child: Text(m.text, style: const TextStyle(fontSize: 44)),
+                )
+              : Container(
+                  constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.72),
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+                  decoration: BoxDecoration(
+                    gradient: m.mine ? HolmColors.sentGradient : null,
+                    color: m.mine ? null : HolmColors.raised,
+                    borderRadius: BorderRadius.circular(22),
+                  ),
+                  child: Text(m.text, style: const TextStyle(fontSize: 16, height: 1.3, color: Colors.white)),
+                ),
     );
 
     return Padding(
@@ -525,22 +634,127 @@ class _Bubble extends StatelessWidget {
             ]),
           ],
         ),
-        if (m.mine && showState)
+        if ((m.mine && showState) || m.edited)
           Padding(
-            padding: const EdgeInsets.only(top: 4, right: 6),
+            padding: EdgeInsets.only(top: 4, right: m.mine ? 6 : 0, left: m.mine ? 0 : 44),
             child: Text(
-              switch (m.state) {
-                ChatState.sending => 'Sending…',
-                ChatState.sent => 'Sent',
-                ChatState.failed => 'Not sent · hold to try again',
-                ChatState.received => '',
-              },
+              m.mine && showState
+                  ? switch (m.state) {
+                      ChatState.sending => 'Sending…',
+                      ChatState.sent => m.edited ? 'Edited · Sent' : 'Sent',
+                      ChatState.failed => 'Not sent · hold to try again',
+                      ChatState.received => m.edited ? 'Edited' : '',
+                    }
+                  : 'Edited',
               style: TextStyle(fontSize: 12, color: m.state == ChatState.failed ? HolmColors.red : HolmColors.dim),
             ),
           ),
       ]),
     );
   }
+}
+
+class _GifPickerSheet extends StatefulWidget {
+  const _GifPickerSheet();
+
+  @override
+  State<_GifPickerSheet> createState() => _GifPickerSheetState();
+}
+
+class _GifPickerSheetState extends State<_GifPickerSheet> {
+  final _search = TextEditingController();
+  List<({String preview, String url})> _results = [];
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load('');
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load(String query) async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    final q = query.trim();
+    final url = q.isEmpty
+        ? 'https://api.klipy.com/api/v1/$_klipyApiKey/gifs/trending?page=1&per_page=24&customer_id=holynotch'
+        : 'https://api.klipy.com/api/v1/$_klipyApiKey/gifs/search?page=1&per_page=24&q=${Uri.encodeQueryComponent(q)}&customer_id=holynotch';
+    try {
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 10);
+      final req = await client.getUrl(Uri.parse(url));
+      final res = await req.close().timeout(const Duration(seconds: 12));
+      final body = await utf8.decodeStream(res);
+      client.close();
+      final decoded = jsonDecode(body) as Map<String, dynamic>;
+      final data = decoded['data'];
+      final items = (data is Map<String, dynamic> ? data['data'] : data) as List? ?? [];
+      final list = <({String preview, String url})>[];
+      for (final item in items) {
+        if (item is! Map<String, dynamic>) continue;
+        final file = item['file'];
+        if (file is! Map<String, dynamic>) continue;
+        String? pick(String size) => ((file[size] as Map?)?['gif'] as Map?)?['url'] as String?;
+        final send = pick('md') ?? pick('hd') ?? pick('sm');
+        final prev = pick('sm') ?? pick('xs') ?? send;
+        if (send != null && send.startsWith('https://') && prev != null && prev.startsWith('https://')) {
+          list.add((preview: prev, url: send));
+        }
+      }
+      if (mounted) setState(() { _results = list; _loading = false; });
+    } catch (_) {
+      if (mounted) setState(() { _error = "Couldn't load GIFs"; _loading = false; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: MediaQuery.of(context).size.height * 0.65,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+          child: Column(children: [
+            TextField(
+              controller: _search,
+              decoration: InputDecoration(
+                hintText: 'Search KLIPY GIFs…',
+                prefixIcon: const Icon(Icons.search_rounded),
+                suffixIcon: IconButton(icon: const Icon(Icons.send_rounded), onPressed: () => _load(_search.text)),
+              ),
+              onSubmitted: _load,
+            ),
+            const SizedBox(height: 12),
+            Expanded(
+              child: _loading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _error != null
+                      ? Center(child: Text(_error!, style: const TextStyle(color: HolmColors.dim)))
+                      : GridView.builder(
+                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 3,
+                            crossAxisSpacing: 8,
+                            mainAxisSpacing: 8,
+                          ),
+                          itemCount: _results.length,
+                          itemBuilder: (_, i) => GestureDetector(
+                            onTap: () => Navigator.pop(context, _results[i].url),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: Image.network(_results[i].preview, fit: BoxFit.cover),
+                            ),
+                          ),
+                        ),
+            ),
+          ]),
+        ),
+      );
 }
 
 /// Beside a friend whose inbox is still on Holm's server: nothing reaches them until they add you again from HolyNotch.

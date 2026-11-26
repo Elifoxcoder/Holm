@@ -40,6 +40,10 @@ public sealed partial class NotchWindow
         _friends.GroupReactionReceived += OnGroupReactionReceived;
         _friends.GroupLeaveReceived += OnGroupLeaveReceived;
         _friends.OwnGroupChatSynced += OnOwnGroupChatSynced;
+        _friends.ChatEditReceived += (friend, id, text) => _chats.Edit(friend.Key, id, text);
+        _friends.OwnChatEditSynced += (friend, id, text) => _chats.Edit(friend.Key, id, text);
+        _friends.GroupChatEditReceived += OnGroupChatEditReceived;
+        _friends.OwnGroupChatEditSynced += OnOwnGroupChatEditSynced;
         _friends.OwnChatSynced += (friend, id, text, sent, gif) =>
         {
             _chats.Add(friend.Key, new FriendMessage { Id = id, Mine = true, Text = gif ?? text, Gif = gif, Sent = sent, State = ChatState.Sent }, unread: false);
@@ -110,6 +114,7 @@ public sealed partial class NotchWindow
         SendFiles = SendChatFiles,
         SendGif = SendGif,
         React = ReactTo,
+        Edit = EditChat,
         Wave = WaveAt,
         Stream = StreamTo,
         QuickReactions = () => ChatReaction.Quick(_settings.QuickReactions),
@@ -124,6 +129,7 @@ public sealed partial class NotchWindow
         SendGroupGif = SendGroupGif,
         RetryGroup = RetryGroupChat,
         ReactGroup = ReactToGroup,
+        EditGroup = EditGroupChat,
         AddGroupMember = AddGroupMemberAsync,
         LeaveGroup = LeaveGroupAsync,
         Animate = () => _settings.Animations,
@@ -668,5 +674,58 @@ public sealed partial class NotchWindow
                 Diag.Log("Group reaction not sent: " + ex.Message);
             }
         });
+    }
+
+    void EditChat(Friend friend, FriendMessage message, string newText)
+    {
+        if (ChatText.Clean(newText) is not { } clean) return;
+        if (!_chats.Edit(friend.Key, message.Id, clean)) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                await _friends.SendChatEditAsync(friend, message.Id, clean, cts.Token);
+            }
+            catch (Exception ex) when (ex is IOException or OperationCanceledException)
+            {
+                Diag.Log("Chat edit not sent: " + ex.Message);
+            }
+        });
+    }
+
+    void EditGroupChat(ChatGroup group, FriendMessage message, string newText)
+    {
+        if (ChatText.Clean(newText) is not { } clean) return;
+        if (!ChatCrypto.TryDecodeGroupKey(group.Key, out byte[] groupKey)) return;
+        var me = _friends.EnsureMe();
+        if (!_chats.Edit(ChatStore.GroupKey(group.Id), message.Id, clean)) return;
+        string ciphertext = ChatCrypto.EncryptGroupMessage(groupKey, group.Id, me.PublicKey, message.Id, clean);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                await _friends.SendGroupChatEditAsync(group, message.Id, ciphertext, cts.Token);
+            }
+            catch (Exception ex) when (ex is IOException or OperationCanceledException)
+            {
+                Diag.Log("Group chat edit not sent: " + ex.Message);
+            }
+        });
+    }
+
+    void OnGroupChatEditReceived(string groupId, string senderKey, string messageId, string ciphertext)
+    {
+        if (_chats.Groups.FirstOrDefault(g => g.Id == groupId) is not { } group) return;
+        if (!ChatCrypto.TryDecodeGroupKey(group.Key, out byte[] groupKey)) return;
+        if (ChatCrypto.DecryptGroupMessage(groupKey, groupId, senderKey, messageId, ciphertext) is not { } plain) return;
+        _chats.Edit(ChatStore.GroupKey(groupId), messageId, plain);
+    }
+
+    void OnOwnGroupChatEditSynced(string groupId, string messageId, string ciphertext)
+    {
+        if (_friends.MyPublicKey is not { } myKey) return;
+        OnGroupChatEditReceived(groupId, myKey, messageId, ciphertext);
     }
 }
