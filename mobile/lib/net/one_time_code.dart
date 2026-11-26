@@ -10,6 +10,27 @@ final _keyword = RegExp(
 // Not part of a longer number, an amount (12.50, 1,000), a time (12:30), a date (01/02) or a phone number (+41…).
 final _candidate = RegExp(r'(?<![\d.,:/+\-])(?:[A-Z]{1,3}-)?(\d{3}[ \-]\d{3}|\d{4,8})(?![\d:/%€$]|[.,]\d|\s?(?:€|\$|chf|eur|usd|fr\.))', caseSensitive: false);
 
+/// The code in a notification as the notch passes it: [title] who sent it, [detail] "App · message".
+/// Any message with a 4-digit, 6-digit or 3+3-digit number counts ("715358", "715 358", "Code: 4821"), without a code
+/// word; years, times, amounts and phone numbers don't. 5, 7 and 8 digits need a code word ([findOneTimeCode]).
+String? findCodeInNotification(String? title, String? detail) {
+  final parts = (detail ?? '').split(' · ');
+  final message = (parts.length > 1 ? parts.sublist(1).join(' · ') : parts.first).trim();
+  if (message.length <= 2000) {
+    String? four;
+    for (final m in _candidate.allMatches(message)) {
+      final digits = m.group(1)!.replaceAll(RegExp(r'[ \-]'), '');
+      if (digits.length == 6) return digits; // the usual length: first one wins
+      if (digits.length == 4 && four == null) {
+        final n = int.parse(digits);
+        if (!(n >= 1900 && n <= 2099)) four = digits; // a year isn't a code
+      }
+    }
+    if (four != null) return four;
+  }
+  return findOneTimeCode('${title ?? ''} $message');
+}
+
 /// The code in [text] (digits only, as it is typed), or null when there is none or it isn't clearly a code.
 String? findOneTimeCode(String? text) {
   if (text == null || text.length > 2000 || !_keyword.hasMatch(text)) return null;

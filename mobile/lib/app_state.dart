@@ -363,7 +363,7 @@ class AppState extends ChangeNotifier {
     // A login or verification code: the PCs offer to copy it. Only the code goes, never the message; while the phone is
     // locked the service passes the notification only for this (lockedCodeOnly), and nothing else of it leaves.
     if (notch.codesToPc && status['kind'] == 'notification' && status['on'] != false) {
-      final code = findOneTimeCode('${status['title'] ?? ''} ${status['detail'] ?? ''}');
+      final code = findCodeInNotification(status['title'] as String?, status['detail'] as String?);
       final now = DateTime.now();
       if (code != null && (code != _lastCodeSent || now.difference(_lastCodeAt) > const Duration(minutes: 2))) {
         _lastCodeSent = code;
