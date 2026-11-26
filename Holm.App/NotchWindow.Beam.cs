@@ -540,7 +540,7 @@ public sealed partial class NotchWindow
             catch (Exception ex) when (ex is IOException or SocketException || (ex is OperationCanceledException && !cts.IsCancellationRequested))
             {
                 Diag.Log($"Nearby availability check for {peer.Name} failed: {ex.Message}");
-                EndTask("", RedBrush, $"{peer.Name} isn't available", "They're offline or HolyNotch is closed");
+                EndTask("", RedBrush, $"{peer.Name} isn't available", $"Offline, HolyNotch closed, or the offer didn't reach them · Error {ErrorCodes.PartnerNoShow}");
                 return;
             }
             await using (channel)
@@ -618,7 +618,7 @@ public sealed partial class NotchWindow
             else if (device != null)
             {
                 _friends.ForgetDevice(device);
-                EndTask("", RedBrush, $"{friend.Name} isn't available", "HolyNotch isn't open there right now");
+                EndTask("", RedBrush, $"{friend.Name} isn't available", $"HolyNotch isn't open there right now · Error {ErrorCodes.PartnerNoShow}");
             }
             else if (_settings.SendLater)
             {
@@ -970,16 +970,11 @@ public sealed partial class NotchWindow
             EndTask("", RedBrush, "Cancelled", "");
             return;
         }
-        Diag.Log($"{title}: {ex.GetType().Name}: {ex.Message}");
-        string reason = ex switch
-        {
-            SocketException => "Couldn't reach them",
-            AuthenticationTagMismatchException => "The data didn't check out – wrong code?",
-            EndOfStreamException => "The connection was closed",
-            IOException => "The connection dropped – try again.",
-            _ => "Something went wrong",
-        };
-        EndTask("", RedBrush, title, reason);
+        Diag.Log($"{title}: {ErrorCodes.Of(ex).Code}: {ex}");
+        EndTask("", RedBrush, title, ErrorCodes.Describe(ex));
+        // Long enough to read (or photograph) the code.
+        _taskHide.Interval = TimeSpan.FromSeconds(10);
+        _taskHide.Start();
     }
 
     // ───────────── menu ─────────────

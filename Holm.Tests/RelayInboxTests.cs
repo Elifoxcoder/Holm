@@ -267,7 +267,7 @@ public sealed class RelayInboxTests : IDisposable
     [Theory]
     [InlineData(FriendNoteKind.Ping)]
     [InlineData(FriendNoteKind.Here)]
-    public void A_fresh_server_timestamp_cannot_make_an_old_authenticated_presence_note_fresh(FriendNoteKind kind)
+    public void A_presence_note_from_a_friend_whose_clock_is_behind_counts_when_it_just_arrived(FriendNoteKind kind)
     {
         using var noah = FriendIdentity.Create("Noah", null);
         var settings = new AppSettings { Beam = false, FriendsServer = _ntfy.Url };
@@ -277,14 +277,48 @@ public sealed class RelayInboxTests : IDisposable
         int online = 0;
         lena.FriendOnline += _ => online++;
         long now = Now();
-        string text = FriendNotes.Seal(noah, target, new FriendNote(kind, noah.Name, now - 31));
-        lena.Handle("fresh-server-time", now, text);
+        // Noah's clock is 90 s behind, but the note reached the server just now: he is online.
+        lena.Handle("skewed-but-live", now, FriendNotes.Seal(noah, target, new FriendNote(kind, noah.Name, now - 90)));
+        Assert.Equal(1, online);
+    }
+
+    [Theory]
+    [InlineData(FriendNoteKind.Ping)]
+    [InlineData(FriendNoteKind.Here)]
+    public void A_presence_note_old_by_both_clocks_is_ignored(FriendNoteKind kind)
+    {
+        using var noah = FriendIdentity.Create("Noah", null);
+        var settings = new AppSettings { Beam = false, FriendsServer = _ntfy.Url };
+        settings.Friends.Add(noah.AsFriend());
+        var lena = new FriendsService(settings, Ui);
+        var target = lena.EnsureMe().AsFriend();
+        int online = 0;
+        lena.FriendOnline += _ => online++;
+        long now = Now();
+        lena.Handle("old", now - 120, FriendNotes.Seal(noah, target, new FriendNote(kind, noah.Name, now - 120)));
         Assert.Equal(0, online);
         Assert.Empty(_ntfy.Posts);
     }
 
     [Fact]
-    public void A_fresh_server_timestamp_cannot_make_an_old_own_device_phone_note_fresh()
+    public void A_file_offer_from_a_friend_whose_clock_is_behind_still_arrives()
+    {
+        using var noah = FriendIdentity.Create("Noah", null);
+        var settings = new AppSettings { Beam = false, FriendsServer = _ntfy.Url };
+        settings.Friends.Add(noah.AsFriend());
+        var lena = new FriendsService(settings, Ui);
+        var target = lena.EnsureMe().AsFriend();
+        int offers = 0;
+        lena.FilesOffered += (_, _) => offers++;
+        long now = Now();
+        byte[] secret = ShareCode.NewSecret();
+        lena.Handle("skewed-offer", now, FriendNotes.Seal(noah, target, new FriendNote(FriendNoteKind.Files, noah.Name, now - 120, Secret: secret)));
+        lena.Handle("stale-offer", now - 600, FriendNotes.Seal(noah, target, new FriendNote(FriendNoteKind.Files, noah.Name, now - 600, Secret: ShareCode.NewSecret())));
+        Assert.Equal(1, offers);
+    }
+
+    [Fact]
+    public void An_own_device_phone_note_old_by_both_clocks_is_ignored()
     {
         var settings = new AppSettings { Beam = false };
         var service = new FriendsService(settings, Ui);
@@ -295,7 +329,7 @@ public sealed class RelayInboxTests : IDisposable
         var status = new PhoneStatus(PhoneStatus.Notification, "Lena", "old notification", now, true);
         string text = FriendNotes.Seal(own, own.AsFriend(), new FriendNote(FriendNoteKind.Phone, "My phone", now - 61,
                                                                             Device: OwnDevice.NewId(), Phone: status));
-        service.Handle("fresh-server-time", now, text);
+        service.Handle("old", now - 61, text);
         Assert.Equal(0, received);
     }
 

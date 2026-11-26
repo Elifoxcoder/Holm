@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.4.6 – 2026-11-26
+
+### Fixed
+
+- **Files and streams to friends arrive again** when a clock is off: offers, stream invitations, presence and your own devices also count as fresh when they just reached the server, not only by the sender's clock. Friend requests keep the strict check.
+- **Streaming shows what's happening:** *Asking…*, *Waiting for them…*, *Their notch is open*, *You're live*, or why not – with Cancel while it waits.
+
+### Added
+
+- **Error codes** in failure messages (desktop and phone), e.g. *Error HN-R02 · the other side didn't come to the relay in time*. `diag.on` next to the settings keeps diag.log on.
+- The button at the bottom right of the open notch opens **Settings** (the AI app stays in the right-click menu).
+- A **Not Migrated** badge beside friends still on Holm's server.
+- **Android 1.4.5:** the overview's statuses sit side by side in one row; a *To PC* button in the overview sends the clipboard to your PC (Android only lets the notch read it at that moment); failures show their error code.
+
 ## 2.4.5 – 2026-11-26
 
 ### Added

@@ -85,47 +85,65 @@ public sealed partial class NotchWindow
 
     // ───────────── going live ─────────────
 
-    /// <summary>Invites a friend to watch our screen; we go live once they click Watch.</summary>
+    /// <summary>
+    /// Invites a friend to watch our screen; we go live once they click Watch. While we wait, the notch says so (with
+    /// Cancel), and every way it can end says what happened, with an error code when it failed.
+    /// </summary>
     async void StreamTo(Friend friend)
     {
         if (!_settings.Beam) { ShowPeek("", "Turn on Beam to stream", "", null); return; }
         if (_stream?.Has(friend.Key) == true) { ShowPeek("", $"{friend.Name} is watching already", "", null); return; }
+        if (_busy) { ShowPeek("", "Busy with another transfer", "Try again in a moment", null); return; }
         if (!_streamInvites.Add(friend.Key)) return; // asking already
-        ShowPeek("", $"Asking {friend.Name} to watch…", "", null, seconds: 4);
+        var cts = BeginTask();
+        var face = (FaceText(friend.Name), FaceBrush(friend.Name));
+        ShowTask(face.Item1, face.Item2, $"Asking {friend.Name} to watch…", "Sending the invitation", null, null, ("Cancel", CancelTask), textIcon: true);
         try
         {
             byte[] secret = ShareCode.NewSecret();
-            using var wait = new CancellationTokenSource(FriendsService.StreamPatience + TimeSpan.FromSeconds(10));
+            using var wait = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+            wait.CancelAfter(FriendsService.StreamPatience + TimeSpan.FromSeconds(10));
             await _friends.InviteToStreamAsync(friend, secret, wait.Token);
+            ShowTask(face.Item1, face.Item2, $"Waiting for {friend.Name}…", "Invitation sent · their notch shows Watch", null, null, ("Cancel", CancelTask), textIcon: true);
             var (host, port) = RelayEndpoint();
             var link = await RelayLink.ConnectWithRetryAsync(host, port, ShareCode.RelayToken(secret), FriendsService.StreamPatience, wait.Token);
             var channel = new SecureChannel(link, ShareCode.Key(secret), initiator: true);
+            ShowTask(face.Item1, face.Item2, $"{friend.Name}'s notch is open", "Waiting for them to click Watch…", null, null, ("Cancel", CancelTask), textIcon: true);
             bool watching, paced;
             try { (watching, paced) = await StreamProtocol.AnswerAsync(channel, wait.Token); }
             catch { channel.Dispose(); throw; }
             if (!watching)
             {
                 channel.Dispose();
-                ShowPeek("", $"{friend.Name} can't watch now", "", null);
+                EndTask(face.Item1, face.Item2, $"{friend.Name} can't watch now", "They clicked Not now, or are busy");
                 return;
             }
             if (!GoLive())
             {
                 channel.Dispose();
-                ShowPeek("", "Couldn't read the screen", "", RedBrush);
+                EndTask("", RedBrush, "Couldn't read the screen", $"Error {ErrorCodes.ScreenCapture} · the screen couldn't be captured");
                 return;
             }
             _stream!.Add(friend.Key, friend.Name, channel, paced);
-            ShowPeek("", $"{friend.Name} is watching", "LIVE", RedBrush);
+            EndTask("", RedBrush, "You're live", $"{friend.Name} is watching your screen · Stop in the red badge");
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            EndTask("", RedBrush, "Cancelled", "");
         }
         catch (OperationCanceledException)
         {
-            ShowPeek("", $"{friend.Name} didn't answer", "", null);
+            EndTask(face.Item1, face.Item2, $"{friend.Name} didn't answer",
+                    $"Error {ErrorCodes.PartnerNoShow} · offline, HolyNotch closed, or the invitation didn't reach them");
+            _taskHide.Interval = TimeSpan.FromSeconds(10);
+            _taskHide.Start();
         }
-        catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or InvalidDataException or System.Security.Cryptography.CryptographicException)
+        catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or InvalidDataException or System.Security.Cryptography.CryptographicException or System.Net.Http.HttpRequestException)
         {
-            Diag.Log("Stream invitation: " + ex.Message);
-            ShowPeek("", $"Couldn't reach {friend.Name}", "", RedBrush);
+            Diag.Log($"Stream invitation: {ErrorCodes.Of(ex).Code}: {ex}");
+            EndTask("", RedBrush, $"Couldn't stream to {friend.Name}", ErrorCodes.Describe(ex));
+            _taskHide.Interval = TimeSpan.FromSeconds(10);
+            _taskHide.Start();
         }
         finally
         {
@@ -364,11 +382,11 @@ public sealed partial class NotchWindow
             viewer.Ended(ended ? $"{friend.Name} stopped streaming" : "The stream stopped");
         }
         catch (OperationCanceledException) when (viewer.Stopped.IsCancellationRequested) { } // closed the window
-        catch (OperationCanceledException) { viewer.Ended($"Couldn't reach {friend.Name}'s stream"); }
+        catch (OperationCanceledException) { viewer.Ended($"Couldn't reach {friend.Name}'s stream · Error {ErrorCodes.PartnerNoShow}"); }
         catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or InvalidDataException or System.Security.Cryptography.CryptographicException)
         {
-            Diag.Log("Watching a stream: " + ex.Message);
-            if (!viewer.Stopped.IsCancellationRequested) viewer.Ended("The stream stopped");
+            Diag.Log($"Watching a stream: {ErrorCodes.Of(ex).Code}: {ex}");
+            if (!viewer.Stopped.IsCancellationRequested) viewer.Ended("The stream stopped · " + ErrorCodes.Describe(ex));
         }
     }
 

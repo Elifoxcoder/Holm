@@ -254,9 +254,19 @@ int unixNow() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
 /// Freshness comes only from the sender's authenticated Sent time and our local UTC clock, never the inbox server's.
 int authenticatedNoteAge(Note note, int now) => (now - note.sent).clamp(0, 1 << 31);
 
-/// Own-device notes can cause real-time actions. A fresh server event time must never make an old sealed note live.
-bool isFreshOwnDeviceNote(Note note, int now) {
+/// How old a live note (an offer, presence, an own device) is: by the sender's clock, or by when it reached the server
+/// ([arrived], 0 if unknown), whichever is younger. A device whose clock is off still gets through; replays stay caught
+/// by the seen ids, and an old offer only leads to a relay nobody waits on. As FriendsService.cs on the desktop.
+int liveNoteAge(Note note, int now, int arrived) {
   final age = authenticatedNoteAge(note, now);
+  if (arrived <= 0) return age;
+  final since = (now - arrived).clamp(0, 1 << 31);
+  return since < age ? since : age;
+}
+
+/// Own-device notes can cause real-time actions: only live ones (by either clock, see [liveNoteAge]).
+bool isFreshOwnDeviceNote(Note note, int now, {int arrived = 0}) {
+  final age = liveNoteAge(note, now, arrived);
   return switch (note.kind) {
     'device' => age <= 30,
     'phone' || 'files' => age <= 60,

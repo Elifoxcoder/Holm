@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'net/account.dart';
 import 'net/crypto.dart';
+import 'net/errors.dart';
 import 'net/friends.dart';
 import 'net/nearby.dart';
 import 'net/relay.dart';
@@ -216,6 +217,7 @@ class AppState extends ChangeNotifier {
     Updater.instance.beta = notch.betaUpdates;
     Updater.instance.start();
     NotchLink.onMute = (pkg, name) => setNotch(notch.copyWith(muted: {...notch.muted, pkg: name}));
+    NotchLink.onClipboardText = (text) => unawaited(sendClipboardText(text));
     NotchLink.onBeamFile = _beamFromNotch;
     NotchLink.onPhoneStatus = _phoneStatus;
     addListener(_tellNotchDevices);
@@ -507,7 +509,7 @@ class AppState extends ChangeNotifier {
       toast?.call(accepted ? 'Sent $what to ${friend.name}' : '${friend.name} declined');
       return accepted;
     } catch (e) {
-      final detail = e is TimeoutException ? "${friend.name} isn't online right now" : _why(e);
+      final detail = e is TimeoutException ? "${friend.name} isn't online right now · ${errorCode(e)}" : _why(e);
       _status(TransferStatus("Couldn't send", detail, failed: true, done: true));
       toast?.call("Couldn't send to ${friend.name}: $detail");
       return false;
@@ -580,10 +582,12 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// Why a transfer failed, with the error code (net/errors.dart, the same codes as on the desktop).
   String _why(Object e) {
-    if (e is SocketException || e is TimeoutException) return 'The other device could not be reached. Still on the same Wi-Fi?';
     if (e is SenderCancelled) return 'The sender cancelled';
-    return e.toString();
+    debugPrint('Transfer failed: $e');
+    if (e is SocketException || e is TimeoutException) return 'The other device could not be reached · ${errorCode(e)}';
+    return errorCode(e);
   }
 
   Timer? _clearStatus;
@@ -703,7 +707,8 @@ class AppState extends ChangeNotifier {
   }
 
   /// Reads the clipboard into the history; with sync on, sends it to the sync device when it's new.
-  /// Android lets an app read the clipboard only while it is in front, so this runs when the app opens.
+  /// Android lets an app read the clipboard only while it is in front, so this runs when the app opens (and the
+  /// notch's "To PC" button reads it while the notch holds the focus, see [sendClipboardText]).
   Future<void> syncClipboardNow() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text;
@@ -712,13 +717,35 @@ class AppState extends ChangeNotifier {
     _lastClip = text;
     _addClip(ClipItem(text, DateTime.now()));
     if (!isNew || !clipboardSync || account == null) return;
+    await _sendClipToPcs(text);
+  }
+
+  /// "To PC" in the notch's overview: the text the notch just read goes to the account's PCs, asked for explicitly,
+  /// so also with sync off. The notch says whether it went.
+  Future<void> sendClipboardText(String text) async {
+    if (text.trim().isEmpty) return;
+    _lastClip = text;
+    _addClip(ClipItem(text, DateTime.now()));
+    if (account == null) {
+      NotchLink.send({'type': 'holm.clipboardSent', 'ok': false, 'message': 'Sign in to send to your PC'});
+      return;
+    }
+    try {
+      await _sendClipToPcs(text);
+      NotchLink.send({'type': 'holm.clipboardSent', 'ok': true, 'message': 'Clipboard sent to your PC'});
+    } catch (e) {
+      NotchLink.send({'type': 'holm.clipboardSent', 'ok': false, 'message': "Couldn't send · ${errorCode(e)}"});
+    }
+  }
+
+  Future<void> _sendClipToPcs(String text) async {
     final bytes = utf8.encode(text);
     if (bytes.length <= maxChatBytes) {
-      unawaited(Inbox.post(
+      await Inbox.post(
         _ownCard,
         Notes.seal(me, _ownCard, 'clipboard', {'D': deviceId, 'M': Notes.chatText(text)}, from: deviceName),
         keep: false,
-      ).catchError((_) {}));
+      );
       return;
     }
     // Larger texts go over the relay to the chosen sync device (or the first online account device).
@@ -1240,14 +1267,14 @@ class AppState extends ChangeNotifier {
       if (transportFresh) _changed();
       return;
     }
-    final age = authenticatedNoteAge(note, now);
-    _handleNote(note, sender, age, now);
+    final age = liveNoteAge(note, now, e.time);
+    _handleNote(note, sender, age, now, e.time);
     _changed();
   }
 
-  void _handleNote(Note note, String sender, int age, int now) {
+  void _handleNote(Note note, String sender, int age, int now, [int arrived = 0]) {
     if (sender == me.publicKey) {
-      if (isFreshOwnDeviceNote(note, now)) _handleOwn(note, age); // sealed by our own identity: another account device
+      if (isFreshOwnDeviceNote(note, now, arrived: arrived)) _handleOwn(note, age); // sealed by our own identity: another account device
       return;
     }
     final friend = friendByKey(sender);

@@ -211,7 +211,7 @@ internal sealed class ActivityPage : HubView
     Control NameLine(Friend friend, double size)
     {
         var line = new StackPanel { Orientation = Orientation.Horizontal };
-        line.Children.Add(new TextBlock { Text = friend.Name, FontSize = size, FontWeight = FontWeight.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 170 });
+        line.Children.Add(ChatPage.WithMigrationBadge(friend, new TextBlock { Text = friend.Name, FontSize = size, FontWeight = FontWeight.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 170 }));
         if (_social.TrophiesOf(friend) is int trophies and > 0)
         {
             var pill = new StackPanel { Orientation = Orientation.Horizontal };

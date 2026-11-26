@@ -10,6 +10,27 @@ public class OwnDevicesTests
     static readonly string Pc = OwnDevice.NewId(), Phone = OwnDevice.NewId();
 
     [Fact]
+    public void A_message_written_on_the_phone_shows_in_the_PCs_chat_as_ours()
+    {
+        FriendsService.ProtectKey = (data, _) => data.ToArray();
+        FriendsService.UnprotectKey = (data, _) => data.ToArray();
+        using var lena = FriendIdentity.Create("Lena", null);
+        var settings = new AppSettings { Beam = false };
+        settings.Friends.Add(lena.AsFriend());
+        var pc = new FriendsService(settings, a => { a(); return System.Threading.Tasks.Task.CompletedTask; });
+        var me = pc.EnsureMe();
+        (string Key, string Id, string Text)? synced = null;
+        pc.OwnChatSynced += (friend, id, text, _, _) => synced = (friend.Key, id, text);
+        string msgId = Guid.NewGuid().ToString("N");
+        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        // What the phone app posts to the account's own inbox after sending to Lena (app_state.dart _deliver).
+        string echo = FriendNotes.Seal(me, me.AsFriend(), new FriendNote(FriendNoteKind.Chat, "Pixel 9", now, Code: lena.PublicKey,
+                                                                         Text: "from my phone", MessageId: msgId, Device: Phone));
+        pc.Handle("phone-echo", now, echo);
+        Assert.Equal((lena.PublicKey, msgId, "from my phone"), synced);
+    }
+
+    [Fact]
     public void A_device_note_sealed_for_ourselves_opens_with_its_id_and_question()
     {
         using var me = FriendIdentity.Create("Elias", null);

@@ -82,6 +82,15 @@ void main() {
     expect(authenticatedNoteAge(oldPing, now) < 180, isFalse);
   });
 
+  test('a live note from a device whose clock is behind counts when it just reached the server', () {
+    final now = unixNow();
+    final skewed = Note('files', 'PC', now - 120);
+    expect(liveNoteAge(skewed, now, now), 0);
+    expect(isFreshOwnDeviceNote(skewed, now, arrived: now), isTrue);
+    expect(isFreshOwnDeviceNote(skewed, now, arrived: now - 120), isFalse); // old by both clocks
+    expect(liveNoteAge(skewed, now, 0), greaterThan(60)); // no server time: the sender's clock alone
+  });
+
   test('friend codes require public HTTPS inboxes without credentials, query or fragment', () {
     final me = Identity.create('Alex');
     for (final server in [

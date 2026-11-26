@@ -18,7 +18,9 @@ class Program
         // Core stays OS-free; the platform supplies the euid check before any XDG runtime path is accepted.
         WinNotch.PrivateStorage.RuntimeDirectoryOwner = Holm.Platform.UnixIdentityPlatform.IsOwnedByCurrentUser;
         // As in the WPF app: Holm --diag writes what it does to diag.log next to the settings.
-        WinNotch.Diag.Enabled = Array.IndexOf(args, "--diag") >= 0;
+        // Or always on a computer with a file named diag.on next to the settings (a tester's, a developer's).
+        WinNotch.Diag.Enabled = Array.IndexOf(args, "--diag") >= 0
+            || System.IO.File.Exists(System.IO.Path.Combine(WinNotch.Diag.Folder, "diag.on"));
         JustInstalled = Array.IndexOf(args, "--installed") >= 0;
 #if HOLM_WINDOWS
         // When the published single-file HolyNotch.exe is run from Downloads (or any non-install folder),

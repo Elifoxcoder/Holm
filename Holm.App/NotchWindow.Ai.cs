@@ -43,25 +43,27 @@ public sealed partial class NotchWindow
     NotchButton _aiBtn = null!;
     readonly Border _aiIconHost = new() { Width = 18, Height = 18 };
 
+    /// <summary>
+    /// The button at the bottom right of the open notch opens HolyNotch's settings (it was the AI launcher; the AI app is
+    /// still in the right-click menu and Settings › Open notch).
+    /// </summary>
     void BuildAiButton(Panel sound)
     {
-        _aiBtn = new NotchButton(_aiIconHost) { Width = 30, Height = 30, Margin = new Thickness(6, 0, 0, 0), IsVisible = false };
-        _aiBtn.Click += OpenAi;
+        _aiBtn = new NotchButton(_aiIconHost) { Width = 30, Height = 30, Margin = new Thickness(6, 0, 0, 0) };
+        _aiBtn.Click += () => { SetExpanded(false); OpenSettings(); };
         sound.Children.Add(_aiBtn);
         UpdateAiButton();
     }
 
     void UpdateAiButton()
     {
-        string? name = AiName();
-        _aiBtn.IsVisible = name != null;
-        if (name == null) return;
-        _aiIconHost.Child = (Control?)AiTile(_settings.Ai ?? "", 18) ?? new TextBlock
+        _aiBtn.IsVisible = true;
+        _aiIconHost.Child = new TextBlock
         {
-            Text = "", FontFamily = IconFont, FontSize = 18 * 0.85, Foreground = Look.Ink,
+            Text = "", FontFamily = IconFont, FontSize = 18 * 0.85, Foreground = Look.Ink,
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
         };
-        ToolTip.SetTip(_aiBtn, "Open " + name);
+        ToolTip.SetTip(_aiBtn, "Settings");
     }
 
     string? AiName() => _settings.Ai == AiCustom

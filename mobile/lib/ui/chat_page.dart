@@ -116,7 +116,10 @@ class _FriendTile extends StatelessWidget {
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
-              Expanded(child: Text(friend.name, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600))),
+              Expanded(child: Row(children: [
+                Flexible(child: Text(friend.name, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600))),
+                if (friend.retired) const NotMigratedBadge(),
+              ])),
               if (last != null)
                 Text(clock(DateTime.fromMillisecondsSinceEpoch(last.sent * 1000)),
                     style: const TextStyle(color: HolmColors.dim, fontSize: 13)),
@@ -306,7 +309,10 @@ class _ConversationPageState extends State<ConversationPage> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(f.name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+                    Row(children: [
+                      Flexible(child: Text(f.name, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600))),
+                      if (f.retired) const NotMigratedBadge(),
+                    ]),
                     Text(f.retired ? "Unreachable: ask them for a new invite code" : online ? 'Active now' : 'HolyNotch',
                         maxLines: 1, overflow: TextOverflow.ellipsis,
                         style: TextStyle(fontSize: 13, color: online && !f.retired ? HolmColors.green : HolmColors.dim)),
@@ -535,4 +541,17 @@ class _Bubble extends StatelessWidget {
       ]),
     );
   }
+}
+
+/// Beside a friend whose inbox is still on Holm's server: nothing reaches them until they add you again from HolyNotch.
+class NotMigratedBadge extends StatelessWidget {
+  const NotMigratedBadge({super.key});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        margin: const EdgeInsets.only(left: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+        decoration: BoxDecoration(color: const Color(0xFFFF9F0A), borderRadius: BorderRadius.circular(6)),
+        child: const Text('Not Migrated', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.black)),
+      );
 }

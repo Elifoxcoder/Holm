@@ -1144,9 +1144,13 @@ internal sealed partial class FriendsService
         // Freshness comes from the authenticated sender clock, never from a possibly malicious inbox timestamp.
         // A future-dated note inside the allowed skew is fresh now rather than producing a negative age.
         long age = Math.Max(0, now - note.Sent);
+        // Live notes (a file offer, a stream, presence) are also fresh when they reached the server just now: a friend
+        // whose clock is off by a minute still gets through. Replays stay caught by the seen ids above, and an old offer
+        // only leads to a relay nobody waits on. Requests and invites keep the authenticated sender time alone.
+        long liveAge = arrived > 0 ? Math.Min(age, Math.Max(0, now - arrived)) : age;
         if (sender == me.PublicKey)
         {
-            HandleOwn(me, note, age);
+            HandleOwn(me, note, liveAge);
             return;
         }
         var friend = Find(sender);
@@ -1155,7 +1159,7 @@ internal sealed partial class FriendsService
             case FriendNoteKind.Files when friend == null:
                 Diag.Log("Friends: someone who isn't a friend wanted to send files");
                 break;
-            case FriendNoteKind.Files when age > Patience.TotalSeconds:
+            case FriendNoteKind.Files when liveAge > Patience.TotalSeconds:
                 Diag.Log($"Friends: {friend.Name} wanted to send files while Holm wasn't running");
                 break;
             case FriendNoteKind.Files:
@@ -1227,7 +1231,7 @@ internal sealed partial class FriendsService
             case FriendNoteKind.RemovedYou:
                 Diag.Log("Friends: ignored a removal note from someone who isn't a friend");
                 break;
-            case FriendNoteKind.Ping or FriendNoteKind.Here when friend == null || age > FreshSeconds:
+            case FriendNoteKind.Ping or FriendNoteKind.Here when friend == null || liveAge > FreshSeconds:
                 break; // strangers don't learn whether we're online; old ones came while Holm wasn't running
             case FriendNoteKind.Ping:
                 Took(friend, note.Activity, note.Trophies);
@@ -1238,20 +1242,20 @@ internal sealed partial class FriendsService
                 Took(friend, note.Activity, note.Trophies);
                 SawOnline(friend);
                 break;
-            case FriendNoteKind.Waiting when friend == null || age > WaitingSeconds:
+            case FriendNoteKind.Waiting when friend == null || liveAge > WaitingSeconds:
                 break; // the inbox server keeps notes for about 12 hours anyway
             case FriendNoteKind.Waiting:
                 // They have something for us and will send it once they hear we're here.
-                if (age <= FreshSeconds) SawOnline(friend);
+                if (liveAge <= FreshSeconds) SawOnline(friend);
                 if (_presence.ShouldAnswer(friend.Key, DateTime.UtcNow)) Tell(me, friend, FriendNoteKind.Here);
                 break;
-            case FriendNoteKind.Wave when friend == null || age > WaveLimit.FreshSeconds:
+            case FriendNoteKind.Wave when friend == null || liveAge > WaveLimit.FreshSeconds:
                 break; // strangers can't wave; an old wave came while Holm wasn't running
             case FriendNoteKind.Wave:
                 SawOnline(friend);
                 if (_settings.Waves && _wavesIn.Allow(friend.Key, DateTime.UtcNow)) Waved?.Invoke(friend);
                 break;
-            case FriendNoteKind.Stream when friend == null || age > StreamPatience.TotalSeconds:
+            case FriendNoteKind.Stream when friend == null || liveAge > StreamPatience.TotalSeconds:
                 break; // strangers can't stream to us; an old invitation came while Holm wasn't running
             case FriendNoteKind.Stream:
                 SawOnline(friend);
@@ -1261,14 +1265,14 @@ internal sealed partial class FriendsService
                 Diag.Log("Friends: a chat message from someone who isn't a friend");
                 break;
             case FriendNoteKind.Chat:
-                if (age <= FreshSeconds) SawOnline(friend);
+                if (liveAge <= FreshSeconds) SawOnline(friend);
                 if (note.Gif != null) GifReceived?.Invoke(friend, note.MessageId!, note.Gif, note.Sent);
                 else ChatReceived?.Invoke(friend, note.MessageId!, note.Text!, note.Sent);
                 break;
             case FriendNoteKind.Reaction when friend == null:
                 break; // only friends react
             case FriendNoteKind.Reaction:
-                if (age <= FreshSeconds) SawOnline(friend);
+                if (liveAge <= FreshSeconds) SawOnline(friend);
                 ReactionReceived?.Invoke(friend, note.MessageId!, note.Text);
                 break;
             case FriendNoteKind.Profile when friend == null || note.Profile == null:

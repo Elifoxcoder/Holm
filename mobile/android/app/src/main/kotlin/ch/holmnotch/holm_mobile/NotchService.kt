@@ -404,6 +404,22 @@ class NotchService : AccessibilityService() {
                 if (!NotchBridge.isDeviceLocked(this)) keyboard(call.arguments == true)
                 result.success(null)
             }
+            // "To PC" in the overview: Android lets only the focused window read the clipboard, so the notch takes the
+            // focus for a moment (as for a reply), reads it, gives the focus back and hands the text to the app, which
+            // sends it to the account's PCs. Never while the phone is locked.
+            "clipboardToPc" -> {
+                if (NotchBridge.isDeviceLocked(this)) { result.success(false); return }
+                keyboard(true)
+                android.os.Handler(mainLooper).postDelayed({
+                    val text = runCatching {
+                        getSystemService(android.content.ClipboardManager::class.java).primaryClip
+                            ?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString()
+                    }.getOrNull()
+                    keyboard(false)
+                    if (!text.isNullOrBlank()) NotchBridge.toMain("clipboardText", text)
+                    result.success(!text.isNullOrBlank())
+                }, 250)
+            }
             "gesture" -> {
                 if (!NotchBridge.isDeviceLocked(this)) gesture(call.arguments as? String)
                 result.success(null)

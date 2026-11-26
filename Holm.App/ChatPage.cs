@@ -340,7 +340,7 @@ internal sealed class ChatPage : HubView
         row.Children.Add(FaceWithDot(friend, 44));
 
         var words = new Grid { Margin = new Thickness(11, 0, 2, 0), VerticalAlignment = VerticalAlignment.Center, ColumnDefinitions = new ColumnDefinitions("*,Auto"), RowDefinitions = new RowDefinitions("Auto,Auto") };
-        words.Children.Add(new TextBlock { Text = friend.Name, FontSize = 13.5, FontWeight = unread > 0 ? FontWeight.Bold : FontWeight.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
+        words.Children.Add(WithMigrationBadge(friend, new TextBlock { Text = friend.Name, FontSize = 13.5, FontWeight = unread > 0 ? FontWeight.Bold : FontWeight.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis }));
         if (last != null)
         {
             var when = new TextBlock
@@ -402,6 +402,27 @@ internal sealed class ChatPage : HubView
         return item;
     }
 
+    /// <summary>
+    /// The name, and a "Not Migrated" badge beside it while the friend's inbox is still on Holm's server (they haven't
+    /// moved to HolyNotch yet): nothing reaches them until they add you again with a new code.
+    /// </summary>
+    internal static Control WithMigrationBadge(Friend friend, TextBlock name)
+    {
+        if (!FriendIdentity.IsRetired(friend.Server)) return name;
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        name.VerticalAlignment = VerticalAlignment.Center;
+        row.Children.Add(name);
+        var badge = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0xFF, 0x9F, 0x0A)), CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(6, 1, 6, 1), VerticalAlignment = VerticalAlignment.Center,
+            Child = new TextBlock { Text = "Not Migrated", FontSize = 10.5, FontWeight = FontWeight.SemiBold, Foreground = Brushes.Black },
+        };
+        ToolTip.SetTip(badge, "Still on Holm's server. Ask them to install HolyNotch and send you a new invite code.");
+        row.Children.Add(badge);
+        return row;
+    }
+
     /// <summary>When the last message came, as short as the list has room for: 17:42, Mon, 3 Nov.</summary>
     static string ListTime(DateTime at)
         => at.Date == DateTime.Today ? at.ToString("t", CultureInfo.CurrentCulture)
@@ -418,7 +439,7 @@ internal sealed class ChatPage : HubView
         row.ContextMenu = FriendMenu(friend);
         row.Children.Add(FaceWithDot(friend, 38));
         var words = new StackPanel { Margin = new Thickness(11, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
-        words.Children.Add(new TextBlock { Text = friend.Name, FontSize = 15, FontWeight = FontWeight.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
+        words.Children.Add(WithMigrationBadge(friend, new TextBlock { Text = friend.Name, FontSize = 15, FontWeight = FontWeight.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis }));
         bool online = _social.IsOnline(friend);
         bool retired = FriendIdentity.IsRetired(friend.Server);
         string line = retired ? "Unreachable: their inbox is on Holm's server. Ask them for a new invite code."

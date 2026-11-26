@@ -1451,13 +1451,16 @@ class _Home extends StatelessWidget {
         Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            Expanded(child: Wrap(
-          spacing: 8,
-          runSpacing: 8,
+            // The statuses side by side in one row (never wrapping into a second one the overview has no room for);
+            // more than fit slide sideways.
+            Expanded(child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
           children: [
-            for (final (icon, text) in chips)
+            for (final (i, (icon, text)) in chips.indexed)
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                margin: EdgeInsets.only(left: i == 0 ? 0 : 6),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                 decoration: BoxDecoration(
                   color: NotchPalette.of(context).ink.withValues(alpha: nothing ? 0 : 0.1),
                   border: nothing ? Border.all(color: NotchPalette.of(context).ink.withValues(alpha: 0.3)) : null,
@@ -1466,17 +1469,17 @@ class _Home extends StatelessWidget {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(icon, size: 15, color: NotchPalette.of(context).dim),
-                    const SizedBox(width: 6),
+                    Icon(icon, size: 14, color: NotchPalette.of(context).dim),
+                    const SizedBox(width: 4),
                     ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 150),
-                      child: Marquee(text, style: TextStyle(color: NotchPalette.of(context).ink, fontSize: 13, fontFamily: nothing ? 'monospace' : null)),
+                      constraints: const BoxConstraints(maxWidth: 110),
+                      child: Marquee(text, style: TextStyle(color: NotchPalette.of(context).ink, fontSize: 12.5, fontFamily: nothing ? 'monospace' : null)),
                     ),
                   ],
                 ),
               ),
           ],
-        )),
+        ))),
             const SizedBox(width: 8),
             // The flashlight: lit while it's on.
             Semantics(
@@ -1504,6 +1507,28 @@ class _Home extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
+            // The clipboard to the account's PCs: Android lets the notch read it only now, while it holds the focus.
+            if (c.devices.isNotEmpty) ...[
+              Semantics(
+                button: true,
+                label: de ? 'Zwischenablage an PC' : 'Clipboard to PC',
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => c.action?.call('clipboardToPc', const {}),
+                  child: Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: NotchPalette.of(context).ink.withValues(alpha: nothing ? 0 : 0.1),
+                      border: nothing ? Border.all(color: NotchPalette.of(context).ink.withValues(alpha: 0.3)) : null,
+                    ),
+                    child: Icon(Icons.content_paste_go_rounded, size: 17, color: NotchPalette.of(context).dim),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+            ],
             // The notch's settings, in the app.
             Semantics(
               button: true,

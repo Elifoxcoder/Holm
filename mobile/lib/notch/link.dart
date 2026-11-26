@@ -14,6 +14,8 @@ class NotchLink {
   static void Function(String page)? onOpen;
   /// An app's notifications were switched off from the notch (package, name).
   static void Function(String package, String name)? onMute;
+  /// The notch read the clipboard ("To PC" in the overview): send it to the account's PCs.
+  static void Function(String text)? onClipboardText;
   /// Something on the phone for the account's PCs (kind, title, detail, since, on).
   static void Function(Map<String, Object?> status)? onPhoneStatus;
   /// Something was shared from another app; [takeShared] gets it.
@@ -52,6 +54,8 @@ class NotchLink {
         case 'updateStatus':
           final args = Map<String, Object?>.from(call.arguments as Map);
           onUpdateStatus?.call(args['ok'] == true, args['message'] as String? ?? '');
+        case 'clipboardText':
+          if (call.arguments is String) onClipboardText?.call(call.arguments as String);
         case 'mute':
           final args = Map<String, Object?>.from(call.arguments as Map);
           onMute?.call(args['package'] as String, args['name'] as String? ?? args['package'] as String);

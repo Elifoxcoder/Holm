@@ -623,6 +623,11 @@ class NotchController extends ChangeNotifier {
           ..title = 'Copied from ${e['from'] ?? 'your PC'}'
           ..text = e['text'] as String?
           ..label = 'HolyNotch');
+      // "To PC" in the overview: whether the clipboard went to the account's PCs (with the error code if not).
+      case 'holm.clipboardSent':
+        _alert(NotchActivity('clipSent', ActivityKind.clipboard, show: const Duration(seconds: 3))
+          ..title = e['message'] as String? ?? (e['ok'] == true ? 'Clipboard sent' : "Couldn't send")
+          ..label = 'HolyNotch');
       case 'holm.devices':
         devices = [for (final d in (e['devices'] as List? ?? const [])) '$d'];
         notifyListeners();
