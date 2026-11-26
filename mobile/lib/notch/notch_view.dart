@@ -1344,9 +1344,14 @@ class _OpenBody extends StatelessWidget {
                                 fontFeatures: [FontFeature.tabularFigures()],
                               ),
                             ),
-                          // A line under the time only when it says something: a timer's own name, or that it is paused.
-                          if (!a.done && (a.text != null && a.text != _clock(a) || !const {'Timer', 'Stopwatch'}.contains(title)))
-                            body(a.text != null && a.text != _clock(a) ? '$title · paused' : title, lines: 1),
+                          // A line under the time for lap count, timer name, or paused state.
+                          if (!a.done && (a.sub != null || !a.on || (a.text != null && a.text != _clock(a)) || !const {'Timer', 'Stopwatch', 'Stoppuhr'}.contains(title)))
+                            body(
+                              a.sub != null
+                                  ? (!a.on ? '${a.sub} · paused' : a.sub!)
+                                  : (!a.on || (a.text != null && a.text != _clock(a)) ? '$title · paused' : title),
+                              lines: 1,
+                            ),
                         ],
                       ),
                     ),

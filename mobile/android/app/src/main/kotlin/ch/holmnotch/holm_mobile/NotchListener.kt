@@ -276,6 +276,8 @@ class NotchListener : NotificationListenerService() {
         // The turn arrow of a navigation, the caller's photo: the notification's own picture.
         val picture = if (!locked && (pkg in PICTURE_APPS || callType != 0 || n.category == Notification.CATEGORY_CALL || n.category == Notification.CATEGORY_NAVIGATION))
             runCatching { n.getLargeIcon()?.loadDrawable(this)?.let { png(it, 96) } }.getOrNull() else null
+        val clockRv = if (!locked && (pkg in CLOCK_APPS || (n.channelId?.lowercase()?.let { it.contains("stopwatch") || it.contains("timer") } == true) || n.category == "stopwatch"))
+            extractClockRemoteViews(pkg, n) else null
         NotchBridge.toNotch(
             mapOf(
                 "type" to "notification",
@@ -300,6 +302,11 @@ class NotchListener : NotificationListenerService() {
                 "chronometer" to x.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER, false),
                 "countDown" to x.getBoolean(Notification.EXTRA_CHRONOMETER_COUNT_DOWN, false),
                 "when" to n.`when`,
+                // Clock/Stopwatch custom RemoteViews: live Chronometer base (epoch ms), paused time text, and lap text.
+                "rvChronoBase" to clockRv?.chronoBaseEpoch,
+                "rvChronoCountDown" to clockRv?.chronoCountDown,
+                "rvTimeText" to clockRv?.timeText,
+                "rvTexts" to clockRv?.texts,
                 // Android 16 Live Updates: promoted ongoing notifications, with a short text for the status chip.
                 "promoted" to ((n.flags and FLAG_PROMOTED_ONGOING) != 0),
                 "shortText" to if (locked) null else x.getCharSequence("android.shortCriticalText")?.toString(),
@@ -318,6 +325,57 @@ class NotchListener : NotificationListenerService() {
                 "picture" to picture,
             )
         )
+    }
+
+    private data class ClockRemoteViewsInfo(
+        val chronoBaseEpoch: Long?,
+        val chronoCountDown: Boolean,
+        val timeText: String?,
+        val texts: List<String>,
+    )
+
+    /**
+     * Google Clock's stopwatch (and some third-party clocks) render the live chronometer and lap label inside a custom
+     * RemoteViews rather than Notification extras. Inflate it off-screen to read the Chronometer base and visible texts.
+     */
+    private fun extractClockRemoteViews(pkg: String, n: Notification): ClockRemoteViewsInfo? {
+        val viewsList = listOfNotNull(n.bigContentView, n.contentView, n.headsUpContentView)
+        if (viewsList.isEmpty()) return null
+        val pkgCtx = runCatching { createPackageContext(pkg, 0) }.getOrDefault(this)
+        var chronoBaseEpoch: Long? = null
+        var chronoCountDown = false
+        var timeText: String? = null
+        val texts = LinkedHashSet<String>()
+        val timeRegex = Regex("""^\d{1,2}:\d{2}(:\d{2})?([.,]\d{1,2})?$""")
+        for (rv in viewsList) {
+            runCatching {
+                val root = runCatching { rv.apply(pkgCtx, android.widget.FrameLayout(pkgCtx)) }
+                    .getOrElse { rv.apply(this, android.widget.FrameLayout(this)) }
+                fun walk(v: android.view.View) {
+                    if (v.visibility != android.view.View.VISIBLE) return
+                    if (v is android.widget.Chronometer) {
+                        if (chronoBaseEpoch == null && v.base > 0L) {
+                            chronoBaseEpoch = System.currentTimeMillis() - (android.os.SystemClock.elapsedRealtime() - v.base)
+                            chronoCountDown = v.isCountDown
+                        }
+                        val t = v.text?.toString()?.trim()
+                        if (!t.isNullOrEmpty() && timeText == null) timeText = t
+                    } else if (v is android.widget.TextView) {
+                        val t = v.text?.toString()?.trim()
+                        if (!t.isNullOrEmpty()) {
+                            if (timeText == null && timeRegex.matches(t)) timeText = t
+                            texts.add(t)
+                        }
+                    }
+                    if (v is android.view.ViewGroup) {
+                        for (i in 0 until v.childCount) walk(v.getChildAt(i))
+                    }
+                }
+                walk(root)
+            }
+        }
+        if (chronoBaseEpoch == null && timeText == null && texts.isEmpty()) return null
+        return ClockRemoteViewsInfo(chronoBaseEpoch, chronoCountDown, timeText, texts.toList())
     }
 
     /**
@@ -682,6 +740,16 @@ class NotchListener : NotificationListenerService() {
     companion object {
         /** Apps whose notification picture means something (the next turn). */
         val PICTURE_APPS = setOf("com.google.android.apps.maps", "com.waze")
+
+        /** Clock apps that may render stopwatch/timer chronometers and laps in custom RemoteViews. */
+        val CLOCK_APPS = setOf(
+            "com.google.android.deskclock",
+            "com.android.deskclock",
+            "com.sec.android.app.clockpackage",
+            "com.oneplus.deskclock",
+            "com.miui.clock",
+            "com.nothing.clock",
+        )
 
         /** Notification.FLAG_PROMOTED_ONGOING (Android 16). */
         const val FLAG_PROMOTED_ONGOING = 0x00040000

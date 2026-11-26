@@ -1,5 +1,12 @@
 # Changelog
 
+## Android 1.4.14 – 2026-11-26
+
+### Fixed
+
+- **Stopwatch time & lap:** extracts the live Chronometer base, paused time, and lap label (`Runde N` / `Lap N`) from Google Clock's custom RemoteViews and prioritizes stopwatch/timer notifications above Android 16 promoted Live Updates.
+- **Notch outline on dark backgrounds:** enabled `android:canTakeScreenshot="true"` in the accessibility service config, sampled around the notch with a sensitive dark-background threshold (`luma <= 52`, `>= 25%`), and defaulted to showing the outline when capture is unavailable.
+
 ## Android 1.4.13 – 2026-11-26
 
 ### Changed

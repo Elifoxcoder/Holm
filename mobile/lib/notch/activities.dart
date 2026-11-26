@@ -102,8 +102,8 @@ class NotchController extends ChangeNotifier {
   bool expanded = false;
   /// The overlay can limit touches to the notch, so its window keeps one size (NotchService.limitTouches).
   bool touchRegion = false;
-  /// True when >50% of the background behind the notch is pure black (sampled by NotchService).
-  bool bgBlack = false;
+  /// True when the background behind/around the notch is dark enough to need an outline (defaults true until bright is detected).
+  bool bgBlack = true;
   /// Explicit activity pinned to index 0 (e.g. tapped alert or switched via bottom switcher).
   String? _focusedId;
 
@@ -845,16 +845,19 @@ class NotchController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    if (e['promoted'] == true) {
-      persistent(ActivityKind.liveUpdate, 70).text = (e['shortText'] as String?) ?? text;
-      notifyListeners();
-      return;
-    }
     final chrono = e['chronometer'] == true;
     final clock = _clocks.contains(pkg);
     final channel = '${e['channel'] ?? ''}'.toLowerCase();
+    final rvTexts = (e['rvTexts'] as List?)?.whereType<String>().toList() ?? const <String>[];
+    final rvChronoBase = (e['rvChronoBase'] as num?)?.toInt();
+    final rvChronoCountDown = e['rvChronoCountDown'] == true;
+    final rvTimeText = e['rvTimeText'] as String?;
+    final isStopwatch = channel.contains('stopwatch') ||
+        category == 'stopwatch' ||
+        (clock && ((title?.toLowerCase().contains('stoppuhr') ?? false) || (title?.toLowerCase().contains('stopwatch') ?? false))) ||
+        rvTexts.any((t) => t.toLowerCase().contains('stoppuhr') || t.toLowerCase().contains('stopwatch'));
     final clockTimer = clock &&
-        (channel.contains('timer') || channel.contains('stopwatch') || category == 'stopwatch' || parseClockSortKey(e['sortKey'] as String?) != null);
+        (channel.contains('timer') || isStopwatch || parseClockSortKey(e['sortKey'] as String?) != null || rvChronoBase != null);
     if (clockTimer || (ongoing && (chrono || (clock && (category == 'alarm' || category == 'progress'))))) {
       final clockState = parseClockSortKey(e['sortKey'] as String?);
       final up = clockState != null && !clockState.running && (clockState.state == 'EXPIRED' || clockState.state == 'MISSED');
@@ -870,10 +873,34 @@ class NotchController extends ChangeNotifier {
         _focus = a.id;
         expanded = true;
       }
-      a.title = title ?? (channel.contains('stopwatch') ? 'Stopwatch' : 'Timer');
+      a.title = title ?? (isStopwatch ? 'Stopwatch' : 'Timer');
       a.recording = isScreenRecording(pkg, channel, title);
-      final when = DateTime.fromMillisecondsSinceEpoch((e['when'] as int?) ?? 0);
+      final whenMs = (e['when'] as int?) ?? 0;
+      final when = DateTime.fromMillisecondsSinceEpoch(whenMs);
       final posted = DateTime.fromMillisecondsSinceEpoch((e['posted'] as int?) ?? DateTime.now().millisecondsSinceEpoch);
+      // Extract lap label (e.g. "Runde 2", "Lap 2") from RemoteViews texts or notification extras.
+      final lapRegex = RegExp(r'\b(runde|lap|tour|giro|vuelta)\s*#?\s*\d+\b', caseSensitive: false);
+      final candidates = <String>[
+        ...rvTexts,
+        ?text,
+        if (e['sub'] is String) e['sub'] as String,
+        if (e['shortText'] is String) e['shortText'] as String,
+      ];
+      String? lap;
+      for (final c in candidates) {
+        final m = lapRegex.firstMatch(c);
+        if (m != null) {
+          lap = c.length <= 28 ? c : m.group(0);
+          break;
+        }
+      }
+      a.sub = lap;
+      final actionNames = a.actions.map((act) => act.$2.toLowerCase()).toList();
+      final hasPauseBtn = actionNames.any((n) => n.contains('pause') || n.contains('pausier'));
+      final hasResumeBtn = actionNames.any((n) => n.contains('resume') || n.contains('fortsetz') || n.contains('weiter') || n == 'start');
+      final stopwatchPaused = isStopwatch &&
+          ((hasResumeBtn && !hasPauseBtn) ||
+              candidates.any((c) => c.toLowerCase().contains('pausiert') || c.toLowerCase().contains('paused')));
       if (up && (!wasUp || another) && !initial) _tellPc('timer', a.title == "Time's up" ? 'Timer' : a.title);
       if (clockState != null) {
         a.on = clockState.running;
@@ -891,12 +918,48 @@ class NotchController extends ChangeNotifier {
         } else {
           a.text = _fmt(clockState.left); // paused: the time left, still
         }
+      } else if (rvChronoBase != null) {
+        final baseTime = DateTime.fromMillisecondsSinceEpoch(rvChronoBase);
+        if (stopwatchPaused) {
+          a.on = false;
+          a.countUpStart = null;
+          a.countdownEnd = null;
+          a.text = rvTimeText ?? _fmt(DateTime.now().difference(baseTime).abs());
+        } else if (rvChronoCountDown) {
+          a.on = true;
+          a.countdownEnd = baseTime;
+        } else {
+          a.on = true;
+          a.countUpStart = baseTime;
+        }
       } else if (chrono && e['countDown'] == true) {
         a.countdownEnd = when;
       } else if (chrono) {
-        a.countUpStart = when;
+        if (stopwatchPaused) {
+          a.on = false;
+          a.countUpStart = null;
+          a.text = rvTimeText ?? text ?? _fmt(DateTime.now().difference(when).abs());
+        } else {
+          a.on = true;
+          a.countUpStart = when;
+        }
+      } else if (isStopwatch) {
+        if (stopwatchPaused) {
+          a.on = false;
+          a.text = rvTimeText ?? (e['shortText'] as String?) ?? text;
+        } else if (whenMs > 0) {
+          a.on = true;
+          a.countUpStart = when;
+        } else if (rvTimeText != null) {
+          a.text = rvTimeText;
+        }
       }
       notifyListeners(); // again: the shape depends on what was just filled in (time's up widens the notch)
+      return;
+    }
+    if (e['promoted'] == true) {
+      persistent(ActivityKind.liveUpdate, 70).text = (e['shortText'] as String?) ?? text;
+      notifyListeners();
       return;
     }
     if (ongoing && hasProgress) {

@@ -132,6 +132,7 @@ class NotchService : AccessibilityService() {
         watch()
         updateLockState()
         NotchBridge.applyPopups(this, notchRunning = !locked)
+        scheduleBlackCheck()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -192,28 +193,38 @@ class NotchService : AccessibilityService() {
                             val bmp = android.graphics.Bitmap.wrapHardwareBuffer(buf, screenshot.colorSpace)
                                 ?.copy(android.graphics.Bitmap.Config.ARGB_8888, false) ?: return
                             try {
-                                val l = area.left.coerceIn(0, bmp.width - 1)
-                                val r = area.right.coerceIn(l + 1, bmp.width)
-                                val t = area.top.coerceIn(0, bmp.height - 1)
-                                val b = area.bottom.coerceIn(t + 1, bmp.height)
-                                val cols = 16
-                                val rows = 6
-                                var blackCount = 0
+                                // Sample around the notch (left, right, and just below) so we measure the actual app/status bar background.
+                                val pad = (28 * density).toInt().coerceAtLeast(16)
+                                val gap = (4 * density).toInt().coerceAtLeast(2)
+                                val belowH = (12 * density).toInt().coerceAtLeast(8)
+                                val regions = listOf(
+                                    Rect((area.left - pad).coerceAtLeast(0), area.top.coerceAtLeast(0), (area.left - gap).coerceAtLeast(1), area.bottom.coerceAtMost(bmp.height)),
+                                    Rect((area.right + gap).coerceAtMost(bmp.width - 1), area.top.coerceAtLeast(0), (area.right + pad).coerceAtMost(bmp.width), area.bottom.coerceAtMost(bmp.height)),
+                                    Rect(area.left.coerceAtLeast(0), (area.bottom + gap).coerceAtMost(bmp.height - 1), area.right.coerceAtMost(bmp.width), (area.bottom + gap + belowH).coerceAtMost(bmp.height)),
+                                )
+                                var darkCount = 0
                                 var total = 0
-                                for (row in 0 until rows) {
-                                    val py = t + ((b - t - 1) * row) / (rows - 1).coerceAtLeast(1)
-                                    for (col in 0 until cols) {
-                                        val px = l + ((r - l - 1) * col) / (cols - 1).coerceAtLeast(1)
-                                        val c = bmp.getPixel(px, py)
-                                        val red = (c shr 16) and 0xFF
-                                        val green = (c shr 8) and 0xFF
-                                        val blue = c and 0xFF
-                                        // Pure black within ~1% (<= 3 out of 255 per channel)
-                                        if (red <= 3 && green <= 3 && blue <= 3) blackCount++
-                                        total++
+                                for (reg in regions) {
+                                    if (reg.width() < 2 || reg.height() < 2) continue
+                                    val cols = 6
+                                    val rows = 4
+                                    for (row in 0 until rows) {
+                                        val py = reg.top + ((reg.height() - 1) * row) / (rows - 1).coerceAtLeast(1)
+                                        for (col in 0 until cols) {
+                                            val px = reg.left + ((reg.width() - 1) * col) / (cols - 1).coerceAtLeast(1)
+                                            val c = bmp.getPixel(px, py)
+                                            val red = (c shr 16) and 0xFF
+                                            val green = (c shr 8) and 0xFF
+                                            val blue = c and 0xFF
+                                            // Sensitive dark detection: covers pure black and dark-mode app/status bars (luma <= 52).
+                                            val luma = (red * 299 + green * 587 + blue * 114) / 1000
+                                            if (luma <= 52) darkCount++
+                                            total++
+                                        }
                                     }
                                 }
-                                val isBlack = total > 0 && blackCount * 2 > total
+                                // Prefer showing the outline when >= 25% of sampled background pixels are dark.
+                                val isBlack = total == 0 || darkCount * 4 >= total
                                 if (isBlack != lastBgBlack) {
                                     lastBgBlack = isBlack
                                     NotchBridge.toNotch(mapOf("type" to "bgBlack", "black" to isBlack))
@@ -226,7 +237,13 @@ class NotchService : AccessibilityService() {
                         }
                     }
 
-                    override fun onFailure(errorCode: Int) {}
+                    override fun onFailure(errorCode: Int) {
+                        // On secure/DRM screens or failed capture, prefer showing the outline rather than hiding it.
+                        if (lastBgBlack != true) {
+                            lastBgBlack = true
+                            NotchBridge.toNotch(mapOf("type" to "bgBlack", "black" to true))
+                        }
+                    }
                 },
             )
         }
