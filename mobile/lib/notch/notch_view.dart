@@ -36,7 +36,7 @@ double openHeight(NotchSettings s, NotchActivity a, NotchActivity? second, [Notc
     ActivityKind.call => 112.0,
     ActivityKind.navigation => 96.0,
     ActivityKind.home => 132.0,
-    ActivityKind.buds => 120.0,
+    ActivityKind.buds => 136.0,
     ActivityKind.screenshot => 118.0,
     ActivityKind.clipboard => 26 + lines(a.text, 3) + 54,
     _ when a.isOffer => a.offerAuthenticated ? 108.0 : 132.0,
@@ -1051,15 +1051,26 @@ class _OpenBody extends StatelessWidget {
         return _Player(c, nothing);
       case ActivityKind.buds:
         final de = ui.PlatformDispatcher.instance.locale.languageCode == 'de';
-        // Each bud and the case, when Google Play services told them; else the pair's one level.
+        final model = NotchController.budsModel(a.title, c.settings.budsColor);
+        if (model != null) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              headline(title, size: 15),
+              const SizedBox(height: 2),
+              Expanded(child: _BudsStage(c, a, nothing: nothing)),
+            ],
+          );
+        }
+        // Generic headphones without a 3D model: keep the clean icon + battery summary.
         final parts = [
-          if (c.budsLeft != null) ('L', c.budsLeft!),
           if (c.budsCase != null) (de ? 'Etui' : 'Case', c.budsCase!),
+          if (c.budsLeft != null) ('L', c.budsLeft!),
           if (c.budsRight != null) ('R', c.budsRight!),
         ];
         return Row(
           children: [
-            SizedBox(width: 112, height: 112, child: _BudsOut(c, a)),
+            const SizedBox(width: 72, height: 72, child: Center(child: Icon(Icons.headphones_rounded, color: Colors.white, size: 48))),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -2179,7 +2190,7 @@ class _Glyph extends StatelessWidget {
       case ActivityKind.torch:
         return symbol(a.on ? Icons.flashlight_on_rounded : Icons.flashlight_off_rounded);
       case ActivityKind.buds:
-        return _BudsStill(c, a, size);
+        return _BudsClosedCase(c, a, size);
       default:
         final icon = a.package == null ? null : c.icons[a.package];
         if (icon == null) {
@@ -2207,95 +2218,45 @@ class _Glyph extends StatelessWidget {
   }
 }
 
-/// The buds alone, out of their case (a still rendered from their 3D model), or a headphones symbol for earbuds Holm
-/// has no model of.
-class _BudsStill extends StatelessWidget {
+/// The closed charging case for the compact pill and bubble (real 3D frame for Nothing; 3D-shaded pebble/squircle
+/// matching the exact model colour for Pixel Buds and AirPods).
+class _BudsClosedCase extends StatefulWidget {
   final NotchController c;
   final NotchActivity a;
   final double size;
-  const _BudsStill(this.c, this.a, this.size);
+  const _BudsClosedCase(this.c, this.a, this.size);
 
   @override
-  Widget build(BuildContext context) {
-    final model = NotchController.budsModel(a.title, c.settings.budsColor);
-    final symbol = Icon(Icons.headphones_rounded, color: Colors.white, size: size * 0.8);
-    if (model == null) return symbol;
-    return Image.asset(
-      'assets/buds/${model}_buds.webp',
-      width: size,
-      height: size,
-      fit: BoxFit.contain,
-      filterQuality: FilterQuality.medium,
-      errorBuilder: (_, _, _) => symbol,
-    );
-  }
+  State<_BudsClosedCase> createState() => _BudsClosedCaseState();
 }
 
-/// The colour of the earbuds themselves, for their card's glow: white, or the Pixel Buds' colour.
-Color _budsTint(NotchController c, NotchActivity a) => switch (NotchController.budsModel(a.title, c.settings.budsColor)) {
-  'pixel_peony' => const Color(0xFFE5677F),
-  'pixel_wintergreen' => const Color(0xFFB9D3B4),
-  'pixel_hazel' => const Color(0xFF9A9D96),
-  _ => Colors.white,
-};
-
-/// The earbuds' bubble beside the camera: just the buds.
-class _BudsBubble extends StatelessWidget {
-  final NotchController c;
-  final NotchActivity a;
-  final double size;
-  const _BudsBubble(this.c, this.a, this.size);
-
-  @override
-  Widget build(BuildContext context) => Container(
-    decoration: const BoxDecoration(color: Colors.black, shape: BoxShape.circle),
-    alignment: Alignment.center,
-    child: _BudsStill(c, a, size * 0.7),
-  );
-}
-
-/// The card's picture: the buds come out of their case, once, as it opens (frames rendered from the 3D model, side
-/// by side in one picture).
-class _BudsOut extends StatefulWidget {
-  final NotchController c;
-  final NotchActivity a;
-  const _BudsOut(this.c, this.a);
-
-  @override
-  State<_BudsOut> createState() => _BudsOutState();
-}
-
-class _BudsOutState extends State<_BudsOut> with SingleTickerProviderStateMixin {
-  late final AnimationController _play = AnimationController(vsync: this, duration: const Duration(milliseconds: 1100));
+class _BudsClosedCaseState extends State<_BudsClosedCase> {
   ImageStream? _stream;
   ImageStreamListener? _listener;
-  ui.Image? _strip;
-  String? _model;
+  ui.Image? _nothingStrip;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _load();
+    _sync();
   }
 
   @override
-  void didUpdateWidget(_BudsOut old) {
+  void didUpdateWidget(_BudsClosedCase old) {
     super.didUpdateWidget(old);
-    _load();
+    _sync();
   }
 
-  void _load() {
+  void _sync() {
     final model = NotchController.budsModel(widget.a.title, widget.c.settings.budsColor);
-    if (model == _model) return;
-    _model = model;
-    _stop();
-    _strip = null;
-    if (model == null) return;
-    final stream = AssetImage('assets/buds/${model}_out.webp').resolve(createLocalImageConfiguration(context));
+    if (model != 'nothing') {
+      _stop();
+      return;
+    }
+    if (_stream != null) return;
+    final stream = const AssetImage('assets/buds/nothing_out.webp').resolve(createLocalImageConfiguration(context));
     _listener = ImageStreamListener((info, _) {
-      if (!mounted) return;
-      setState(() => _strip = info.image);
-      _play.forward(from: 0);
+      if (mounted) setState(() => _nothingStrip = info.image);
     });
     stream.addListener(_listener!);
     _stream = stream;
@@ -2310,43 +2271,506 @@ class _BudsOutState extends State<_BudsOut> with SingleTickerProviderStateMixin 
   @override
   void dispose() {
     _stop();
-    _play.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final strip = _strip;
-    if (_model == null) return const Center(child: Icon(Icons.headphones_rounded, color: Colors.white, size: 56));
-    if (strip == null) return const SizedBox.shrink();
-    return AnimatedBuilder(
-      animation: _play,
-      builder: (context, _) => CustomPaint(painter: _StripPainter(strip, Curves.easeOut.transform(_play.value))),
+    final model = NotchController.budsModel(widget.a.title, widget.c.settings.budsColor);
+    if (model == null) return Icon(Icons.headphones_rounded, color: Colors.white, size: widget.size * 0.8);
+    if (model == 'nothing' && _nothingStrip != null) {
+      return SizedBox(
+        width: widget.size,
+        height: widget.size,
+        child: CustomPaint(painter: _OpenCasePainter(_nothingStrip!, model, 0.0)),
+      );
+    }
+    return SizedBox(
+      width: widget.size,
+      height: widget.size,
+      child: CustomPaint(painter: _ClosedCasePainter(model)),
     );
   }
 }
 
-/// One frame of a strip of square frames, [t] from the first (0) to the last (1).
-class _StripPainter extends CustomPainter {
+/// Photorealistic 3D-shaded closed charging case for Pixel Buds (egg/pebble) and AirPods (rounded squircle).
+class _ClosedCasePainter extends CustomPainter {
+  final String model;
+  const _ClosedCasePainter(this.model);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final isAirpods = model == 'airpods';
+    final isNothing = model == 'nothing';
+    final base = switch (model) {
+      'pixel_peony' => const Color(0xFFE77289),
+      'pixel_wintergreen' => const Color(0xFFC2D9BC),
+      'pixel_hazel' => const Color(0xFF969A92),
+      'airpods' => const Color(0xFFF3F4F7),
+      'nothing' => const Color(0xFFEAECEF),
+      _ => const Color(0xFFF0EFEA), // pixel_porcelain
+    };
+    final highlight = Color.lerp(base, Colors.white, 0.58)!;
+    final mid = base;
+    final shade = Color.lerp(base, Colors.black, 0.34)!;
+    final deep = Color.lerp(base, Colors.black, 0.52)!;
+
+    final w = size.width;
+    final h = size.height;
+    final rect = isAirpods
+        ? Rect.fromCenter(center: Offset(w / 2, h / 2), width: w * 0.82, height: h * 0.78)
+        : isNothing
+            ? Rect.fromCenter(center: Offset(w / 2, h / 2), width: w * 0.82, height: h * 0.78)
+            : Rect.fromCenter(center: Offset(w / 2, h / 2), width: w * 0.66, height: h * 0.86);
+
+    final rrect = isAirpods
+        ? RRect.fromRectAndRadius(rect, Radius.circular(rect.width * 0.28))
+        : isNothing
+            ? RRect.fromRectAndRadius(rect, Radius.circular(rect.width * 0.22))
+            : RRect.fromRectAndCorners(
+                rect,
+                topLeft: Radius.elliptical(rect.width * 0.5, rect.height * 0.42),
+                topRight: Radius.elliptical(rect.width * 0.5, rect.height * 0.42),
+                bottomLeft: Radius.elliptical(rect.width * 0.5, rect.height * 0.56),
+                bottomRight: Radius.elliptical(rect.width * 0.5, rect.height * 0.56),
+              );
+
+    // 3D studio spherical shading.
+    final bodyPaint = Paint()
+      ..shader = RadialGradient(
+        center: const Alignment(-0.35, -0.45),
+        radius: 1.05,
+        colors: [highlight, mid, shade, deep],
+        stops: const [0.0, 0.42, 0.82, 1.0],
+      ).createShader(rect);
+    canvas.drawRRect(rrect, bodyPaint);
+
+    // Clip inner details to the case silhouette.
+    canvas.save();
+    canvas.clipRRect(rrect);
+
+    // Subtle specular rim on the top-left curve.
+    final rimPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = math.max(0.8, w * 0.03)
+      ..color = Colors.white.withValues(alpha: 0.45);
+    canvas.drawRRect(rrect.deflate(0.5), rimPaint);
+
+    // Lid seam line.
+    final seamY = rect.top + rect.height * (isAirpods ? 0.34 : 0.35);
+    final seamPaint = Paint()
+      ..color = Colors.black.withValues(alpha: 0.36)
+      ..strokeWidth = math.max(0.9, h * 0.032)
+      ..style = PaintingStyle.stroke;
+    canvas.drawLine(Offset(rect.left, seamY), Offset(rect.right, seamY), seamPaint);
+
+    // Thin bright lip highlight right below the seam.
+    canvas.drawLine(
+      Offset(rect.left, seamY + math.max(0.8, h * 0.024)),
+      Offset(rect.right, seamY + math.max(0.8, h * 0.024)),
+      Paint()
+        ..color = Colors.white.withValues(alpha: 0.35)
+        ..strokeWidth = math.max(0.6, h * 0.018),
+    );
+
+    // AirPods metallic thumb notch under the seam.
+    if (isAirpods) {
+      final notchRect = Rect.fromCenter(center: Offset(w / 2, seamY + rect.height * 0.045), width: rect.width * 0.28, height: math.max(1.6, h * 0.045));
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(notchRect, Radius.circular(notchRect.height / 2)),
+        Paint()..color = Colors.black.withValues(alpha: 0.24),
+      );
+    }
+
+    // Tiny status LED dot on the front face.
+    final ledY = seamY + rect.height * (isAirpods ? 0.17 : 0.14);
+    canvas.drawCircle(
+      Offset(w / 2, ledY),
+      math.max(0.9, w * 0.032),
+      Paint()..color = const Color(0xFF30D158).withValues(alpha: 0.85),
+    );
+
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_ClosedCasePainter old) => old.model != model;
+}
+
+/// The colour of the earbuds themselves, for their card's glow: white, or the Pixel Buds' colour.
+Color _budsTint(NotchController c, NotchActivity a) => switch (NotchController.budsModel(a.title, c.settings.budsColor)) {
+  'pixel_peony' => const Color(0xFFE5677F),
+  'pixel_wintergreen' => const Color(0xFFB9D3B4),
+  'pixel_hazel' => const Color(0xFF9A9D96),
+  _ => Colors.white,
+};
+
+/// The earbuds' bubble beside the camera: the closed charging case.
+class _BudsBubble extends StatelessWidget {
+  final NotchController c;
+  final NotchActivity a;
+  final double size;
+  const _BudsBubble(this.c, this.a, this.size);
+
+  @override
+  Widget build(BuildContext context) => Container(
+    decoration: const BoxDecoration(color: Colors.black, shape: BoxShape.circle),
+    alignment: Alignment.center,
+    child: _BudsClosedCase(c, a, size * 0.68),
+  );
+}
+
+/// Expanded 3-slot 3D earbuds animation:
+/// Left slot: closed case opens into the open charging case (+ case battery %).
+/// Middle slot: left earbud arcs out of the open case toward the right with 3D rotation (+ L battery %).
+/// Right slot: right earbud arcs higher & wider over the left bud with 3D rotation (+ R battery %).
+class _BudsStage extends StatefulWidget {
+  final NotchController c;
+  final NotchActivity a;
+  final bool nothing;
+  const _BudsStage(this.c, this.a, {required this.nothing});
+
+  @override
+  State<_BudsStage> createState() => _BudsStageState();
+}
+
+class _BudsStageState extends State<_BudsStage> with SingleTickerProviderStateMixin {
+  late final AnimationController _play = AnimationController(vsync: this, duration: const Duration(milliseconds: 1150));
+  ImageStream? _stripStream, _budsStream;
+  ImageStreamListener? _stripListener, _budsListener;
+  ui.Image? _strip, _buds;
+  String? _model;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(_BudsStage old) {
+    super.didUpdateWidget(old);
+    _load();
+  }
+
+  void _load() {
+    final model = NotchController.budsModel(widget.a.title, widget.c.settings.budsColor);
+    if (model == _model) return;
+    _model = model;
+    _stop();
+    _strip = null;
+    _buds = null;
+    if (model == null) return;
+
+    final config = createLocalImageConfiguration(context);
+    void checkReady() {
+      if (_strip != null && _buds != null && !_play.isAnimating && _play.value == 0) {
+        _play.forward(from: 0);
+      }
+    }
+
+    final stripStream = AssetImage('assets/buds/${model}_out.webp').resolve(config);
+    _stripListener = ImageStreamListener((info, _) {
+      if (!mounted) return;
+      setState(() => _strip = info.image);
+      checkReady();
+    });
+    stripStream.addListener(_stripListener!);
+    _stripStream = stripStream;
+
+    final budsStream = AssetImage('assets/buds/${model}_buds.webp').resolve(config);
+    _budsListener = ImageStreamListener((info, _) {
+      if (!mounted) return;
+      setState(() => _buds = info.image);
+      checkReady();
+    });
+    budsStream.addListener(_budsListener!);
+    _budsStream = budsStream;
+  }
+
+  void _stop() {
+    if (_stripStream != null && _stripListener != null) _stripStream!.removeListener(_stripListener!);
+    if (_budsStream != null && _budsListener != null) _budsStream!.removeListener(_budsListener!);
+    _stripStream = null;
+    _budsStream = null;
+    _stripListener = null;
+    _budsListener = null;
+  }
+
+  @override
+  void dispose() {
+    _stop();
+    _play.dispose();
+    super.dispose();
+  }
+
+  static Offset _quadBezier(Offset p0, Offset p1, Offset p2, double t) {
+    final inv = 1.0 - t;
+    return Offset(
+      inv * inv * p0.dx + 2 * inv * t * p1.dx + t * t * p2.dx,
+      inv * inv * p0.dy + 2 * inv * t * p1.dy + t * t * p2.dy,
+    );
+  }
+
+  Color _levelColor(int? level) {
+    if (level == null) return _dim;
+    if (widget.nothing) return _nothingRed;
+    return level <= 15
+        ? const Color(0xFFFF453A)
+        : level <= 30
+            ? const Color(0xFFFF9F0A)
+            : const Color(0xFF30D158);
+  }
+
+  Widget _pctLabel(int? level, double opacity) {
+    final text = level == null ? '–' : '$level%';
+    return Opacity(
+      opacity: opacity.clamp(0.0, 1.0),
+      child: Text(
+        text,
+        style: TextStyle(
+          color: level == null ? _faint : _levelColor(level),
+          fontSize: 13.5,
+          fontWeight: FontWeight.w700,
+          fontFeatures: const [ui.FontFeature.tabularFigures()],
+          height: 1.0,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final model = _model;
+    final strip = _strip;
+    final buds = _buds;
+    if (model == null) return const Center(child: Icon(Icons.headphones_rounded, color: Colors.white, size: 52));
+    if (strip == null || buds == null) return const SizedBox.shrink();
+
+    final caseLvl = widget.c.budsCase ?? (widget.a.preview ? 50 : null);
+    final leftLvl = widget.c.budsLeft ?? (widget.a.preview ? 99 : widget.a.level);
+    final rightLvl = widget.c.budsRight ?? (widget.a.preview ? 97 : widget.a.level);
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final w = constraints.maxWidth;
+        final h = constraints.maxHeight;
+        final slotW = w / 3;
+        final caseCx = slotW * 0.5;
+        final leftCx = slotW * 1.5;
+        final rightCx = slotW * 2.5;
+
+        final labelH = 20.0;
+        final objSize = math.min(slotW * 0.72, (h - labelH - 4).clamp(42.0, 68.0));
+        final restY = h - labelH - objSize * 0.5;
+        final mouth = Offset(caseCx, restY - objSize * 0.18);
+
+        return AnimatedBuilder(
+          animation: _play,
+          builder: (context, _) {
+            final t = _play.value;
+            // Phase 1: Case opens (0.00 -> 0.30)
+            final tCase = const Interval(0.0, 0.30, curve: Curves.easeOutCubic).transform(t);
+            final casePop = const Interval(0.08, 0.34, curve: Curves.easeOutBack).transform(t);
+            // Phase 2: Left bud arcs out of the open case to the middle slot (0.16 -> 0.78)
+            final tLeft = const Interval(0.16, 0.78, curve: Curves.easeOutCubic).transform(t);
+            // Phase 3: Right bud arcs higher & further to the right slot (0.26 -> 0.96)
+            final tRight = const Interval(0.26, 0.96, curve: Curves.easeOutCubic).transform(t);
+
+            final leftPos = _quadBezier(
+              mouth,
+              Offset((caseCx + leftCx) * 0.52, math.max(objSize * 0.28, restY - objSize * 0.68)),
+              Offset(leftCx, restY),
+              tLeft,
+            );
+            final rightPos = _quadBezier(
+              mouth,
+              Offset((caseCx + rightCx) * 0.48, math.max(objSize * 0.14, restY - objSize * 1.12)),
+              Offset(rightCx, restY),
+              tRight,
+            );
+
+            final leftScale = ui.lerpDouble(0.32, 1.0, tLeft)!;
+            final leftAlpha = (tLeft / 0.18).clamp(0.0, 1.0);
+            final rightScale = ui.lerpDouble(0.28, 1.0, tRight)!;
+            final rightAlpha = (tRight / 0.18).clamp(0.0, 1.0);
+
+            // Smooth crossfade from closed case -> real 3D open empty case (Nothing animates directly via frames 0..10).
+            final isNothing = model == 'nothing';
+            final openAlpha = isNothing ? 1.0 : ((tCase - 0.18) / 0.52).clamp(0.0, 1.0);
+            final closedAlpha = isNothing ? 0.0 : (1.0 - openAlpha).clamp(0.0, 1.0);
+
+            return Stack(
+              clipBehavior: Clip.none,
+              children: [
+                // Slot 0 (Left): Charging case opening from closed -> open
+                Positioned(
+                  left: caseCx - objSize * 0.5,
+                  top: restY - objSize * 0.5,
+                  width: objSize,
+                  height: objSize,
+                  child: Transform.scale(
+                    scale: 0.90 + 0.10 * casePop,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (closedAlpha > 0.01)
+                          Opacity(
+                            opacity: closedAlpha,
+                            child: CustomPaint(painter: _ClosedCasePainter(model)),
+                          ),
+                        if (openAlpha > 0.01)
+                          Opacity(
+                            opacity: openAlpha,
+                            child: CustomPaint(painter: _OpenCasePainter(strip, model, tCase)),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                // Slot 1 (Middle): Left earbud arcing out of the case with 3D spin
+                if (leftAlpha > 0.01)
+                  Positioned(
+                    left: leftPos.dx - objSize * 0.5,
+                    top: leftPos.dy - objSize * 0.5,
+                    width: objSize,
+                    height: objSize,
+                    child: Opacity(
+                      opacity: leftAlpha,
+                      child: Transform(
+                        alignment: Alignment.center,
+                        transform: Matrix4.identity()
+                          ..setEntry(3, 2, 0.0022)
+                          ..scaleByDouble(leftScale, leftScale, 1.0, 1.0)
+                          ..rotateY((1.0 - tLeft) * -0.95)
+                          ..rotateZ((1.0 - tLeft) * -0.22),
+                        child: CustomPaint(painter: _SingleBudPainter(buds, model, right: false)),
+                      ),
+                    ),
+                  ),
+
+                // Slot 2 (Right): Right earbud arcing higher over the middle bud with 3D spin
+                if (rightAlpha > 0.01)
+                  Positioned(
+                    left: rightPos.dx - objSize * 0.5,
+                    top: rightPos.dy - objSize * 0.5,
+                    width: objSize,
+                    height: objSize,
+                    child: Opacity(
+                      opacity: rightAlpha,
+                      child: Transform(
+                        alignment: Alignment.center,
+                        transform: Matrix4.identity()
+                          ..setEntry(3, 2, 0.0022)
+                          ..scaleByDouble(rightScale, rightScale, 1.0, 1.0)
+                          ..rotateY((1.0 - tRight) * 1.15)
+                          ..rotateZ((1.0 - tRight) * 0.24),
+                        child: CustomPaint(painter: _SingleBudPainter(buds, model, right: true)),
+                      ),
+                    ),
+                  ),
+
+                // Battery percentages aligned cleanly under each of the 3 slots
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  height: labelH,
+                  child: Row(
+                    children: [
+                      Expanded(child: Center(child: _pctLabel(caseLvl, (tCase / 0.8).clamp(0.0, 1.0)))),
+                      Expanded(child: Center(child: _pctLabel(leftLvl, ((tLeft - 0.55) / 0.45).clamp(0.0, 1.0)))),
+                      Expanded(child: Center(child: _pctLabel(rightLvl, ((tRight - 0.55) / 0.45).clamp(0.0, 1.0)))),
+                    ],
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+/// Paints the open empty charging case cropped cleanly from the 3D sprite strip.
+/// For Nothing, scrubs frames 0..10 (closed -> open lid); for Pixel Buds and AirPods, crops the clean empty open case
+/// from the bottom half of the last frame (where the buds have already cleared the case).
+class _OpenCasePainter extends CustomPainter {
   final ui.Image strip;
+  final String model;
   final double t;
-  _StripPainter(this.strip, this.t);
+  const _OpenCasePainter(this.strip, this.model, this.t);
 
   @override
   void paint(Canvas canvas, Size size) {
     final side = strip.height.toDouble();
     final frames = math.max(1, (strip.width / side).floor());
-    final i = (t * (frames - 1)).round().clamp(0, frames - 1);
+    final Rect src;
+    if (model == 'nothing') {
+      final maxOpen = math.min(10, frames - 1);
+      final i = (t.clamp(0.0, 1.0) * maxOpen).round();
+      // Crop around the Nothing case (vertical 70..236 centered horizontally).
+      final cropH = side * 0.72;
+      src = Rect.fromLTWH(i * side + (side - cropH) / 2, side * 0.27, cropH, cropH);
+    } else {
+      final last = frames - 1;
+      // Pixel Buds empty open case: rows 104..240; AirPods empty open case: rows 102..240.
+      final topFrac = model == 'airpods' ? 0.425 : 0.435;
+      final cropH = side * (1.0 - topFrac);
+      src = Rect.fromLTWH(last * side + (side - cropH) / 2, side * topFrac, cropH, cropH);
+    }
     canvas.drawImageRect(
       strip,
-      Rect.fromLTWH(i * side, 0, side, side),
+      src,
       Offset.zero & size,
       Paint()..filterQuality = FilterQuality.medium,
     );
   }
 
   @override
-  bool shouldRepaint(_StripPainter old) => old.t != t || old.strip != strip;
+  bool shouldRepaint(_OpenCasePainter old) => old.strip != strip || old.model != model || old.t != t;
+}
+
+/// Paints either the left or the right earbud from `${model}_buds.webp`, tightly cropped to its actual 3D bounds so
+/// every model sits dead-center and proportionally scaled above its battery percentage.
+class _SingleBudPainter extends CustomPainter {
+  final ui.Image buds;
+  final String model;
+  final bool right;
+  const _SingleBudPainter(this.buds, this.model, {required this.right});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = buds.width.toDouble();
+    final h = buds.height.toDouble();
+    final (double l, double t, double r, double b) = switch (model) {
+      'airpods' => right ? (0.569, 0.167, 1.000, 0.833) : (0.000, 0.167, 0.472, 0.833),
+      'nothing' => right ? (0.625, 0.118, 1.000, 0.854) : (0.000, 0.125, 0.424, 0.882),
+      _ => right ? (0.715, 0.285, 1.000, 0.715) : (0.000, 0.285, 0.292, 0.715), // pixel_*
+    };
+    final src = Rect.fromLTRB(l * w, t * h, r * w, b * h);
+    final aspect = src.width / src.height;
+    final maxH = size.height * 0.86;
+    final maxW = size.width * 0.86;
+    double dstW = maxH * aspect;
+    double dstH = maxH;
+    if (dstW > maxW) {
+      dstW = maxW;
+      dstH = maxW / aspect;
+    }
+    final dst = Rect.fromCenter(center: Offset(size.width / 2, size.height / 2), width: dstW, height: dstH);
+    canvas.drawImageRect(
+      buds,
+      src,
+      dst,
+      Paint()..filterQuality = FilterQuality.medium,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_SingleBudPainter old) => old.buds != buds || old.model != model || old.right != right;
 }
 
 /// One bud's (or the case's) battery: a ring with its name and level.

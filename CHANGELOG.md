@@ -1,5 +1,11 @@
 # Changelog
 
+## Android 1.4.13 – 2026-11-26
+
+### Changed
+
+- **3D Earbuds Animation:** compact notch and bubble now show the closed charging case; expanding smoothly opens the case on the left while the left and right earbuds fly out along curved 3D arcs to the right, landing above their respective Case / Left / Right battery percentages.
+
 ## 2.5.4 – 2026-11-26
 
 ### Fixed
