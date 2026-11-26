@@ -138,6 +138,7 @@ internal sealed class StreamViewerWindow : Window
                 if (_closed.IsCancellationRequested) { frame.Dispose(); return; }
                 var old = _shown;
                 _picture.Source = _shown = frame;
+                _picture.Opacity = 1;
                 old?.Dispose();
                 _state.IsVisible = false;
                 GotFrame = true;
@@ -157,6 +158,15 @@ internal sealed class StreamViewerWindow : Window
         }
         finally { Interlocked.Exchange(ref _decoding, 0); }
     }
+
+    /// <summary>Connection dropped unexpectedly: show a reconnecting status over the last frame.</summary>
+    public void Reconnecting(string why) => Dispatcher.UIThread.Post(() =>
+    {
+        _state.Text = why;
+        _state.IsVisible = true;
+        _picture.Opacity = 0.45;
+        _rate.Text = "Reconnecting…";
+    });
 
     /// <summary>The stream ended: say so over the last picture.</summary>
     public void Ended(string why) => Dispatcher.UIThread.Post(() =>

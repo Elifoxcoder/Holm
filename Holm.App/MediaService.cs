@@ -79,6 +79,9 @@ public sealed class MediaService
 {
     readonly IMediaPlatform _platform;
     readonly DispatcherTimer _debounce;
+    readonly DispatcherTimer _coverRetry;
+    int _coverRetries;
+    static readonly int[] CoverRetryDelaysMs = { 350, 900, 1800, 3500 };
     bool _refreshing, _refreshAgain, _published;
     // 1 when something besides a timeline changed since the last refresh. Set from the system's threads.
     int _fullRefresh = 1;
@@ -98,6 +101,14 @@ public sealed class MediaService
         _platform = platform;
         _debounce = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(120) };
         _debounce.Tick += (_, _) => { _debounce.Stop(); _ = RefreshAsync(); };
+        _coverRetry = new DispatcherTimer(DispatcherPriority.Background);
+        _coverRetry.Tick += (_, _) =>
+        {
+            _coverRetry.Stop();
+            if (_art != null || string.IsNullOrEmpty(_trackKey)) return;
+            Interlocked.Exchange(ref _fullRefresh, 1);
+            _ = RefreshAsync();
+        };
         _platform.Changed += Poke;
     }
 
@@ -132,9 +143,9 @@ public sealed class MediaService
     async Task RefreshCoreAsync()
     {
         // Only a timeline moved (Spotify sends one every few seconds, also while paused). When the position is
-        // where the notch already puts it, there's nothing to ask the player and nothing to redraw.
+        // where the notch already puts it AND we already have the cover art, there's nothing to ask the player.
         bool full = Interlocked.Exchange(ref _fullRefresh, 0) == 1;
-        if (!full && _shown is { } shown && _platform.ReadTimeline() is { } moved)
+        if (!full && _art != null && _shown is { } shown && _platform.ReadTimeline() is { } moved)
         {
             var timeline = new MediaInfo
             {
@@ -163,13 +174,23 @@ public sealed class MediaService
             _trackKey = key;
             _art = _backdrop = null;
             _accent = Colors.White;
+            _coverRetries = 0;
+            _coverRetry.Stop();
         }
-        // Apps often send the title first and the cover a moment later, so keep trying until we have one.
+        // Apps like Spotify often send the title first and the cover a moment later, so retry until we have one.
         if (_art == null && await _platform.ReadCoverAsync() is { } bytes)
         {
             var cover = await Task.Run(() => LoadArt(bytes));
             if (key == _trackKey && cover.Art != null)
+            {
                 (_art, _accent, _backdrop, _shade) = (cover.Art, cover.Accent, cover.Backdrop, cover.Shade);
+                _coverRetry.Stop();
+            }
+        }
+        if (_art == null && key == _trackKey && _coverRetries < CoverRetryDelaysMs.Length && !_coverRetry.IsEnabled)
+        {
+            _coverRetry.Interval = TimeSpan.FromMilliseconds(CoverRetryDelaysMs[_coverRetries++]);
+            _coverRetry.Start();
         }
         info.Art = _art;
         info.Accent = _accent;

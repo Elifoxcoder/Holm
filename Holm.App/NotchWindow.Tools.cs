@@ -110,12 +110,20 @@ public sealed partial class NotchWindow
         return button;
     }
 
+    static Control HomeIcon(IBrush brush, double size) => new Avalonia.Controls.Shapes.Path
+    {
+        Data = Geometry.Parse("M 1.5,7.5 L 7.5,2 L 13.5,7.5 M 3.5,6.5 V 13 H 6.2 V 9.5 H 8.8 V 13 H 11.5 V 6.5"),
+        Stroke = brush, StrokeThickness = 1.4, StrokeLineCap = PenLineCap.Round, StrokeJoin = PenLineJoin.Round,
+        Width = size, Height = size, Stretch = Stretch.Uniform,
+        HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+    };
+
     /// <summary>The tool row at the top of the open notch.</summary>
     Control BuildToolRow()
     {
-        _homeToolBtn = ToolWord("Home", "\uE80F");
-        ToolTip.SetTip(_homeToolBtn, "Home (notch start screen)");
-        _homeToolBtn.Click += () => ShowTool(Tool.None);
+        _homeToolBtn = ToolWord("Home", HomeIcon(Look.Aero ? Look.Ink : Dim, 14));
+        ToolTip.SetTip(_homeToolBtn, "Home (start page)");
+        _homeToolBtn.Click += () => { SetClockView(false); ShowTool(Tool.None); };
         _toolBar.Children.Add(_homeToolBtn);
         _notesToolBtn = ToolButton("Notes", "", Tool.Notes, "Notes");
         _remindersToolBtn = ToolButton("Reminders", BellGlyph, Tool.Reminders, "Reminders");

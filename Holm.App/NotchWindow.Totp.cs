@@ -105,56 +105,74 @@ public sealed partial class NotchWindow
         else
         {
             long nowMs = Environment.TickCount64;
-            foreach (var entry in entries)
+            for (int i = 0; i < entries.Count; i += 2)
             {
-                var e = entry;
-                var (code, rem, _) = TotpCode.Generate(e);
-                bool copied = _copiedTotpId == e.Id && nowMs < _copiedTotpUntil;
-
-                var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"), Margin = new Thickness(4, 2) };
-                grid.Children.Add(new TextBlock
+                var pair = new Grid { ColumnDefinitions = new ColumnDefinitions("*,6,*") };
+                pair.Children.Add(BuildTotpTile(entries[i], nowMs));
+                if (i + 1 < entries.Count)
                 {
-                    Text = e.DisplayTitle,
-                    FontSize = 13, FontWeight = FontWeight.Medium,
-                    Foreground = Look.Ink,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                    Margin = new Thickness(0, 0, 10, 0),
-                });
-
-                var codeText = new TextBlock
-                {
-                    Text = copied ? "Copied" : TotpCode.Format(code),
-                    FontSize = copied ? 14 : 20,
-                    FontWeight = FontWeight.Bold,
-                    FontFamily = copied ? Look.Font : Fonts.Mono,
-                    Foreground = copied ? GreenBrush : (rem <= 5 ? RedBrush : Look.Ink),
-                    VerticalAlignment = VerticalAlignment.Center,
-                };
-                Grid.SetColumn(codeText, 1);
-                grid.Children.Add(codeText);
-
-                var remText = new TextBlock
-                {
-                    Text = $"{rem}s",
-                    FontSize = 10.5,
-                    Foreground = rem <= 5 ? RedBrush : Faint,
-                    VerticalAlignment = VerticalAlignment.Center,
-                    Margin = new Thickness(8, 0, 0, 0),
-                    Width = 22,
-                    TextAlignment = TextAlignment.Right,
-                };
-                Grid.SetColumn(remText, 2);
-                grid.Children.Add(remText);
-
-                var rowBtn = NotchButton.Row(grid);
-                ToolTip.SetTip(rowBtn, "Click to copy code");
-                rowBtn.Click += () => _ = CopyTotpCodeAsync(e, code);
-                _totpRows.Children.Add(rowBtn);
+                    var rightTile = BuildTotpTile(entries[i + 1], nowMs);
+                    Grid.SetColumn(rightTile, 2);
+                    pair.Children.Add(rightTile);
+                }
+                _totpRows.Children.Add(pair);
             }
         }
         if (!_totpTick.IsEnabled && _tool == Tool.Totp && _state == NotchState.Expanded) _totpTick.Start();
         if (_tool == Tool.Totp && _state == NotchState.Expanded) ApplyState(animate: true);
+    }
+
+    Control BuildTotpTile(TotpEntry entry, long nowMs)
+    {
+        var e = entry;
+        var (code, nextCode, rem, _) = TotpCode.Generate(e);
+        bool copied = _copiedTotpId == e.Id && nowMs < _copiedTotpUntil;
+
+        var content = new StackPanel { Spacing = 2, Margin = new Thickness(4, 3) };
+
+        var top = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
+        top.Children.Add(new TextBlock
+        {
+            Text = e.DisplayTitle,
+            FontSize = 12, FontWeight = FontWeight.Medium,
+            Foreground = Dim,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(0, 0, 6, 0),
+        });
+        var remText = new TextBlock
+        {
+            Text = $"{rem}s",
+            FontSize = 10,
+            Foreground = rem <= 5 ? RedBrush : Faint,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(remText, 1);
+        top.Children.Add(remText);
+        content.Children.Add(top);
+
+        // Upcoming (next) code shown small above the current code — never copied.
+        content.Children.Add(new TextBlock
+        {
+            Text = $"Next {TotpCode.Format(nextCode)}",
+            FontSize = 10,
+            FontFamily = Fonts.Mono,
+            Foreground = Faint,
+        });
+
+        content.Children.Add(new TextBlock
+        {
+            Text = copied ? "Copied" : TotpCode.Format(code),
+            FontSize = copied ? 15 : 21,
+            FontWeight = FontWeight.Bold,
+            FontFamily = copied ? Look.Font : Fonts.Mono,
+            Foreground = copied ? GreenBrush : (rem <= 5 ? RedBrush : Look.Ink),
+        });
+
+        var tile = NotchButton.Row(content);
+        ToolTip.SetTip(tile, "Click to copy current code");
+        tile.Click += () => _ = CopyTotpCodeAsync(e, code);
+        return tile;
     }
 
     async Task CopyTotpCodeAsync(TotpEntry entry, string code)

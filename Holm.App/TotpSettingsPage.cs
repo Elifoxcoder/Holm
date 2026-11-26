@@ -218,7 +218,7 @@ sealed class TotpSettingsPage : HubView
         foreach (var entry in entries)
         {
             var e = entry;
-            var (code, rem, _) = TotpCode.Generate(e);
+            var (code, nextCode, rem, _) = TotpCode.Generate(e);
             var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto,Auto") };
 
             var left = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
@@ -228,14 +228,24 @@ sealed class TotpSettingsPage : HubView
             row.Children.Add(left);
 
             var codeStack = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Spacing = 8, Margin = new Thickness(12, 0) };
-            codeStack.Children.Add(new TextBlock
+            var codeCol = new StackPanel { HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+            codeCol.Children.Add(new TextBlock
+            {
+                Text = $"Next {TotpCode.Format(nextCode)}",
+                FontSize = 10.5,
+                FontFamily = Fonts.Mono,
+                Foreground = HubTheme.Faint,
+                HorizontalAlignment = HorizontalAlignment.Right,
+            });
+            codeCol.Children.Add(new TextBlock
             {
                 Text = TotpCode.Format(code),
                 FontSize = 20, FontWeight = FontWeight.Bold,
                 FontFamily = Fonts.Mono,
                 Foreground = rem <= 5 ? HubTheme.Red : Look.Ink,
-                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Right,
             });
+            codeStack.Children.Add(codeCol);
             codeStack.Children.Add(new TextBlock
             {
                 Text = $"{rem}s",

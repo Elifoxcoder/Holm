@@ -79,6 +79,7 @@ public sealed partial class NotchWindow
         var weather = new MenuItem { Header = "Weather" };
         var collapsedSize = new MenuItem { Header = "Collapsed size" };
         var expandedSize = new MenuItem { Header = "Expanded size" };
+        var expandedWidth = new MenuItem { Header = "Expanded width" };
         var ai = new MenuItem { Header = "AI button" };
         var messages = new MenuItem { Header = "Messages" };
         var quiet = new MenuItem { Header = "Quiet hours" };
@@ -93,6 +94,7 @@ public sealed partial class NotchWindow
         customize.Items.Add(ai);
         customize.Items.Add(collapsedSize);
         customize.Items.Add(expandedSize);
+        customize.Items.Add(expandedWidth);
         customize.Items.Add(bounceLevel);
         var beamText = new MenuItem { Header = "Beam text" };
         var receive = new MenuItem { Header = "Receive with copied code" };
@@ -137,6 +139,7 @@ public sealed partial class NotchWindow
             mute.IsChecked = _settings.MutePopOuts;
             FillSizeMenu(collapsedSize, expanded: false);
             FillSizeMenu(expandedSize, expanded: true);
+            FillExpandedWidthMenu(expandedWidth);
         };
         // The notch stays as it is while its menu is open; once it has closed, it closes too if the mouse has gone.
         menu.Closed += (_, _) =>

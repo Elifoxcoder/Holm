@@ -123,26 +123,35 @@ class TotpCode {
     return sb.toString();
   }
 
-  static ({String code, int remaining, int period}) generate(TotpEntry entry, {int? unixSeconds}) {
+  static ({String code, String nextCode, int remaining, int period}) generate(TotpEntry entry, {int? unixSeconds}) {
     final period = (entry.period >= 5 && entry.period <= 300) ? entry.period : 30;
     final digits = (entry.digits == 6 || entry.digits == 7 || entry.digits == 8) ? entry.digits : 6;
     final now = unixSeconds ?? (DateTime.now().millisecondsSinceEpoch ~/ 1000);
-    var counter = now ~/ period;
+    final counter = now ~/ period;
     final remaining = period - (now % period);
 
     final key = decodeBase32(entry.secret);
     if (key == null || key.isEmpty) {
-      return (code: '-' * digits, remaining: remaining, period: period);
+      final dash = '-' * digits;
+      return (code: dash, nextCode: dash, remaining: remaining, period: period);
     }
 
+    final algo = entry.algorithm.toUpperCase();
+    final code = _computeAt(key, counter, digits, algo);
+    final next = _computeAt(key, counter + 1, digits, algo);
+    return (code: code, nextCode: next, remaining: remaining, period: period);
+  }
+
+  static String _computeAt(Uint8List key, int counter, int digits, String algo) {
+    var c = counter;
     final msg = Uint8List(8);
     for (var i = 7; i >= 0; i--) {
-      msg[i] = counter & 0xff;
-      counter >>= 8;
+      msg[i] = c & 0xff;
+      c >>= 8;
     }
 
     final HMac hmac;
-    switch (entry.algorithm.toUpperCase()) {
+    switch (algo) {
       case 'SHA256':
         hmac = HMac(SHA256Digest(), 64);
       case 'SHA512':
@@ -160,8 +169,7 @@ class TotpCode {
         (hash[offset + 3] & 0xff);
 
     final mod = digits == 7 ? 10000000 : digits == 8 ? 100000000 : 1000000;
-    final code = (binary % mod).toString().padLeft(digits, '0');
-    return (code: code, remaining: remaining, period: period);
+    return (binary % mod).toString().padLeft(digits, '0');
   }
 
   static String format(String code) {

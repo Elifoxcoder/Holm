@@ -23,9 +23,10 @@ public sealed class TotpTests
             Period = 30,
             Algorithm = "SHA1",
         };
-        var (code59, _, _) = TotpCode.Generate(entry, unixSeconds: 59);
+        var (code59, next59, _, _) = TotpCode.Generate(entry, unixSeconds: 59);
         Assert.Equal("94287082", code59);
-        var (code1111111109, _, _) = TotpCode.Generate(entry, unixSeconds: 1111111109);
+        Assert.NotEqual(code59, next59);
+        var (code1111111109, _, _, _) = TotpCode.Generate(entry, unixSeconds: 1111111109);
         Assert.Equal("07081804", code1111111109);
     }
 

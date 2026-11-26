@@ -116,6 +116,10 @@ internal sealed class AppSettings
     public bool TeamsPopups { get; set; } = true;
     /// <summary>With <see cref="AllNotifications"/>: Spotify notifications pop out too. Off by default (Spotify sends a toast on every track change).</summary>
     public bool SpotifyPopups { get; set; }
+    /// <summary>Show unread messenger badges (e.g. WhatsApp, Discord) on the closed/minimized notch. On by default.</summary>
+    public bool ClosedNotchMessages { get; set; } = true;
+    /// <summary>Custom width (in DIPs) of the expanded desktop notch (420–820, default 520).</summary>
+    public double ExpandedWidth { get; set; } = 520;
     /// <summary>A login code the phone found in a notification pops out with Copy (the phone app's "Codes to your PC").</summary>
     public bool PhoneCodes { get; set; } = true;
     /// <summary>Holm takes the volume and media keys, so Windows' own pop-up stays away and only the notch shows them. Off by default.</summary>

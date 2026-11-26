@@ -96,7 +96,7 @@ public static class TotpCode
         return sb.ToString();
     }
 
-    public static (string Code, int Remaining, int Period) Generate(TotpEntry entry, long? unixSeconds = null)
+    public static (string Code, string NextCode, int Remaining, int Period) Generate(TotpEntry entry, long? unixSeconds = null)
     {
         int period = entry.Period is >= 5 and <= 300 ? entry.Period : 30;
         int digits = entry.Digits is 6 or 7 or 8 ? entry.Digits : 6;
@@ -105,8 +105,20 @@ public static class TotpCode
         int remaining = period - (int)(now % period);
 
         byte[]? key = DecodeBase32(entry.Secret);
-        if (key == null || key.Length == 0) return (new string('-', digits), remaining, period);
+        if (key == null || key.Length == 0)
+        {
+            string dash = new string('-', digits);
+            return (dash, dash, remaining, period);
+        }
 
+        string algo = (entry.Algorithm ?? "SHA1").ToUpperInvariant();
+        string code = ComputeAt(key, counter, digits, algo);
+        string next = ComputeAt(key, counter + 1, digits, algo);
+        return (code, next, remaining, period);
+    }
+
+    static string ComputeAt(byte[] key, long counter, int digits, string algo)
+    {
         Span<byte> msg = stackalloc byte[8];
         for (int i = 7; i >= 0; i--)
         {
@@ -114,7 +126,7 @@ public static class TotpCode
             counter >>= 8;
         }
 
-        byte[] hash = (entry.Algorithm ?? "SHA1").ToUpperInvariant() switch
+        byte[] hash = algo switch
         {
             "SHA256" => HMACSHA256.HashData(key, msg),
             "SHA512" => HMACSHA512.HashData(key, msg),
@@ -128,8 +140,7 @@ public static class TotpCode
                    | (hash[offset + 3] & 0xFF);
 
         int mod = digits switch { 7 => 10_000_000, 8 => 100_000_000, _ => 1_000_000 };
-        string code = (binary % mod).ToString().PadLeft(digits, '0');
-        return (code, remaining, period);
+        return (binary % mod).ToString().PadLeft(digits, '0');
     }
 
     public static string Format(string code)

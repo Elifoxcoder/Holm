@@ -348,11 +348,36 @@ public sealed partial class NotchWindow
     // ───────────── sizes ─────────────
 
     static readonly (string Name, double Scale)[] Sizes = { ("Small", 0.85), ("Normal", 1), ("Large", 1.15), ("Extra large", 1.3) };
+    static readonly (string Name, double Width)[] ExpandedWidths =
+    {
+        ("Compact (460 px)", 460),
+        ("Normal (520 px)", 520),
+        ("Wide (620 px)", 620),
+        ("Extra wide (720 px)", 720),
+        ("Ultra wide (820 px)", 820),
+    };
 
     /// <summary>Apply a size preference immediately and keep both states centred on the screen.</summary>
     void ApplyScale()
     {
         ApplyState(animate: false);
+    }
+
+    void FillExpandedWidthMenu(MenuItem menu)
+    {
+        menu.Items.Clear();
+        double selected = CurrentExpandedWidth;
+        foreach (var (name, width) in ExpandedWidths)
+        {
+            var item = new MenuItem { Header = name, ToggleType = MenuItemToggleType.Radio, IsChecked = Math.Abs(selected - width) < 5 };
+            item.Click += (_, _) =>
+            {
+                _settings.ExpandedWidth = width;
+                _settings.Save();
+                ApplyScale();
+            };
+            menu.Items.Add(item);
+        }
     }
 
     void FillSizeMenu(MenuItem menu, bool expanded)

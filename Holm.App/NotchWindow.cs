@@ -312,7 +312,7 @@ public sealed partial class NotchWindow : Window
                    : _info?.IsPlaying == true ? NotchState.Media // a running timer shows in place of the equalizer
                    : _timer != null ? NotchState.Timer
                    : HasFocumon ? NotchState.Focumon
-                   : _messages.Count > 0 || HasUpdateNotification ? NotchState.Badge
+                   : (_settings.ClosedNotchMessages && _messages.Count > 0) || HasUpdateNotification ? NotchState.Badge
                    : NotchState.Idle;
 
         // Over a maximized browser the notch is the idle pill, so the tabs under it can be clicked.
@@ -336,8 +336,9 @@ public sealed partial class NotchWindow : Window
                 // A page that just changed (rows added, a longer note) is still waiting for layout, and measuring
                 // only the top would hand back its old size: lay out first.
                 UpdateLayout();
-                _expandedView.Measure(new Size(ExpandedWidth, double.PositiveInfinity));
-                (w, h, r) = (ExpandedWidth, Math.Ceiling(_expandedView.DesiredSize.Height) + 18, 32);
+                double expW = CurrentExpandedWidth;
+                _expandedView.Measure(new Size(expW, double.PositiveInfinity));
+                (w, h, r) = (expW, Math.Ceiling(_expandedView.DesiredSize.Height) + 18, 32);
                 break;
             case NotchState.Share:
                 _shareView.IsVisible = true;
@@ -427,12 +428,13 @@ public sealed partial class NotchWindow : Window
 
     double CollapsedScale => Math.Clamp(_settings.CollapsedScale, 0.7, 1.5);
     double ExpandedScale => Math.Clamp(_settings.ExpandedScale, 0.7, 1.5);
+    double CurrentExpandedWidth => Math.Clamp(_settings.ExpandedWidth > 0 ? _settings.ExpandedWidth : ExpandedWidth, 420, 820);
 
     void FitWindowWidth(double width)
     {
         // Room for the opening spring's overshoot (the same 12 % as the hit region): growing the window frame by frame
         // moved it on the screen by a pixel each time, and the opening notch shook.
-        double preferred = Math.Ceiling(Math.Max(BaseWidth, (ExpandedWidth + 2 * MaxEar) * 1.12) * Math.Max(CollapsedScale, ExpandedScale));
+        double preferred = Math.Ceiling(Math.Max(BaseWidth, (CurrentExpandedWidth + 2 * MaxEar) * 1.12) * Math.Max(CollapsedScale, ExpandedScale));
         double needed = Math.Min(_screenWidth, Math.Max(preferred, Math.Ceiling(width) + NotchPlacement.WidthPadding));
         if (Width == needed) return;
         Width = needed;

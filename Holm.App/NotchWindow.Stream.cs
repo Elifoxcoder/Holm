@@ -23,7 +23,8 @@ namespace Holm.App;
 /// </summary>
 public sealed partial class NotchWindow
 {
-    const int FrameMs = 125; // up to 8 pictures a second; a slow connection gets fewer
+    const int FrameMs = 42; // 24 fps (1000 / 24 ≈ 41.7 ms); a slow connection gets fewer
+    const int MaxStreamReconnects = 5;
     /// <summary>The longer side of a streamed picture, as in the WPF app: text stays readable, a public relay copes.</summary>
     const int StreamMaxSide = 1280;
 
@@ -32,15 +33,14 @@ public sealed partial class NotchWindow
     StreamBadge? _badge;
     DateTime _streamStarted;
     readonly HashSet<string> _streamInvites = new();
+    readonly Dictionary<string, (Friend Friend, byte[] Secret, int Attempt)> _streamSessions = new();
+    readonly HashSet<string> _streamReconnecting = new();
     /// <summary>The invitation waiting for Watch, and our side's connection to the relay, made at once (so the streamer sees that it arrived).</summary>
     (Friend Friend, byte[] Secret, Task<Stream> Link)? _streamOffer;
     DispatcherTimer? _offerTimeout;
-    /// <summary>
-    /// After Not now, or after closing a friend's stream: their further invitations are declined quietly for a minute
-    /// (by friend key), so a stream that goes on doesn't keep asking again and again.
-    /// </summary>
+    /// <summary>Short debounce only after clicking Not now (never after leaving a stream/call).</summary>
     readonly Dictionary<string, DateTime> _streamQuietUntil = new();
-    static readonly TimeSpan StreamQuiet = TimeSpan.FromSeconds(60);
+    static readonly TimeSpan StreamQuiet = TimeSpan.FromSeconds(5);
     /// <summary>Where Holm's own windows are in the streamed area, in its pixels, where the system can't hide them; read by the capture thread.</summary>
     volatile PixelRect[] _streamMask = Array.Empty<PixelRect>();
     bool _hiddenFromCapture;
@@ -131,6 +131,8 @@ public sealed partial class NotchWindow
                 EndTask("", RedBrush, "Couldn't read the screen", $"Error {ErrorCodes.ScreenCapture} · the screen couldn't be captured");
                 return;
             }
+            _streamQuietUntil.Remove(friend.Key);
+            _streamSessions[friend.Key] = (friend, secret, 0);
             _stream!.Add(friend.Key, friend.Name, channel, paced);
             EndTask("", RedBrush, "You're live", $"{friend.Name} is watching your screen · Stop in the red badge");
         }
@@ -170,6 +172,7 @@ public sealed partial class NotchWindow
 
         var host = _stream = new StreamHost();
         host.ViewersChanged += () => Dispatcher.UIThread.Post(OnViewersChanged);
+        host.ViewerDropped += (key, name, cleanEnd) => Dispatcher.UIThread.Post(() => OnViewerDropped(key, name, cleanEnd));
         _streamStarted = DateTime.UtcNow;
         var stop = _captureStop = new CancellationTokenSource();
         // Capturing never waits for the network.
@@ -289,16 +292,73 @@ public sealed partial class NotchWindow
         return data.ToArray();
     }
 
+    void OnViewerDropped(string key, string name, bool cleanEnd)
+    {
+        if (cleanEnd || _stream == null || !_streamSessions.TryGetValue(key, out var session))
+        {
+            _streamSessions.Remove(key);
+            return;
+        }
+        if (!_streamReconnecting.Add(key)) return;
+        _ = ReconnectViewerAsync(key, session.Friend, session.Secret, session.Attempt);
+    }
+
+    async Task ReconnectViewerAsync(string key, Friend friend, byte[] originalSecret, int startAttempt)
+    {
+        try
+        {
+            var stop = _captureStop?.Token ?? CancellationToken.None;
+            for (int attempt = startAttempt + 1; attempt <= MaxStreamReconnects && _stream != null && !stop.IsCancellationRequested; attempt++)
+            {
+                Diag.Log($"Stream: reconnecting {friend.Name} (attempt {attempt}/{MaxStreamReconnects})");
+                try
+                {
+                    byte[] nextSecret = StreamProtocol.ReconnectSecret(originalSecret, attempt);
+                    var (host, port) = RelayEndpoint();
+                    using var wait = CancellationTokenSource.CreateLinkedTokenSource(stop);
+                    wait.CancelAfter(TimeSpan.FromSeconds(15));
+                    var link = await RelayLink.ConnectWithRetryAsync(host, port, ShareCode.RelayToken(nextSecret), TimeSpan.FromSeconds(12), wait.Token);
+                    var channel = new SecureChannel(link, ShareCode.Key(nextSecret), initiator: true);
+                    bool watching, paced;
+                    try { (watching, paced) = await StreamProtocol.AnswerAsync(channel, wait.Token); }
+                    catch { channel.Dispose(); throw; }
+                    if (watching && _stream != null)
+                    {
+                        _streamSessions[key] = (friend, originalSecret, attempt);
+                        _stream.Add(key, friend.Name, channel, paced);
+                        Diag.Log($"Stream: reconnected {friend.Name}");
+                        return;
+                    }
+                    channel.Dispose();
+                    if (!watching) break;
+                }
+                catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }
+                catch (Exception ex) { Diag.Log($"Stream reconnect attempt {attempt} failed: {ex.Message}"); }
+                await Task.Delay(1000, stop).ConfigureAwait(false);
+            }
+            _streamSessions.Remove(key);
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                _streamReconnecting.Remove(key);
+                OnViewersChanged();
+            });
+        }
+    }
+
     void OnViewersChanged()
     {
         if (_stream == null) return;
         var names = _stream.Names;
-        if (names.Count == 0 && _streamInvites.Count == 0)
+        if (names.Count == 0 && _streamInvites.Count == 0 && _streamReconnecting.Count == 0)
         {
             StopStreaming();
             return;
         }
-        _badge?.ShowViewers(names);
+        _badge?.ShowViewers(names.Count > 0 ? names : new[] { "Reconnecting…" });
         PlaceBadge();
     }
 
@@ -316,6 +376,8 @@ public sealed partial class NotchWindow
     {
         if (_stream is not { } host) return;
         _stream = null;
+        _streamSessions.Clear();
+        _streamReconnecting.Clear();
         _captureStop?.Cancel();
         _captureStop = null;
         _streamMask = Array.Empty<PixelRect>();
@@ -377,7 +439,11 @@ public sealed partial class NotchWindow
         _streamOffer = null;
         HideTask();
         Diag.Log(watch ? $"Stream: watching {offer.Friend.Name}" : $"Stream: not watching {offer.Friend.Name}");
-        if (watch) _ = WatchStreamAsync(offer.Friend, offer.Secret, offer.Link);
+        if (watch)
+        {
+            _streamQuietUntil.Remove(offer.Friend.Key);
+            _ = WatchStreamAsync(offer.Friend, offer.Secret, offer.Link);
+        }
         else
         {
             _streamQuietUntil[offer.Friend.Key] = DateTime.UtcNow + StreamQuiet;
@@ -391,30 +457,64 @@ public sealed partial class NotchWindow
         viewer.Show();
         viewer.Activate();
         bool counted = false;
+        int attempt = 0;
+        Task<Stream>? nextLink = link;
+        byte[] currentSecret = secret;
         try
         {
-            var stream = await link.WaitAsync(viewer.Stopped);
-            await using var channel = new SecureChannel(stream, ShareCode.Key(secret), initiator: false);
-            bool ended = await StreamProtocol.WatchAsync(channel, frame =>
+            while (!viewer.Stopped.IsCancellationRequested)
             {
-                viewer.ShowFrame(frame);
-                if (counted) return;
-                counted = true;
-                Dispatcher.UIThread.Post(() => Achieve(AchievementBook.Watched));
-            }, viewer.Stopped);
-            viewer.Ended(ended ? $"{friend.Name} stopped streaming" : "The stream stopped");
+                try
+                {
+                    Stream stream;
+                    if (nextLink != null)
+                    {
+                        stream = await nextLink.WaitAsync(viewer.Stopped);
+                        nextLink = null;
+                    }
+                    else
+                    {
+                        var (host, port) = RelayEndpoint();
+                        using var wait = CancellationTokenSource.CreateLinkedTokenSource(viewer.Stopped);
+                        wait.CancelAfter(TimeSpan.FromSeconds(15));
+                        stream = await RelayLink.ConnectWithRetryAsync(host, port, ShareCode.RelayToken(currentSecret), TimeSpan.FromSeconds(12), wait.Token);
+                    }
+                    await using var channel = new SecureChannel(stream, ShareCode.Key(currentSecret), initiator: false);
+                    bool ended = await StreamProtocol.WatchAsync(channel, frame =>
+                    {
+                        viewer.ShowFrame(frame);
+                        if (counted) return;
+                        counted = true;
+                        Dispatcher.UIThread.Post(() => Achieve(AchievementBook.Watched));
+                    }, viewer.Stopped);
+                    if (ended)
+                    {
+                        viewer.Ended($"{friend.Name} stopped streaming");
+                        return;
+                    }
+                }
+                catch (OperationCanceledException) when (viewer.Stopped.IsCancellationRequested) { return; }
+                catch (Exception ex) when (ex is OperationCanceledException or IOException or System.Net.Sockets.SocketException or InvalidDataException or System.Security.Cryptography.CryptographicException)
+                {
+                    Diag.Log($"Stream connection lost ({attempt}): {ex.Message}");
+                }
+
+                attempt++;
+                if (attempt > MaxStreamReconnects || viewer.Stopped.IsCancellationRequested)
+                {
+                    if (!viewer.Stopped.IsCancellationRequested) viewer.Ended($"Lost connection to {friend.Name}'s stream");
+                    return;
+                }
+                viewer.Reconnecting($"Connection lost · Reconnecting to {friend.Name} ({attempt}/{MaxStreamReconnects})…");
+                currentSecret = StreamProtocol.ReconnectSecret(secret, attempt);
+                await Task.Delay(1000, viewer.Stopped);
+            }
         }
         catch (OperationCanceledException) when (viewer.Stopped.IsCancellationRequested) { } // closed the window
-        catch (OperationCanceledException) { viewer.Ended($"Couldn't reach {friend.Name}'s stream · Error {ErrorCodes.PartnerNoShow}"); }
-        catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or InvalidDataException or System.Security.Cryptography.CryptographicException)
-        {
-            Diag.Log($"Watching a stream: {ErrorCodes.Of(ex).Code}: {ex}");
-            if (!viewer.Stopped.IsCancellationRequested) viewer.Ended("The stream stopped · " + ErrorCodes.Describe(ex));
-        }
         finally
         {
-            // Closed the window (or the stream ended): no new invitation from them for a minute.
-            if (viewer.Stopped.IsCancellationRequested) _streamQuietUntil[friend.Key] = DateTime.UtcNow + StreamQuiet;
+            // Never lock out the friend as "busy" after leaving a stream.
+            _streamQuietUntil.Remove(friend.Key);
         }
     }
 

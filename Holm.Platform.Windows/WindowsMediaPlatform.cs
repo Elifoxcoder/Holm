@@ -159,8 +159,14 @@ public sealed class WindowsMediaPlatform : IMediaPlatform
         try
         {
             var thumbnail = _properties?.Thumbnail;
+            if (thumbnail == null && _session != null)
+            {
+                try { _properties = await _session.TryGetMediaPropertiesAsync(); } catch { }
+                thumbnail = _properties?.Thumbnail;
+            }
             if (thumbnail == null) return null;
             using var stream = await thumbnail.OpenReadAsync();
+            try { stream.Seek(0); } catch { }
             using var input = stream.AsStreamForRead();
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             byte[] bytes = await BoundedIo.ReadAllBytesAsync(input, MaxCoverBytes, timeout.Token);

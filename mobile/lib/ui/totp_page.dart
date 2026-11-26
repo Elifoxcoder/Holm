@@ -280,16 +280,27 @@ class _TotpPageState extends State<TotpPage> {
                         ]),
                       ),
                       const SizedBox(width: 12),
-                      Text(
-                        copied ? 'Copied' : TotpCode.format(gen.code),
-                        style: TextStyle(
-                          fontSize: copied ? 18 : 26,
-                          fontWeight: FontWeight.w700,
-                          fontFeatures: const [FontFeature.tabularFigures()],
-                          letterSpacing: copied ? 0 : 1.5,
-                          color: copied ? HolmColors.green : (low ? HolmColors.red : HolmColors.ink),
+                      Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                        Text(
+                          'Next ${TotpCode.format(gen.nextCode)}',
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            fontFeatures: [FontFeature.tabularFigures()],
+                            color: HolmColors.faint,
+                          ),
                         ),
-                      ),
+                        const SizedBox(height: 1),
+                        Text(
+                          copied ? 'Copied' : TotpCode.format(gen.code),
+                          style: TextStyle(
+                            fontSize: copied ? 18 : 26,
+                            fontWeight: FontWeight.w700,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                            letterSpacing: copied ? 0 : 1.5,
+                            color: copied ? HolmColors.green : (low ? HolmColors.red : HolmColors.ink),
+                          ),
+                        ),
+                      ]),
                       const SizedBox(width: 10),
                       SizedBox(
                         width: 28,

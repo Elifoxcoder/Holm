@@ -48,6 +48,16 @@ public static class StreamProtocol
     /// <summary>A sign of life goes out when the screen hasn't changed for this long.</summary>
     public static readonly TimeSpan AliveEvery = TimeSpan.FromSeconds(3);
 
+    /// <summary>Derives a deterministic 32-byte reconnect secret for attempt 1..N so both sides meet on the relay without a new invite.</summary>
+    public static byte[] ReconnectSecret(byte[] originalSecret, int attempt)
+    {
+        var label = System.Text.Encoding.UTF8.GetBytes($"holm-stream-reconnect:{attempt}");
+        var input = new byte[originalSecret.Length + label.Length];
+        originalSecret.CopyTo(input, 0);
+        label.CopyTo(input, originalSecret.Length);
+        return System.Security.Cryptography.SHA256.HashData(input);
+    }
+
     public static byte[] FrameMessage(byte[] jpeg)
     {
         if (jpeg.Length + 1 > SecureChannel.MaxPlaintext) throw new ArgumentException("Frame too large.", nameof(jpeg));
@@ -71,6 +81,17 @@ public static class StreamProtocol
             quiet.CancelAfter(Silence);
             byte[] message;
             try { message = await channel.ReceiveAsync(quiet.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Tell the streamer we closed intentionally so they don't wait to reconnect.
+                try
+                {
+                    using var bye = new CancellationTokenSource(TimeSpan.FromMilliseconds(350));
+                    await channel.SendAsync(new[] { End }, bye.Token).ConfigureAwait(false);
+                }
+                catch { }
+                throw;
+            }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return false; } // silence
             if (message.Length == 0) continue;
             switch (message[0])
@@ -134,6 +155,8 @@ public sealed class StreamHost : IAsyncDisposable
 
     /// <summary>A viewer joined or left (any thread).</summary>
     public event Action? ViewersChanged;
+    /// <summary>A viewer disconnected (key, name, cleanEnd: true if viewer sent End intentionally).</summary>
+    public event Action<string, string, bool>? ViewerDropped;
 
     public DateTime Started { get; } = DateTime.UtcNow;
 
@@ -252,7 +275,9 @@ public sealed class StreamHost : IAsyncDisposable
             while (true)
             {
                 byte[] message = await viewer.Channel.ReceiveAsync(_stop.Token).ConfigureAwait(false);
-                if (message.Length == 0 || message[0] != StreamProtocol.Ack) continue;
+                if (message.Length == 0) continue;
+                if (message[0] == StreamProtocol.End) { Remove(viewer, cleanEnd: true); return; }
+                if (message[0] != StreamProtocol.Ack) continue;
                 double took = System.Diagnostics.Stopwatch.GetElapsedTime(Interlocked.Read(ref viewer.SentAt)).TotalMilliseconds;
                 lock (_lock) viewer.RoundTripMs = viewer.RoundTripMs == 0 ? took : viewer.RoundTripMs * 0.6 + took * 0.4;
                 Interlocked.Increment(ref _receipts);
@@ -262,16 +287,17 @@ public sealed class StreamHost : IAsyncDisposable
         catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException or System.Net.Sockets.SocketException
                                    or InvalidDataException or System.Security.Cryptography.CryptographicException)
         {
-            Remove(viewer);
+            Remove(viewer, cleanEnd: false);
         }
     }
 
-    void Remove(Viewer viewer)
+    void Remove(Viewer viewer, bool cleanEnd = false)
     {
-        bool removed;
-        lock (_lock) removed = _viewers.Remove(viewer);
+        bool removed, ended;
+        lock (_lock) { removed = _viewers.Remove(viewer); ended = _ended; }
         if (!removed) return;
         try { viewer.Channel.Dispose(); } catch (Exception) { }
+        if (!ended) ViewerDropped?.Invoke(viewer.Key, viewer.Name, cleanEnd);
         ViewersChanged?.Invoke();
     }
 

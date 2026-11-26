@@ -179,6 +179,8 @@ public sealed partial class NotchWindow
                 s => s.TeamsPopups, on => { _settings.TeamsPopups = on; Save(); }),
             Switch("Spotify notifications", "\uE8D6", "With all notifications on: Spotify notifications pop out too. Off by default so track changes don't pop out.",
                 s => s.SpotifyPopups, on => { _settings.SpotifyPopups = on; Save(); }),
+            Switch("Messages in closed notch", "\uE8BD", "Show unread messenger badges (WhatsApp, Discord, …) on the minimized notch. Turn off to only see them when the notch is open.",
+                s => s.ClosedNotchMessages, on => { _settings.ClosedNotchMessages = on; Save(); RefreshMessages(); ApplyState(animate: true); }),
         };
         if (_mediaKeys.IsSupported)
             list.Add(Switch("Volume and media only in the notch", "\uE995", "HolyNotch takes the volume and media keys and changes the volume or track itself, so Windows' own pop-up doesn't show and the notch does. Brightness keys stay with Windows.",

@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.5.3 – 2026-11-26
+
+### Added
+
+- **TOTP 2-column layout (Desktop)** and **upcoming next code preview** (small above current code, not copied) on both Desktop and Android 1.4.10.
+- **Adjustable expanded notch width** (*Right-click › Customize › Expanded width*: 460 px – 820 px).
+- **Messages in closed notch toggle** (*Settings › Pop-outs › Messages in closed notch*) to hide WhatsApp / messenger badges on the minimized notch.
+- **Screen sharing at 24 fps** with **automatic reconnect** on connection loss.
+
+### Fixed
+
+- **Home button** in the notch action row now renders a crisp vector house icon and exits both tools and Large Clock back to the start page.
+- **Spotify album cover art** on Desktop now retries cleanly after track changes and resets thumbnail streams.
+- **Leaving a stream/call** no longer locks out the friend as "busy" for 60 seconds when inviting again.
+
 ## 2.5.2 – 2026-11-26
 
 ### Added

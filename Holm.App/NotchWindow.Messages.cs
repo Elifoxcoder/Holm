@@ -237,8 +237,10 @@ public sealed partial class NotchWindow
         _clearNotificationsBtn.IsVisible = _messages.Count > 0;
         int count = _messages.Sum(m => m.Count) + (HasUpdateNotification ? 1 : 0);
         string totalText = count > 99 ? "99+" : count.ToString(CultureInfo.InvariantCulture);
+        bool showClosed = _settings.ClosedNotchMessages;
         _badgeText.Text = _mediaBadgeText.Text = totalText;
-        _mediaBadge.IsVisible = count > 0;
+        _mediaBadge.IsVisible = showClosed && count > 0;
+        _mediaBadgeLogos.IsVisible = showClosed && count > 0;
         _badgeLogoList.Children.Clear();
         _mediaBadgeLogos.Children.Clear();
         _messageRows.Children.Clear();
@@ -260,8 +262,11 @@ public sealed partial class NotchWindow
 
         if (!Look.Instrument) // the instrument look shows only the count; the open notch says which apps wrote
         {
-            PopulateAppLogos(_badgeLogoList, groups.Select(g => g.App), BadgeLogoSize);
-            PopulateAppLogos(_mediaBadgeLogos, groups.Select(g => g.App), MediaBadgeLogoSize);
+            if (showClosed)
+            {
+                PopulateAppLogos(_badgeLogoList, groups.Select(g => g.App), BadgeLogoSize);
+                PopulateAppLogos(_mediaBadgeLogos, groups.Select(g => g.App), MediaBadgeLogoSize);
+            }
         }
         AddUpdateNotification();
         _mediaBadge.Background = _badgePill.Background = RedBrush;
