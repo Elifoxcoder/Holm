@@ -294,7 +294,7 @@ public sealed record FriendNote(FriendNoteKind Kind, string From, long Sent, byt
                                 string? RequestId = null, bool? Accepted = null, FriendProfile? Profile = null,
                                 string? Text = null, string? MessageId = null, FriendActivity? Activity = null, int? Trophies = null,
                                 string? Gif = null, string? Invite = null, string? Device = null, string? ForDevice = null, bool? Query = null,
-                                PhoneStatus? Phone = null, string? NoteId = null);
+                                PhoneStatus? Phone = null, string? NoteId = null, bool? IsPhone = null);
 
 /// <summary>
 /// What a friend is doing, as their notch shows it to friends who ask: listening to music, in a call, playing a game,
@@ -356,6 +356,8 @@ public enum FriendNoteKind
     /// (<see cref="FriendNote.Phone"/>). Holm before 2.3 leaves it unopened.
     /// </summary>
     Phone,
+    /// <summary>Live clipboard text synced between devices of the same account (non-private text only, not stored offline).</summary>
+    Clipboard,
 }
 
 public static class FriendNotes
@@ -439,6 +441,7 @@ public static class FriendNotes
                 FriendNoteKind.Reaction => "react",
                 FriendNoteKind.Device => "device",
                 FriendNoteKind.Phone => "phone",
+                FriendNoteKind.Clipboard => "clipboard",
                 _ => throw new ArgumentOutOfRangeException(nameof(note)),
             },
             F = note.From,
@@ -453,7 +456,7 @@ public static class FriendNotes
             // As base64 of the UTF-8: JSON would write each emoji as twelve characters.
             M = (note.Text ?? note.Phone?.Extra) is { } words ? Convert.ToBase64String(Encoding.UTF8.GetBytes(words)) : null,
             I = note.MessageId ?? note.Phone?.Key,
-            Y = note.Activity?.Kind ?? note.Phone?.Kind,
+            Y = note.Activity?.Kind ?? note.Phone?.Kind ?? (note.Kind == FriendNoteKind.Device && note.IsPhone == true ? "phone" : null),
             V = note.Activity?.Title ?? note.Phone?.Title,
             W = note.Activity?.Detail ?? note.Phone?.Detail,
             Z = note.Activity?.Since ?? note.Phone?.Since,
@@ -570,14 +573,16 @@ public static class FriendNotes
                 "stream" when dto.S != null && Convert.FromBase64String(dto.S) is { Length: ShareCode.SecretLength } streamSecret
                     => new FriendNote(FriendNoteKind.Stream, from, dto.T, Secret: streamSecret),
                 "chat" when ChatText.Clean(ChatText.FromNote(dto.M)) is { } message && Guid.TryParseExact(dto.I, "N", out _)
-                    => new FriendNote(FriendNoteKind.Chat, from, dto.T, Text: message, MessageId: dto.I,
+                    => new FriendNote(FriendNoteKind.Chat, from, dto.T, Code: dto.C, Text: message, MessageId: dto.I,
                                       Gif: dto.G == true ? ChatGif.Clean(message) : null),
                 // An emoji, or none (the reaction was taken away); anything else in it and the note is left unopened.
                 "react" when Guid.TryParseExact(dto.I, "N", out _) && (dto.M == null || ChatReaction.Clean(ChatText.FromNote(dto.M)) != null)
-                    => new FriendNote(FriendNoteKind.Reaction, from, dto.T, Text: dto.M == null ? null : ChatReaction.Clean(ChatText.FromNote(dto.M)), MessageId: dto.I),
-                "device" when OwnDevice.IsId(dto.D) => new FriendNote(FriendNoteKind.Device, from, dto.T, Query: dto.H == true ? true : null),
+                    => new FriendNote(FriendNoteKind.Reaction, from, dto.T, Code: dto.C, Text: dto.M == null ? null : ChatReaction.Clean(ChatText.FromNote(dto.M)), MessageId: dto.I),
+                "device" when OwnDevice.IsId(dto.D) => new FriendNote(FriendNoteKind.Device, from, dto.T, Query: dto.H == true ? true : null, IsPhone: dto.Y == "phone" ? true : null),
                 "phone" when OwnDevice.IsId(dto.D) && PhoneStatus.From(dto.Y, dto.V, dto.W, dto.Z, dto.A, ChatText.FromNote(dto.M)) is { } phone
                     => new FriendNote(FriendNoteKind.Phone, from, dto.T, Phone: phone with { Key = PhoneStatus.CleanKey(dto.I) }),
+                "clipboard" when OwnDevice.IsId(dto.D) && ChatText.Clean(ChatText.FromNote(dto.M)) is { } clip
+                    => new FriendNote(FriendNoteKind.Clipboard, from, dto.T, Text: clip),
                 _ => null, // a kind from a newer Holm: left unopened, as older ones leave "wave"
             };
             if (note != null)

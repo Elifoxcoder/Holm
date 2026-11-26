@@ -31,13 +31,13 @@ object NotchBridge {
     val handler = Handler(Looper.getMainLooper())
 
     // While the device is locked the overlay is hidden as well as these events being withheld from its engine.
-    private val safeLockEvents = setOf("battery", "volume", "orientation", "torch", "dnd", "wifi", "vpn", "outside")
+    private val safeLockEvents = setOf("battery", "volume", "orientation", "torch", "dnd", "wifi", "vpn", "outside", "pcQuery")
     internal val lockedNotchMethods = setOf(
         "media", "open", "openApp", "notificationAction", "shade", "reply", "clear", "call", "muteCall", "keyboard",
         "gesture", "phoneStatus", "beamScreenshot", "overview", "offerAnswer", "mute", "setVolume", "volumes",
     )
     private val lockedMainMethods = setOf(
-        "notchSettings", "holmEvent", "dismissNotification", "takeShared", "saveToDownloads", "copyUri", "apps",
+        "notchSettings", "holmEvent", "dismissNotification", "dismissAllNotifications", "takeShared", "saveToDownloads", "copyUri", "apps",
         "notifyUpdate", "installUpdate", "shizukuUnlock", "hidePopups", "open", "beamFile", "offerAnswer",
         "phoneStatus", "mute", "media",
     )
@@ -110,9 +110,30 @@ object NotchBridge {
     /** Drop events queued before the keyguard returned, so they cannot flash after an unlock. */
     fun clearPending() = pending.clear()
 
+    /** Battery/charging status is non-private and safe to forward while the phone is locked (stripping song/detail). */
+    fun safeLockedPhoneStatus(args: Any?): Map<String, Any?>? {
+        val m = args as? Map<*, *> ?: return null
+        val kind = m["kind"] as? String ?: return null
+        if (kind != "status" && kind != "battery") return null
+        val out = mutableMapOf<String, Any?>(
+            "kind" to kind,
+            "title" to m["title"],
+        )
+        if (kind == "battery") out["detail"] = m["detail"]
+        if (m.containsKey("on")) out["on"] = m["on"]
+        if (m.containsKey("since")) out["since"] = m["since"]
+        return out
+    }
+
     fun toMain(method: String, args: Any?) = handler.post {
         val locked = appContext?.let { isDeviceLocked(it) } == true
-        if (locked && method in lockedMainMethods) return@post
+        if (locked && method in lockedMainMethods) {
+            if (method == "phoneStatus") {
+                val safe = safeLockedPhoneStatus(args) ?: return@post
+                main?.invokeMethod(method, safe)
+            }
+            return@post
+        }
         main?.invokeMethod(method, args)
     }
 
@@ -153,12 +174,33 @@ object NotchBridge {
                     "camera" to camera(context),
                 )
             )
+            "batteryStatus" -> {
+                val intent = context.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+                val level = intent?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) ?: -1
+                val scale = intent?.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100) ?: 100
+                val status = intent?.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, 0) ?: 0
+                val plugged = (intent?.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0 ||
+                    status == android.os.BatteryManager.BATTERY_STATUS_CHARGING ||
+                    status == android.os.BatteryManager.BATTERY_STATUS_FULL
+                if (service != null) toNotch(mapOf("type" to "pcQuery"))
+                result.success(
+                    mapOf(
+                        "level" to if (level < 0 || scale <= 0) null else level * 100 / scale,
+                        "plugged" to plugged,
+                        "notchRunning" to (service != null),
+                    )
+                )
+            }
             "media" -> {
                 (args as? String)?.let { listener?.mediaAction(it, null) }
                 result.success(null)
             }
             "dismissNotification" -> {
                 (args as? String)?.let { listener?.clear(it) }
+                result.success(null)
+            }
+            "dismissAllNotifications" -> {
+                listener?.clearAll()
                 result.success(null)
             }
             "takeShared" -> {

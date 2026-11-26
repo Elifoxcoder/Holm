@@ -127,6 +127,7 @@ public sealed partial class NotchWindow
         _collapseDelay.Tick += (_, _) =>
         {
             _collapseDelay.Stop();
+            if (Environment.TickCount64 < _suppressPointerExitUntil) return;
             // Dragging a slider, a menu open or typing: try again shortly.
             if (PinnedClockOpen) return;
             if (_menuOpen || KeepOpenForTyping || _volSlider.IsDragging || _mixerDragging) { _collapseDelay.Start(); return; }
@@ -145,7 +146,7 @@ public sealed partial class NotchWindow
         _island.PointerExited += (_, _) =>
         {
             _prismRim?.ClearLight();
-            if (_positionHeld) return;
+            if (_positionHeld || Environment.TickCount64 < _suppressPointerExitUntil) return;
             _expandDelay.Stop();
             SetHoverBoost(false);
             if (_hovered && !PinnedClockOpen) _collapseDelay.Start();
@@ -176,6 +177,17 @@ public sealed partial class NotchWindow
     /// </summary>
     bool _stayClosed;
     Point _closedAt, _lastPointer;
+    long _suppressPointerExitUntil;
+
+    /// <summary>
+    /// Removing a hovered button from the visual tree causes Avalonia to fire a synthetic PointerExited on the notch.
+    /// Hold the notch open across that rebuild so clicking "Close" on a notification never collapses the notch.
+    /// </summary>
+    void HoldOpenAfterUiRebuild(int ms = 250)
+    {
+        _suppressPointerExitUntil = Environment.TickCount64 + ms;
+        _collapseDelay.Stop();
+    }
 
     void CloseFromInside()
     {

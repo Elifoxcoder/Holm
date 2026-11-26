@@ -111,6 +111,7 @@ public sealed partial class NotchWindow
             EndTask("", RedBrush, "Couldn't read the text", "From " + sender);
             return;
         }
+        _lastSyncedClip = text;
         if (await TrySetClipboardAsync(text))
         {
             try { File.Delete(path); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }

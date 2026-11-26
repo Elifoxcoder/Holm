@@ -74,8 +74,11 @@ class NearbyService {
     _udp!.broadcastEnabled = true;
     _udp!.listen(_onUdp, onError: (_) {});
     await _broadcast('query');
-    _announce = Timer.periodic(const Duration(seconds: 60), (_) {
-      _broadcast('hello');
+    Timer(const Duration(milliseconds: 400), () {
+      if (_udp != null) unawaited(_broadcast('query'));
+    });
+    _announce = Timer.periodic(const Duration(seconds: 30), (_) {
+      _broadcast('query');
       _prune();
     });
   }
@@ -99,7 +102,9 @@ class NearbyService {
   /// Asks everyone to answer now.
   Future<void> refresh() async {
     await _broadcast('query');
-    await Future<void>.delayed(const Duration(milliseconds: 700));
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    await _broadcast('query');
+    await Future<void>.delayed(const Duration(milliseconds: 350));
     _prune();
   }
 
@@ -142,7 +147,7 @@ class NearbyService {
     final bytes = _packet(type);
     for (final t in targets) {
       try {
-        udp.send(bytes, t, discoveryPort);
+        udp.send(bytes, t, _discoveryPort);
       } catch (_) {} // an interface that went away
     }
   }

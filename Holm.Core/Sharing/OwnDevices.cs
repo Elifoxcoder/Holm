@@ -10,7 +10,7 @@ namespace WinNotch.Sharing;
 // its own notes when they come back from the inbox, and files go to one device only ("N").
 
 /// <summary>Another device of ours that said it is running, and when.</summary>
-public sealed record OwnDevice(string Id, string Name, DateTime Seen)
+public sealed record OwnDevice(string Id, string Name, DateTime Seen, bool IsPhone = false)
 {
     public const int MaxName = 40;
 
@@ -30,6 +30,8 @@ public sealed record PhoneStatus(string Kind, string Title, string? Detail, long
 {
     /// <summary>From a PC to the phone: clear the notification with <see cref="Key"/> there. Not a status: never opened as one.</summary>
     public const string Dismiss = "dismiss";
+    /// <summary>From a PC to the phone: clear all clearable notifications there. Not a status: never opened as one.</summary>
+    public const string DismissAll = "dismiss-all";
     /// <summary>From a PC to the phone: the player there does <see cref="Title"/> (play, pause, toggle, next, previous). Not a status either.</summary>
     public const string Control = "control";
     public static readonly string[] MusicControls = { "play", "pause", "toggle", "next", "previous" };
@@ -94,18 +96,20 @@ public sealed class OwnDevices
     readonly Dictionary<string, OwnDevice> _seen = new(StringComparer.Ordinal);
 
     /// <summary>Notes that the device spoke; true when it is new here or has a new name (worth showing).</summary>
-    public bool Saw(string id, string name, DateTime now)
+    public bool Saw(string id, string name, DateTime now, bool isPhone = false)
     {
         if (!OwnDevice.IsId(id)) return false;
         string clean = new string(name.Where(c => !char.IsControl(c)).Take(OwnDevice.MaxName).ToArray()).Trim();
         if (clean.Length == 0) clean = "Holm";
-        bool shown = _seen.TryGetValue(id, out var before) && before.Name == clean && now - before.Seen < Fresh;
+        bool wasPhone = _seen.TryGetValue(id, out var before) && before.IsPhone;
+        bool phone = isPhone || wasPhone;
+        bool shown = before != null && before.Name == clean && before.IsPhone == phone && now - before.Seen < Fresh;
         // The same device under a new id (the phone app after an update or a reinstall): the old one is gone, not a
         // second device that never answers.
         var stale = _seen.Values.Where(d => d.Id != id && string.Equals(d.Name, clean, StringComparison.OrdinalIgnoreCase))
                                 .Select(d => d.Id).ToList();
         foreach (var old in stale) _seen.Remove(old);
-        _seen[id] = new OwnDevice(id, clean, now);
+        _seen[id] = new OwnDevice(id, clean, now, phone);
         return !shown || stale.Count > 0;
     }
 

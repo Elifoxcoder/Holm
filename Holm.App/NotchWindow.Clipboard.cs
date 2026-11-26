@@ -45,6 +45,8 @@ public sealed partial class NotchWindow
     IClipboardPlatform _clipboardPlatform = null!;
     /// <summary>The entry we just put back ourselves: the change that follows is ours, not a new copy.</summary>
     string? _restoringKey;
+    /// <summary>The last text synced with another device of our account, to prevent bounce-back loops.</summary>
+    string? _lastSyncedClip;
     bool _clipCapturePending;
 
     void InitClipboard(IPlatformServices platform)
@@ -53,6 +55,24 @@ public sealed partial class NotchWindow
         _clipboardPlatform = platform.Clipboard;
         _clipboardPlatform.Changed += () => Dispatcher.UIThread.Post(OnClipboardChanged);
         _wipeTimer.Tick += (_, _) => WipePassword();
+    }
+
+    async Task OnOwnClipboardReceivedAsync(WinNotch.Sharing.OwnDevice device, string text)
+    {
+        if (!_settings.Beam || !_settings.BeamText || text == _lastSyncedClip) return;
+        _lastSyncedClip = text;
+        string key = ClipboardHistory.TextKey(text);
+        _restoringKey = key;
+        if (await TrySetClipboardAsync(text))
+        {
+            if (_settings.ClipboardHistory)
+            {
+                if (!_clips.Bump(key, DateTime.UtcNow))
+                    ForgetClips(_clips.Add(new ClipEntry { Key = key, Text = text, CopiedAt = DateTime.UtcNow }));
+                ShowClipRows();
+            }
+            ShowPeek(ClipboardGlyph, $"Clipboard from {device.Name}", "Ready to paste", null, seconds: 3);
+        }
     }
 
     void StartClipboard()
@@ -116,6 +136,13 @@ public sealed partial class NotchWindow
                 if (!_clips.Bump(key, DateTime.UtcNow))
                     ForgetClips(_clips.Add(new ClipEntry { Key = key, Text = text, CopiedAt = DateTime.UtcNow }));
                 ShowClipRows();
+                if (_settings.Beam && _settings.BeamText && text != _lastSyncedClip
+                    && System.Text.Encoding.UTF8.GetByteCount(text) <= WinNotch.Sharing.ChatText.MaxBytes
+                    && (_myPhone != null || _friends.OwnDevicesNow.Count > 0))
+                {
+                    _lastSyncedClip = text;
+                    _friends.SendClipboardToOwnDevices(text);
+                }
                 return;
             }
             if (await clipboard.TryGetBitmapAsync() is { } image) await KeepImageAsync(image);

@@ -164,6 +164,16 @@ class NotchListener : NotificationListenerService() {
         }
     }
 
+    /** Clears all clearable notifications from the shade (asked from a PC). */
+    fun clearAll() {
+        if (NotchBridge.isDeviceLocked(this)) return
+        runCatching {
+            if (!NotchBridge.isDeviceLocked(this)) {
+                activeNotifications.filter { it.isClearable }.forEach { cancelNotification(it.key) }
+            }
+        }
+    }
+
     /** Answer, decline or hang up a call, with the buttons of the phone app's call notification. */
     fun callAction(key: String, which: String) {
         if (NotchBridge.isDeviceLocked(this)) return

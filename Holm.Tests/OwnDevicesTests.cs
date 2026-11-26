@@ -13,13 +13,14 @@ public class OwnDevicesTests
     public void A_device_note_sealed_for_ourselves_opens_with_its_id_and_question()
     {
         using var me = FriendIdentity.Create("Elias", null);
-        string text = FriendNotes.Seal(me, me.AsFriend(), new FriendNote(FriendNoteKind.Device, "Pixel 9", 10, Device: Phone, Query: true));
+        string text = FriendNotes.Seal(me, me.AsFriend(), new FriendNote(FriendNoteKind.Device, "Pixel 9", 10, Device: Phone, Query: true, IsPhone: true));
         var note = FriendNotes.Open(me, text, out string sender);
         Assert.NotNull(note);
         Assert.Equal(FriendNoteKind.Device, note!.Kind);
         Assert.Equal("Pixel 9", note.From);
         Assert.Equal(Phone, note.Device);
         Assert.True(note.Query);
+        Assert.True(note.IsPhone);
         Assert.Equal(me.PublicKey, sender); // sealed by our own identity: one of our devices
     }
 
@@ -57,6 +58,9 @@ public class OwnDevicesTests
         Assert.Equal("0|com.whatsapp|1|null|10", FriendNotes.Open(me, text, out _)!.Phone!.Key);
         var close = new PhoneStatus(PhoneStatus.Dismiss, "dismiss", null, 0, true, Key: "0|com.whatsapp|1|null|10");
         text = FriendNotes.Seal(me, me.AsFriend(), new FriendNote(FriendNoteKind.Phone, "PC", 10, Device: Pc, ForDevice: Phone, Phone: close));
+        Assert.Null(FriendNotes.Open(me, text, out _));
+        var closeAll = new PhoneStatus(PhoneStatus.DismissAll, "dismiss-all", null, 0, true);
+        text = FriendNotes.Seal(me, me.AsFriend(), new FriendNote(FriendNoteKind.Phone, "PC", 10, Device: Pc, ForDevice: Phone, Phone: closeAll));
         Assert.Null(FriendNotes.Open(me, text, out _));
         Assert.Null(PhoneStatus.CleanKey(new string('k', 400)));
         Assert.Null(PhoneStatus.From(PhoneStatus.Call, "  ", null, 0, true));
@@ -132,5 +136,40 @@ public class OwnDevicesTests
         Assert.Equal("Holm", devices.Find(Phone)!.Name);
         devices.Forget(Pc);
         Assert.Null(devices.Find(Pc));
+    }
+
+    [Fact]
+    public void Own_clipboard_and_chat_sync_notes_round_trip()
+    {
+        using var me = FriendIdentity.Create("Elias", null);
+        using var friend = FriendIdentity.Create("Lena", null);
+        var own = me.AsFriend();
+
+        string clipSealed = FriendNotes.Seal(me, own, new FriendNote(FriendNoteKind.Clipboard, "Pixel 9", 10, Text: "hello clipboard", Device: Phone));
+        var clipNote = FriendNotes.Open(me, clipSealed, out string clipSender);
+        Assert.NotNull(clipNote);
+        Assert.Equal(me.PublicKey, clipSender);
+        Assert.Equal(FriendNoteKind.Clipboard, clipNote!.Kind);
+        Assert.Equal("hello clipboard", clipNote.Text);
+        Assert.Equal(Phone, clipNote.Device);
+
+        string msgId = Guid.NewGuid().ToString("N");
+        string chatSealed = FriendNotes.Seal(me, own, new FriendNote(FriendNoteKind.Chat, "Pixel 9", 20, Code: friend.PublicKey, Text: "synced hello", MessageId: msgId, Device: Phone));
+        var chatNote = FriendNotes.Open(me, chatSealed, out _);
+        Assert.NotNull(chatNote);
+        Assert.Equal(FriendNoteKind.Chat, chatNote!.Kind);
+        Assert.Equal(friend.PublicKey, chatNote.Code);
+        Assert.Equal("synced hello", chatNote.Text);
+        Assert.Equal(msgId, chatNote.MessageId);
+        Assert.Equal(Phone, chatNote.Device);
+
+        string reactSealed = FriendNotes.Seal(me, own, new FriendNote(FriendNoteKind.Reaction, "Pixel 9", 30, Code: friend.PublicKey, Text: "❤️", MessageId: msgId, Device: Phone));
+        var reactNote = FriendNotes.Open(me, reactSealed, out _);
+        Assert.NotNull(reactNote);
+        Assert.Equal(FriendNoteKind.Reaction, reactNote!.Kind);
+        Assert.Equal(friend.PublicKey, reactNote.Code);
+        Assert.Equal("❤️", reactNote.Text);
+        Assert.Equal(msgId, reactNote.MessageId);
+        Assert.Equal(Phone, reactNote.Device);
     }
 }

@@ -155,10 +155,12 @@ public sealed class NearbyService : IDisposable
         try
         {
             Broadcast("query"); // introduces us and asks the others to say hello
+            await Task.Delay(TimeSpan.FromMilliseconds(900), ct).ConfigureAwait(false);
+            Broadcast("query"); // a second packet in case the first Wi-Fi broadcast was dropped
             while (!ct.IsCancellationRequested)
             {
-                await Task.Delay(TimeSpan.FromSeconds(60), ct).ConfigureAwait(false);
-                Broadcast("hello");
+                await Task.Delay(TimeSpan.FromSeconds(30), ct).ConfigureAwait(false);
+                Broadcast("query");
             }
         }
         catch (OperationCanceledException) { }
@@ -180,7 +182,11 @@ public sealed class NearbyService : IDisposable
     byte[] Serialize(string type)
         => JsonSerializer.SerializeToUtf8Bytes(new Packet(App, 1, type, _id, _name, _tcpPort));
 
-    void OnAddressChanged(object? sender, EventArgs e) => _targets = null;
+    void OnAddressChanged(object? sender, EventArgs e)
+    {
+        _targets = null;
+        try { Broadcast("query"); } catch { }
+    }
 
     /// <summary>
     /// The broadcast address of every IPv4 network we're on, plus the extra targets. Listing the network adapters

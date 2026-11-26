@@ -324,8 +324,14 @@ internal sealed class AccountService : IDisposable
         try
         {
             // The identity first: until it's settled, the friends list waits (its friends belong to one identity).
+            // If neither this PC nor the account has an identity yet, create one now so the phone app can link immediately.
             askIdentity = false;
             var mine = _friends.ExportIdentity();
+            if (mine == null && remote.Identity == null)
+            {
+                _friends.EnsureMe();
+                mine = _friends.ExportIdentity();
+            }
             string? myPrint = mine?.Fingerprint(), theirPrint = remote.Identity?.Fingerprint();
             var step = IdentitySync.Decide(myPrint, _friends.Friends.Count, theirPrint, state, _identityChoice);
             // The same identity, but the account says its inbox is on a computer (a test's): send it back corrected.

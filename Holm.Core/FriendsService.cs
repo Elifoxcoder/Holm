@@ -25,7 +25,7 @@ internal sealed partial class FriendsService
     static readonly byte[] KeyEntropy = "WinNotch friends key"u8.ToArray(); // former name: keys saved before the rename must still open
 
     /// <summary>How long the sender waits for the friend's notch to answer; older invitations are stale.</summary>
-    public static readonly TimeSpan Patience = TimeSpan.FromSeconds(15);
+    public static readonly TimeSpan Patience = TimeSpan.FromSeconds(45);
     /// <summary>
     /// How long a sender waits on the relay for the friend's notch. Longer than <see cref="Patience"/>, which the receiver
     /// holds the note's age to: the note's trip through the inbox and their connection to the relay come on top of it.
@@ -78,6 +78,8 @@ internal sealed partial class FriendsService
     public event Action? OwnDevicesChanged;
     /// <summary>Our phone says what's happening on it, for the notch. On the UI thread.</summary>
     public event Action<OwnDevice, PhoneStatus>? PhoneStatusReceived;
+    /// <summary>Another device of this account synced a non-private clipboard text (UI thread).</summary>
+    public event Action<OwnDevice, string>? OwnClipboardReceived;
     /// <summary>A chat message from a friend: its id, text and when it was sent (Unix time; UI thread).</summary>
     public event Action<Friend, string, string, long>? ChatReceived;
 
@@ -86,6 +88,12 @@ internal sealed partial class FriendsService
 
     /// <summary>A friend reacted to a chat message: its id and the emoji, or null when they took it away (UI thread).</summary>
     public event Action<Friend, string, string?>? ReactionReceived;
+
+    /// <summary>Another of our own devices sent a chat message (or GIF) to this friend (UI thread).</summary>
+    public event Action<Friend, string, string, long, string?>? OwnChatSynced;
+
+    /// <summary>Another of our own devices reacted to a message in this friend's chat (UI thread).</summary>
+    public event Action<Friend, string, string?>? OwnReactionSynced;
 
     /// <summary>Someone used our invite code and is now a friend, without asking (UI thread).</summary>
     public event Action<Friend>? InviteAccepted;
@@ -132,13 +140,14 @@ internal sealed partial class FriendsService
     {
         _settings = settings;
         _ui = ui;
-        // An unsafe saved inbox is never contacted: HTTP, credentials and local/private destinations fall back to the relay.
-        if (_settings.FriendsServer != null && !FriendIdentity.TryNormalizeServer(_settings.FriendsServer, out _))
+        // An unsafe or retired saved inbox is never contacted: fall back to HolyNotch's relay.
+        if (_settings.FriendsServer != null && (!FriendIdentity.TryNormalizeServer(_settings.FriendsServer, out _) || FriendIdentity.IsRetired(_settings.FriendsServer)))
         {
             _settings.FriendsServer = null;
             _settings.FriendsRelay = true;
+            _settings.FriendsRelayServer = FriendIdentity.RelayServer;
             _settings.Save();
-            Diag.Log("Friends: the inbox server was not a public HTTPS URL; back to Holm's relay");
+            Diag.Log("Friends: the inbox server was not usable; back to HolyNotch's relay");
         }
         int removed = RemoveDuplicateFriendCards(_settings.Friends);
         if (removed > 0)
@@ -398,8 +407,10 @@ internal sealed partial class FriendsService
         }
     }
 
-    /// <summary>Where our friend code says our inbox is: the server set in the settings, else the relay once it let us in.</summary>
-    string? OwnServer => _settings.FriendsServer ?? (_settings.FriendsRelay ? FriendIdentity.RelayServer : null);
+    /// <summary>Where our friend code says our inbox is: the server set in the settings, else the relay (always in production where ntfy.sh is retired).</summary>
+    string? OwnServer => _settings.FriendsServer != null && !FriendIdentity.IsRetired(_settings.FriendsServer)
+        ? _settings.FriendsServer
+        : (_settings.FriendsRelay || FriendIdentity.IsRetired(null) ? FriendIdentity.RelayServer : null);
 
     /// <summary>Our identity, made on first use. Friends who had an unreadable older one must add us again.</summary>
     public FriendIdentity EnsureMe()
@@ -507,12 +518,18 @@ internal sealed partial class FriendsService
         }
         finally { CryptographicOperations.ZeroMemory(pkcs8); }
         _settings.FriendsTopic = identity.Topic;
-        if (identity.Server != null && !FriendIdentity.TryNormalizeServer(identity.Server, out _))
+        if (identity.Server != null && (!FriendIdentity.TryNormalizeServer(identity.Server, out _) || FriendIdentity.IsRetired(identity.Server)))
         {
             _settings.FriendsServer = null;
             _settings.FriendsRelay = true;
+            _settings.FriendsRelayServer = FriendIdentity.RelayServer;
         }
         else _settings.FriendsServer = identity.Server;
+        if (_settings.FriendsServer == null && FriendIdentity.IsRetired(null))
+        {
+            _settings.FriendsRelay = true;
+            _settings.FriendsRelayServer = FriendIdentity.RelayServer;
+        }
         _settings.FriendsSince = Now - 12 * 60 * 60;
         _settings.FriendsRelaySince = Now - 7 * 24 * 60 * 60; // what the relay keeps
         // Keep replay ids: account adoption can restore the same identity and replay its retained notes.
@@ -597,6 +614,31 @@ internal sealed partial class FriendsService
         OwnDevicesChanged?.Invoke();
     }
 
+    /// <summary>Removes a linked phone on this PC: forgets it and ignores its notes until allowed again.</summary>
+    public void RemovePhone(string deviceId)
+    {
+        if (!OwnDevice.IsId(deviceId)) return;
+        _settings.RemovedPhoneIds ??= new();
+        if (!_settings.RemovedPhoneIds.Contains(deviceId, StringComparer.Ordinal))
+        {
+            _settings.RemovedPhoneIds.Add(deviceId);
+            _settings.Save();
+        }
+        _devices.Forget(deviceId);
+        OwnDevicesChanged?.Invoke();
+    }
+
+    /// <summary>Allows previously removed phones to link to this PC again.</summary>
+    public void ClearRemovedPhones()
+    {
+        if (_settings.RemovedPhoneIds is not { Count: > 0 }) return;
+        _settings.RemovedPhoneIds.Clear();
+        _settings.Save();
+        AskForDevices();
+    }
+
+    public bool IsPhoneRemoved(string deviceId) => _settings.RemovedPhoneIds?.Contains(deviceId, StringComparer.Ordinal) == true;
+
     /// <summary>
     /// Says in our inbox that this device runs, for the account's other devices; with <paramref name="query"/> it asks
     /// them to say so too. Live only: the server passes it on and doesn't keep it.
@@ -607,6 +649,10 @@ internal sealed partial class FriendsService
         if (PhoneStatus.CleanKey(key) is not { } clean) return;
         TellPhone(phone, new PhoneStatus(PhoneStatus.Dismiss, "dismiss", null, 0, true, Key: clean));
     }
+
+    /// <summary>Clears all clearable notifications on our phone (closed in the phone tool): a note for that phone only.</summary>
+    public void DismissAllOnPhone(OwnDevice phone)
+        => TellPhone(phone, new PhoneStatus(PhoneStatus.DismissAll, "dismiss-all", null, 0, true));
 
     /// <summary>The phone's player plays, pauses, skips (<see cref="PhoneStatus.MusicControls"/>), from the phone tool.</summary>
     public void ControlPhoneMusic(OwnDevice phone, string what)
@@ -646,16 +692,17 @@ internal sealed partial class FriendsService
     void HandleOwn(FriendIdentity me, FriendNote note, long age)
     {
         if (note.Device is not { } id || id == DeviceId) return;
+        if (IsPhoneRemoved(id)) return;
         switch (note.Kind)
         {
             case FriendNoteKind.Device when age <= FreshSeconds:
-                if (_devices.Saw(id, note.From, DateTime.UtcNow)) OwnDevicesChanged?.Invoke();
+                if (_devices.Saw(id, note.From, DateTime.UtcNow, isPhone: note.IsPhone == true)) OwnDevicesChanged?.Invoke();
                 if (note.Query == true) AnnounceDevice(query: false);
                 break;
             case FriendNoteKind.Phone when age <= 60 && note.Phone is { } status:
                 // News only while it's news: a call from minutes ago, read when Holm starts, isn't.
-                if (_devices.Saw(id, note.From, DateTime.UtcNow)) OwnDevicesChanged?.Invoke();
-                PhoneStatusReceived?.Invoke(_devices.Find(id) ?? new OwnDevice(id, note.From, DateTime.UtcNow), status);
+                if (_devices.Saw(id, note.From, DateTime.UtcNow, isPhone: true)) OwnDevicesChanged?.Invoke();
+                PhoneStatusReceived?.Invoke(_devices.Find(id) ?? new OwnDevice(id, note.From, DateTime.UtcNow, IsPhone: true), status);
                 break;
             case FriendNoteKind.Files when note.ForDevice != DeviceId:
                 break; // for another of our devices
@@ -666,7 +713,41 @@ internal sealed partial class FriendsService
                 if (_devices.Saw(id, note.From, DateTime.UtcNow)) OwnDevicesChanged?.Invoke();
                 FilesOffered?.Invoke(OwnCard(me, _devices.Find(id)?.Name ?? note.From), note.Secret!);
                 break;
+            case FriendNoteKind.Chat when note.Code is { } peerKey && Find(peerKey) is { } chatFriend
+                                          && note.MessageId is { } msgId && note.Text is { } msgText:
+                OwnChatSynced?.Invoke(chatFriend, msgId, msgText, note.Sent, note.Gif);
+                break;
+            case FriendNoteKind.Reaction when note.Code is { } reactKey && Find(reactKey) is { } reactFriend
+                                              && note.MessageId is { } reactId:
+                OwnReactionSynced?.Invoke(reactFriend, reactId, note.Text);
+                break;
+            case FriendNoteKind.Clipboard when age <= 30 && note.Text is { } clipText:
+                if (_devices.Saw(id, note.From, DateTime.UtcNow)) OwnDevicesChanged?.Invoke();
+                OwnClipboardReceived?.Invoke(_devices.Find(id) ?? new OwnDevice(id, note.From, DateTime.UtcNow), clipText);
+                break;
         }
+    }
+
+    /// <summary>Sends a non-private clipboard text live to the account's other online devices (never stored offline).</summary>
+    public void SendClipboardToOwnDevices(string text)
+    {
+        if (_follow == null || Me is not { } me) return;
+        if (ChatText.Clean(text) is not { } clean) return;
+        string name = DeviceName();
+        var own = OwnCard(me, name);
+        var note = new FriendNote(FriendNoteKind.Clipboard, name, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), Text: clean, Device: DeviceId);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await FriendInbox.PostAsync(own, FriendNotes.Seal(me, own, note), cts.Token, keep: false).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or OperationCanceledException)
+            {
+                Diag.Log("Clipboard sync post failed: " + ex.Message);
+            }
+        });
     }
 
     public bool IsMe(Friend card) => Me?.PublicKey == card.Key;
@@ -872,20 +953,44 @@ internal sealed partial class FriendsService
 
     /// <summary>Sends one chat message (<see cref="ChatText.MaxBytes"/> at most).</summary>
     /// <exception cref="IOException">The note couldn't be delivered to their inbox.</exception>
-    public Task SendChatAsync(Friend to, string id, string text, long sent, CancellationToken ct, string? gif = null)
+    public async Task SendChatAsync(Friend to, string id, string text, long sent, CancellationToken ct, string? gif = null)
     {
         var me = EnsureMe();
         var note = new FriendNote(FriendNoteKind.Chat, me.Name, sent, Text: gif ?? text, MessageId: id, Gif: gif);
-        return FriendInbox.PostAsync(to, FriendNotes.Seal(me, to, note), ct);
+        await FriendInbox.PostAsync(to, FriendNotes.Seal(me, to, note), ct).ConfigureAwait(false);
+        if (to.Key != me.PublicKey)
+        {
+            var echo = new FriendNote(FriendNoteKind.Chat, DeviceName(), sent, Code: to.Key, Text: gif ?? text, MessageId: id, Gif: gif, Device: DeviceId);
+            _ = EchoOwnAsync(me, echo);
+        }
     }
 
     /// <summary>Reacts to a chat message with an emoji, or takes the reaction away (null).</summary>
     /// <exception cref="IOException">The note couldn't be delivered to their inbox.</exception>
-    public Task SendReactionAsync(Friend to, string messageId, string? emoji, CancellationToken ct)
+    public async Task SendReactionAsync(Friend to, string messageId, string? emoji, CancellationToken ct)
     {
         var me = EnsureMe();
-        var note = new FriendNote(FriendNoteKind.Reaction, me.Name, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), Text: emoji, MessageId: messageId);
-        return FriendInbox.PostAsync(to, FriendNotes.Seal(me, to, note), ct);
+        long sent = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var note = new FriendNote(FriendNoteKind.Reaction, me.Name, sent, Text: emoji, MessageId: messageId);
+        await FriendInbox.PostAsync(to, FriendNotes.Seal(me, to, note), ct).ConfigureAwait(false);
+        if (to.Key != me.PublicKey)
+        {
+            var echo = new FriendNote(FriendNoteKind.Reaction, DeviceName(), sent, Code: to.Key, Text: emoji, MessageId: messageId, Device: DeviceId);
+            _ = EchoOwnAsync(me, echo);
+        }
+    }
+
+    async Task EchoOwnAsync(FriendIdentity me, FriendNote note)
+    {
+        try
+        {
+            var own = OwnCard(me, DeviceName());
+            await FriendInbox.PostAsync(own, FriendNotes.Seal(me, own, note), CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException)
+        {
+            Diag.Log("Own chat sync echo failed: " + ex.Message);
+        }
     }
 
     /// <summary>Asks one friend whether their Holm runs (if not asked a minute ago); <see cref="FriendOnline"/> follows if so.</summary>
@@ -926,10 +1031,10 @@ internal sealed partial class FriendsService
         if (_settings.FriendsServer == null)
             _ = Task.Run(() => FriendInbox.FollowRelayAsync(me.Topic, _settings.FriendsRelaySince ?? Now, received,
                 time => _ = _ui(() => { if (_follow == cts) { _settings.FriendsRelaySince = time; _settings.Save(); } }),
-                () => _ = _ui(() => { if (_follow == cts) MoveToRelay(); }),
+                () => _ = _ui(() => { if (_follow == cts) { MoveToRelay(); AnnounceDevice(query: true); } }),
                 Diag.Log, cts.Token));
         SyncProfiles();
-        AnnounceDevice(query: true);
+        if (_settings.FriendsServer != null) AnnounceDevice(query: true);
     }
 
     /// <summary>

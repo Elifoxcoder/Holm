@@ -205,6 +205,9 @@ public sealed partial class NotchWindow : Window
         _trimTimer.Start();
         _audio.Start();
         _ = _media.StartAsync();
+        Program.WakeRunningInstance = () => Dispatcher.UIThread.Post(() => OpenSettings());
+        if (Program.JustInstalled)
+            DispatcherTimer.RunOnce(() => ShowPeek("", "HolyNotch installed", "In Start Menu & Desktop", GreenBrush, seconds: 5), TimeSpan.FromMilliseconds(600));
         StartSelfTest();
     }
 

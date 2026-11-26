@@ -35,6 +35,12 @@ public sealed partial class NotchWindow
         _friends.ChatReceived += OnChatReceived;
         _friends.GifReceived += OnGifReceived;
         _friends.ReactionReceived += OnReactionReceived;
+        _friends.OwnChatSynced += (friend, id, text, sent, gif) =>
+        {
+            _chats.Add(friend.Key, new FriendMessage { Id = id, Mine = true, Text = gif ?? text, Gif = gif, Sent = sent, State = ChatState.Sent }, unread: false);
+            if (gif != null) RememberGif(gif);
+        };
+        _friends.OwnReactionSynced += (friend, id, emoji) => _chats.SetReaction(friend.Key, id, mine: true, emoji);
         _friends.RemovedUs += friend => _chats.Forget(friend.Key);
 
         _friends.InviteAccepted += card =>

@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.4.5 – 2026-11-26
+
+### Added
+
+- **Installs itself.** Started from Downloads, HolyNotch.exe moves to `%LOCALAPPDATA%\Programs\HolyNotch`, adds Start menu and desktop shortcuts and shows in *Installed apps* (with Uninstall). An older copy never replaces a newer installed one, and *Start with Windows* then starts the installed copy. `--portable` keeps it where it is.
+- **Settings › Phone:** your linked phone and devices, and *Remove* for a phone.
+- **Phone tool:** close all of the phone's notifications at once; the music buttons sit beside the song.
+- **Clipboard between your devices** (with *Beam text* on): text you copy goes to your other devices of the account, end-to-end encrypted, never passwords.
+- Chats you write on one of your devices show on the others.
+
+### Fixed
+
+- PC and phone find each other again: the phone is recognised as one, nearby devices ask twice and again when the network changes, and an identity is made when neither the PC nor the account has one yet.
+- Closing a phone notification in the notch no longer closes the notch.
+- Android 1.4.4: battery and charging show at once when a PC connects.
+
 ## 2.4.1 – 2026-11-25
 
 ### Changed

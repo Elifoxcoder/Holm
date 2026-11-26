@@ -89,6 +89,16 @@ class NotchLink {
     }
   }
 
+  /// Reads the phone's current battery/charging state and asks the running notch (if any) to push full status to PCs.
+  static Future<Map<String, Object?>> batteryStatus() async {
+    try {
+      final s = await _bridge.invokeMethod<Map>('batteryStatus');
+      return Map<String, Object?>.from(s ?? {});
+    } catch (_) {
+      return {};
+    }
+  }
+
   /// Hides Android's own notification pop-ups while the notch runs; true if Holm may (WRITE_SECURE_SETTINGS).
   static Future<bool> hidePopups(bool hide) async =>
       (await _bridge.invokeMethod<bool>('hidePopups', hide).catchError((_) => false)) ?? false;
@@ -128,6 +138,9 @@ class NotchLink {
 
   /// Clears one of the phone's notifications (closed on a PC).
   static void dismissNotification(String key) => _bridge.invokeMethod('dismissNotification', key).catchError((_) {});
+
+  /// Clears all clearable notifications on the phone (closed on a PC).
+  static void dismissAllNotifications() => _bridge.invokeMethod('dismissAllNotifications').catchError((_) {});
 
   /// This app's version name ("1.2.0").
   static Future<String?> appVersionName() => _bridge.invokeMethod<String>('appVersionName').catchError((_) => null);

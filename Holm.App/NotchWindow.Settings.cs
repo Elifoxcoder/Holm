@@ -142,6 +142,7 @@ public sealed partial class NotchWindow
             new ProfileEditor(FriendsService.AccountName(), CurrentProfile, ApplyProfile, AvatarColors, AvatarColor),
             () => MeCard(CurrentProfile()),
             new[] { new HubPage(StartPage.Key, "\uE8A9", "Start page", "What the open notch shows, and where", BuildStartPage),
+                new HubPage("phone", CellPhoneGlyph, "Phone", "Your linked phone and devices", BuildPhoneSettingsPage),
                 new HubPage("design", "\uE790", "Design", "How HolyNotch looks: the design, its accent colour, your own designs", DesignPage),
                 new HubPage("updates", "\uE896", "Updates", "New versions of HolyNotch", UpdatesPage) },
             new[] { new HubPage("network", "\uE701", "Wi-Fi", "Speed test and connection details", () => new NetworkPage(CurrentLink, TrySetClipboardAsync)) },

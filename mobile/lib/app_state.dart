@@ -485,8 +485,52 @@ class AppState extends ChangeNotifier {
     return _send(target, [for (final path in paths) Outgoing.file(path)], text: false);
   }
 
-  Future<bool> sendText(SendTarget target, String text, {bool quiet = false}) {
+  /// Sends files to a friend over the internet via HolyNotch's transit relay.
+  Future<bool> sendFilesToFriend(Friend friend, List<String> paths) async {
+    final confirm = confirmFiles;
+    if (confirm == null || !await confirm('Send ${paths.length} file(s) to ${friend.name}?', List.unmodifiable(paths))) return false;
+    final items = [for (final path in paths) Outgoing.file(path)];
+    final what = items.length == 1 ? items.first.name : '${items.length} files';
+    SecureChannel? channel;
+    try {
+      _status(TransferStatus('Asking ${friend.name}…', 'Over the internet'));
+      final secret = ShareSecret.create();
+      await Inbox.post(friend, Notes.seal(me, friend, 'files', {'S': base64Encode(secret)}));
+      _status(TransferStatus('Waiting for ${friend.name}', 'They choose whether to accept $what'));
+      channel = await RelayLink.connectWithRetry(secret, initiator: true, patience: const Duration(seconds: 40));
+      final accepted = await sendTransfer(channel, me.name, items, text: false, progress: (v) {
+        _status(TransferStatus('Sending to ${friend.name}', what, progress: v));
+      });
+      _status(accepted
+          ? TransferStatus('Sent', 'To ${friend.name} · $what', done: true)
+          : TransferStatus('Declined', '${friend.name} said no', failed: true, done: true));
+      toast?.call(accepted ? 'Sent $what to ${friend.name}' : '${friend.name} declined');
+      return accepted;
+    } catch (e) {
+      final detail = e is TimeoutException ? "${friend.name} isn't online right now" : _why(e);
+      _status(TransferStatus("Couldn't send", detail, failed: true, done: true));
+      toast?.call("Couldn't send to ${friend.name}: $detail");
+      return false;
+    } finally {
+      await channel?.close();
+    }
+  }
+
+  Future<bool> sendText(SendTarget target, String text, {bool quiet = false}) async {
     final bytes = Uint8List.fromList(utf8.encode(text));
+    if (target.device != null && account != null && bytes.length <= maxChatBytes) {
+      try {
+        await Inbox.post(
+          _ownCard,
+          Notes.seal(me, _ownCard, 'clipboard', {'D': deviceId, 'M': Notes.chatText(text)}, from: deviceName),
+          keep: false,
+        );
+        if (!quiet) _status(TransferStatus('Sent to ${target.name}', 'Copied to their clipboard', done: true));
+        return true;
+      } catch (_) {
+        // Fall through to relay transfer if the live clipboard note couldn't be posted.
+      }
+    }
     if (bytes.length > maxTextBytes) {
       return _send(target, [Outgoing.memory('Text.txt', bytes)], text: false, quiet: quiet);
     }
@@ -573,7 +617,7 @@ class AppState extends ChangeNotifier {
 
   // ───────────── nearby: receiving ─────────────
 
-  Future<void> _onIncoming(SecureChannel channel, {String? knownSender, String? knownSenderId}) async {
+  Future<void> _onIncoming(SecureChannel channel, {String? knownSender, String? knownSenderId, bool ownAccountDevice = false}) async {
     String sender = knownSender ?? '';
     try {
       final got = await receiveTransfer(channel, (offer) async {
@@ -583,6 +627,7 @@ class AppState extends ChangeNotifier {
           offer = ShareOffer(knownSender, offer.files, offer.isText, authenticated: true, senderDeviceId: knownSenderId);
         }
         sender = offer.sender;
+        if (ownAccountDevice) return true;
         if (offer.isText && _isSyncSender(knownSenderId, sender)) return true;
         final ask = askOffer;
         if (ask == null || !foreground) {
@@ -666,9 +711,18 @@ class AppState extends ChangeNotifier {
     final isNew = text != _lastClip;
     _lastClip = text;
     _addClip(ClipItem(text, DateTime.now()));
-    if (!isNew || !clipboardSync) return;
-    // Only the authenticated account device chosen for sync. There is deliberately no "only one nearby device" fallback.
-    final device = _syncDevice;
+    if (!isNew || !clipboardSync || account == null) return;
+    final bytes = utf8.encode(text);
+    if (bytes.length <= maxChatBytes) {
+      unawaited(Inbox.post(
+        _ownCard,
+        Notes.seal(me, _ownCard, 'clipboard', {'D': deviceId, 'M': Notes.chatText(text)}, from: deviceName),
+        keep: false,
+      ).catchError((_) {}));
+      return;
+    }
+    // Larger texts go over the relay to the chosen sync device (or the first online account device).
+    final device = _syncDevice ?? (ownDevices.isNotEmpty ? ownDevices.first : null);
     if (device != null) await sendText(SendTarget.device(device), text, quiet: true);
   }
 
@@ -812,9 +866,20 @@ class AppState extends ChangeNotifier {
     final last = _announced;
     if (!force && query && last != null && DateTime.now().difference(last) < const Duration(seconds: 30)) return;
     if (query) _announced = DateTime.now();
-    Inbox.post(_ownCard, Notes.seal(me, _ownCard, 'device', {'D': deviceId, 'H': query ? true : null}, from: deviceName),
+    Inbox.post(_ownCard,
+            Notes.seal(me, _ownCard, 'device', {'D': deviceId, 'H': query ? true : null, 'Y': 'phone'}, from: deviceName),
             keep: false)
         .catchError((_) {});
+    unawaited(_pushBatteryNow());
+  }
+
+  Future<void> _pushBatteryNow() async {
+    if (account == null || !notch.toPc) return;
+    final b = await NotchLink.batteryStatus();
+    final level = b['level'];
+    if (level is int) {
+      _phoneStatus({'kind': 'status', 'title': '$level%', 'on': b['plugged'] == true});
+    }
   }
 
   void _handleOwn(Note note, int age) {
@@ -825,6 +890,10 @@ class AppState extends ChangeNotifier {
       // A PC closed one of our notifications in its phone tool: gone here too.
       case 'phone' when note.fields['Y'] == 'dismiss' && note.fields['N'] == deviceId && note.fields['I'] is String && age <= 60:
         NotchLink.dismissNotification(note.fields['I'] as String);
+        return;
+      // A PC cleared all notifications in its phone tool: gone here too.
+      case 'phone' when note.fields['Y'] == 'dismiss-all' && note.fields['N'] == deviceId && age <= 60:
+        NotchLink.dismissAllNotifications();
         return;
       // A PC plays, pauses or skips our music from its phone tool.
       case 'phone' when note.fields['Y'] == 'control' && note.fields['N'] == deviceId && age <= 30:
@@ -845,7 +914,41 @@ class AppState extends ChangeNotifier {
         if (_takenSecrets.length > 50) _takenSecrets.removeAt(0);
         final name = _devices[id]?.name ?? from;
         _devices[id as String] = OwnDevice(id, name, DateTime.now());
-        unawaited(_receiveOverRelay(bytes, name, id));
+        unawaited(_receiveOverRelay(bytes, name, id, ownAccountDevice: true));
+      case 'clipboard' when age <= 30:
+        final text = note.text;
+        if (text == null || text == _lastClip) return;
+        _lastClip = text;
+        final name = _devices[id]?.name ?? from;
+        _devices[id as String] = OwnDevice(id, name, DateTime.now());
+        _addClip(ClipItem(text, DateTime.now(), name));
+        unawaited(Clipboard.setData(ClipboardData(text: text)).catchError((_) {}));
+        if (!foreground) NotchLink.send({'type': 'holm.clipboard', 'text': text, 'from': name});
+        return;
+      case 'chat':
+        final peerKey = note.code;
+        final msgId = note.messageId;
+        final text = note.text;
+        if (peerKey != null && friendByKey(peerKey) != null && msgId != null && text != null) {
+          _addMessage(peerKey, ChatMessage(id: msgId, mine: true, text: text, sent: note.sent, state: ChatState.sent), unreadToo: false);
+        }
+        return;
+      case 'react':
+        final peerKey = note.code;
+        final msgId = note.messageId;
+        if (peerKey != null && friendByKey(peerKey) != null && msgId != null) {
+          final list = chats[peerKey];
+          if (list != null) {
+            for (final m in list) {
+              if (m.id == msgId) {
+                m.myReaction = note.text;
+                _changed();
+                break;
+              }
+            }
+          }
+        }
+        return;
       default:
         break;
     }
@@ -853,13 +956,13 @@ class AppState extends ChangeNotifier {
 
   final List<String> _takenSecrets = [];
 
-  Future<void> _receiveOverRelay(List<int> secret, String from, String deviceId) async {
+  Future<void> _receiveOverRelay(List<int> secret, String from, String deviceId, {bool ownAccountDevice = false}) async {
     final connecting = TransferStatus('$from is sending you something', 'Connecting…');
     _status(connecting);
     try {
       final channel = await RelayLink.connectWithRetry(secret, initiator: false, patience: const Duration(minutes: 2));
       try {
-        await _onIncoming(channel, knownSender: from, knownSenderId: deviceId);
+        await _onIncoming(channel, knownSender: from, knownSenderId: deviceId, ownAccountDevice: ownAccountDevice);
       } finally {
         await channel.close();
         // A text that went quietly to the clipboard (in the background) says nothing more: don't stay on "Connecting…".
@@ -1003,6 +1106,12 @@ class AppState extends ChangeNotifier {
     try {
       await Inbox.post(f, Notes.seal(me, f, 'chat', {'M': Notes.chatText(m.text), 'I': m.id}));
       m.state = ChatState.sent;
+      if (account != null && f.key != me.publicKey) {
+        unawaited(Inbox.post(
+          _ownCard,
+          Notes.seal(me, _ownCard, 'chat', {'D': deviceId, 'C': f.key, 'M': Notes.chatText(m.text), 'I': m.id}, from: deviceName),
+        ).catchError((_) {}));
+      }
     } catch (_) {
       m.state = ChatState.failed;
     }
@@ -1014,6 +1123,12 @@ class AppState extends ChangeNotifier {
     _changed();
     try {
       await Inbox.post(f, Notes.seal(me, f, 'react', {'I': m.id, 'M': m.myReaction == null ? null : Notes.chatText(m.myReaction!)}));
+      if (account != null && f.key != me.publicKey) {
+        unawaited(Inbox.post(
+          _ownCard,
+          Notes.seal(me, _ownCard, 'react', {'D': deviceId, 'C': f.key, 'I': m.id, 'M': m.myReaction == null ? null : Notes.chatText(m.myReaction!)}, from: deviceName),
+        ).catchError((_) {}));
+      }
     } catch (_) {}
   }
 
@@ -1198,8 +1313,16 @@ class AppState extends ChangeNotifier {
       case 'wave' when friend != null && age < 600:
         sawOnline();
         toast?.call('${friend.name} waved 👋');
-      case 'files' when friend != null && age < 300:
-        toast?.call('${friend.name} wants to send files. On the same Wi-Fi, use Devices instead');
+      case 'files' when friend != null && age <= 60:
+        final secret = note.fields['S'];
+        if (secret is! String) return;
+        final bytes = base64Decode(secret);
+        if (bytes.length != ShareSecret.length) return;
+        if (_takenSecrets.contains(secret)) return;
+        _takenSecrets.add(secret);
+        if (_takenSecrets.length > 50) _takenSecrets.removeAt(0);
+        sawOnline();
+        unawaited(_receiveOverRelay(bytes, friend.name, friend.key));
       default:
         break; // a kind this app doesn't handle, or from a stranger
     }

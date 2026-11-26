@@ -234,8 +234,6 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
               s.setDeviceName(name.text);
               Navigator.pop(context);
             }),
-            const SizedBox(width: 8),
-            PillButton('My friend code', primary: false, onPressed: () => showMyCode(context, s)),
           ]),
         ]),
       ),

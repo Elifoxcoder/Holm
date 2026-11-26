@@ -242,6 +242,8 @@ internal sealed class AppSettings
     /// its own and skips its own notes in the shared inbox.
     /// </summary>
     public string? DeviceId { get; set; }
+    /// <summary>Device ids of phones explicitly removed from this PC (Settings › Phone), ignored until allowed again.</summary>
+    public List<string> RemovedPhoneIds { get; set; } = new();
     /// <summary>Our invite codes that still work (Sharing/FriendInvite.cs).</summary>
     public List<OwnInvite> FriendInvites { get; set; } = new();
     /// <summary>Friend requests we sent that haven't been answered yet; a late yes still makes you friends.</summary>

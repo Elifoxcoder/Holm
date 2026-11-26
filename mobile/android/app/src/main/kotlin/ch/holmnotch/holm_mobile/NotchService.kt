@@ -321,6 +321,14 @@ class NotchService : AccessibilityService() {
     private fun onCall(call: MethodCall, result: MethodChannel.Result) {
         if (NotchBridge.isDeviceLocked(this) != locked) updateLockState()
         if (locked && call.method in NotchBridge.lockedNotchMethods) {
+            if (call.method == "phoneStatus") {
+                val safe = NotchBridge.safeLockedPhoneStatus(call.arguments)
+                if (safe != null) {
+                    NotchBridge.toMain("phoneStatus", safe)
+                    result.success(null)
+                    return
+                }
+            }
             result.error("device_locked", "Unlock the device before using HolyNotch", null)
             return
         }
@@ -730,8 +738,10 @@ class NotchService : AccessibilityService() {
         val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return
         val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
         val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
-        val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0
         val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, 0)
+        val plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0 ||
+            status == BatteryManager.BATTERY_STATUS_CHARGING ||
+            status == BatteryManager.BATTERY_STATUS_FULL
         NotchBridge.toNotch(
             mapOf(
                 "type" to "battery",

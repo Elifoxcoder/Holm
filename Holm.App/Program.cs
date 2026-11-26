@@ -6,6 +6,9 @@ namespace Holm.App;
 
 class Program
 {
+    internal static bool JustInstalled { get; private set; }
+    internal static Action? WakeRunningInstance;
+
     // Initialization code. Don't use any Avalonia, third-party APIs or any
     // SynchronizationContext-reliant code before AppMain is called: things aren't initialized
     // yet and stuff might break.
@@ -14,11 +17,18 @@ class Program
     {
         // Core stays OS-free; the platform supplies the euid check before any XDG runtime path is accepted.
         WinNotch.PrivateStorage.RuntimeDirectoryOwner = Holm.Platform.UnixIdentityPlatform.IsOwnedByCurrentUser;
-        // One Holm at a time, the same way on every system: the first one holds a lock file, a second start finds it
-        // taken and quits. The lock goes with the process, also when it crashes.
         // As in the WPF app: Holm --diag writes what it does to diag.log next to the settings.
         WinNotch.Diag.Enabled = Array.IndexOf(args, "--diag") >= 0;
-        // Restarting (a new design): the old Holm is still letting go of the lock, so wait for it a few seconds.
+        JustInstalled = Array.IndexOf(args, "--installed") >= 0;
+#if HOLM_WINDOWS
+        // When the published single-file HolyNotch.exe is run from Downloads (or any non-install folder),
+        // it installs itself to %LOCALAPPDATA%\Programs\HolyNotch, creates Start Menu & Desktop shortcuts,
+        // registers in Windows Installed Apps, and launches the installed copy.
+        if (Holm.Platform.Windows.WindowsSelfInstaller.HandleStartup(args)) return;
+#endif
+        // One Holm at a time, the same way on every system: the first one holds a lock file, a second start finds it
+        // taken and wakes the running one before quitting. The lock goes with the process, also when it crashes.
+        // Restarting (a new design or install): the old Holm is still letting go of the lock, so wait for it a few seconds.
         bool restart = Array.IndexOf(args, "--restart") >= 0;
         var instance = SingleInstance();
         for (int i = 0; instance == null && restart && i < 50; i++)
@@ -27,16 +37,65 @@ class Program
             instance = SingleInstance();
         }
         using var _ = instance;
-        if (instance == null) return;
+        if (instance == null)
+        {
+#if HOLM_WINDOWS
+            SignalRunningInstance();
+#endif
+            return;
+        }
 #if HOLM_WINDOWS
         if (WinNotch.Diag.DevFolder == null && Holm.Platform.Windows.WindowsStoreInstance.IsRunning())
         {
             WinNotch.Diag.Log("The Microsoft Store copy of Holm is already running.");
             return;
         }
+        using var wakeStop = StartWakeListener();
 #endif
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
+
+#if HOLM_WINDOWS
+    const string WakeEventName = @"Local\HolyNotch_Wake";
+
+    static void SignalRunningInstance()
+    {
+        try
+        {
+            using var ev = System.Threading.EventWaitHandle.OpenExisting(WakeEventName);
+            ev.Set();
+        }
+        catch (Exception) { }
+    }
+
+    static IDisposable? StartWakeListener()
+    {
+        try
+        {
+            var ev = new System.Threading.EventWaitHandle(false, System.Threading.EventResetMode.AutoReset, WakeEventName);
+            var cts = new System.Threading.CancellationTokenSource();
+            var thread = new System.Threading.Thread(() =>
+            {
+                var handles = new System.Threading.WaitHandle[] { ev, cts.Token.WaitHandle };
+                while (!cts.IsCancellationRequested)
+                {
+                    if (System.Threading.WaitHandle.WaitAny(handles) == 0)
+                    {
+                        try { WakeRunningInstance?.Invoke(); } catch (Exception) { }
+                    }
+                }
+            }) { IsBackground = true, Name = "HolyNotch wake" };
+            thread.Start();
+            return new WakeHandle(ev, cts);
+        }
+        catch (Exception) { return null; }
+    }
+
+    sealed class WakeHandle(System.Threading.EventWaitHandle ev, System.Threading.CancellationTokenSource cts) : IDisposable
+    {
+        public void Dispose() { cts.Cancel(); ev.Dispose(); cts.Dispose(); }
+    }
+#endif
 
     static IDisposable? SingleInstance()
     {

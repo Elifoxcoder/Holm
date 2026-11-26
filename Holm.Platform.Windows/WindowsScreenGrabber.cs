@@ -12,37 +12,53 @@ namespace Holm.Platform.Windows;
 sealed class WindowsScreenGrabber : IScreenGrabber
 {
     readonly int _x, _y, _areaWidth, _areaHeight, _width, _height;
-    readonly IntPtr _screen, _memory, _bitmap;
+    IntPtr _memory, _bitmap;
 
     public WindowsScreenGrabber(int x, int y, int areaWidth, int areaHeight, int width, int height)
     {
         (_x, _y, _areaWidth, _areaHeight) = (x, y, Math.Max(1, areaWidth), Math.Max(1, areaHeight));
         (_width, _height) = (Math.Max(1, width), Math.Max(1, height));
-        _screen = GetDC(IntPtr.Zero);
-        _memory = CreateCompatibleDC(_screen);
-        _bitmap = CreateCompatibleBitmap(_screen, _width, _height);
-        SetStretchBltMode(_memory, HALFTONE);
-        SetBrushOrgEx(_memory, 0, 0, IntPtr.Zero);
     }
 
     public ScreenImage? Grab()
     {
-        IntPtr old = SelectObject(_memory, _bitmap);
+        // Acquire and release the display DC on the capture thread (GetDC/ReleaseDC are thread-affine in Win32).
+        IntPtr screen = GetDC(IntPtr.Zero);
+        if (screen == IntPtr.Zero) return null;
         try
         {
-            if (!StretchBlt(_memory, 0, 0, _width, _height, _screen, _x, _y, _areaWidth, _areaHeight, SRCCOPY | CAPTUREBLT)) return null;
-            DrawPointer(_width / (double)_areaWidth);
+            if (_memory == IntPtr.Zero)
+            {
+                _memory = CreateCompatibleDC(screen);
+                if (_memory == IntPtr.Zero) return null;
+                _bitmap = CreateCompatibleBitmap(screen, _width, _height);
+                if (_bitmap == IntPtr.Zero) { DeleteDC(_memory); _memory = IntPtr.Zero; return null; }
+                SetStretchBltMode(_memory, HALFTONE);
+                SetBrushOrgEx(_memory, 0, 0, IntPtr.Zero);
+            }
+            IntPtr old = SelectObject(_memory, _bitmap);
+            try
+            {
+                if (!StretchBlt(_memory, 0, 0, _width, _height, screen, _x, _y, _areaWidth, _areaHeight, SRCCOPY | CAPTUREBLT)
+                    && !StretchBlt(_memory, 0, 0, _width, _height, screen, _x, _y, _areaWidth, _areaHeight, SRCCOPY))
+                    return null;
+                DrawPointer(_width / (double)_areaWidth);
+            }
+            finally { SelectObject(_memory, old); } // GetDIBits wants the bitmap out of the DC
+            var header = new BITMAPINFOHEADER
+            {
+                biSize = Marshal.SizeOf<BITMAPINFOHEADER>(), biWidth = _width, biHeight = -_height, // top-down
+                biPlanes = 1, biBitCount = 32,
+            };
+            var pixels = new byte[_width * _height * 4];
+            if (GetDIBits(screen, _bitmap, 0, (uint)_height, pixels, ref header, 0) == 0) return null;
+            for (int i = 3; i < pixels.Length; i += 4) pixels[i] = 0xFF;
+            return new ScreenImage(_width, _height, pixels);
         }
-        finally { SelectObject(_memory, old); } // GetDIBits wants the bitmap out of the DC
-        var header = new BITMAPINFOHEADER
+        finally
         {
-            biSize = Marshal.SizeOf<BITMAPINFOHEADER>(), biWidth = _width, biHeight = -_height, // top-down
-            biPlanes = 1, biBitCount = 32,
-        };
-        var pixels = new byte[_width * _height * 4];
-        if (GetDIBits(_screen, _bitmap, 0, (uint)_height, pixels, ref header, 0) == 0) return null;
-        for (int i = 3; i < pixels.Length; i += 4) pixels[i] = 0xFF;
-        return new ScreenImage(_width, _height, pixels);
+            ReleaseDC(IntPtr.Zero, screen);
+        }
     }
 
     /// <summary>The mouse pointer where it is, as viewers expect to see it.</summary>
@@ -64,9 +80,8 @@ sealed class WindowsScreenGrabber : IScreenGrabber
 
     public void Dispose()
     {
-        DeleteObject(_bitmap);
-        DeleteDC(_memory);
-        ReleaseDC(IntPtr.Zero, _screen);
+        if (_bitmap != IntPtr.Zero) { DeleteObject(_bitmap); _bitmap = IntPtr.Zero; }
+        if (_memory != IntPtr.Zero) { DeleteDC(_memory); _memory = IntPtr.Zero; }
     }
 
     /// <summary>Keeps a window out of screen pictures, or lets it back in (Windows 10 2004 and later).</summary>

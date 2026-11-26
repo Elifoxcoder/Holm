@@ -91,8 +91,9 @@ public sealed partial class NotchWindow
         _friends.RemovedUs += OnFriendRemovedUs;
         _friends.ProfileReceived += _ => { _pictures.Clear(); if (_sharing) { RefreshShareTargets(); ApplyState(animate: true); } };
         _friends.FriendOnline += _ => { if (_sharing) { RefreshShareTargets(); ApplyState(animate: true); } };
-        _friends.OwnDevicesChanged += () => { if (_sharing) { RefreshShareTargets(); ApplyState(animate: true); } };
+        _friends.OwnDevicesChanged += () => { OnOwnDevicesChanged(); if (_sharing) { RefreshShareTargets(); ApplyState(animate: true); } };
         _friends.PhoneStatusReceived += OnPhoneStatus;
+        _friends.OwnClipboardReceived += (device, text) => _ = OnOwnClipboardReceivedAsync(device, text);
 
         // A drag is over once it left the notch (DragLeave without a new DragEnter), or, should that never arrive,
         // once it has been still for a while.
@@ -167,7 +168,13 @@ public sealed partial class NotchWindow
         {
             int colon = relay.LastIndexOf(':');
             if (colon > 0 && int.TryParse(relay[(colon + 1)..], out int port) && port is > 0 and < 65536)
-                return (relay[..colon], port);
+            {
+                string host = relay[..colon].Trim();
+                // Ignore retired Holm/magic-wormhole relays so upgraded installs always use HolyNotch's transit relay.
+                if (!host.Equals("transit.magic-wormhole.io", StringComparison.OrdinalIgnoreCase)
+                    && !host.Equals("relay.holmnotch.ch", StringComparison.OrdinalIgnoreCase))
+                    return (host, port);
+            }
         }
         return (RelayLink.DefaultHost, RelayLink.DefaultPort);
     }
@@ -651,7 +658,8 @@ public sealed partial class NotchWindow
             await using var stream = await RelayLink.ConnectWithRetryAsync(host, port, ShareCode.RelayToken(secret), TimeSpan.FromMinutes(2), cts.Token);
             await using var channel = new SecureChannel(stream, ShareCode.Key(secret), initiator: false);
             // The note proved who it is, so show the name we know them by, not the one their notch sends.
-            await ReceiveIntoDownloadsAsync(channel, cts, knownSender: friend.Name);
+            // Same-account devices accept automatically without an Accept/Decline prompt.
+            await ReceiveIntoDownloadsAsync(channel, cts, knownSender: friend.Name, autoAccept: _friends.IsMe(friend));
         }
         catch (OperationCanceledException) when (!cts.IsCancellationRequested)
         {
@@ -857,7 +865,7 @@ public sealed partial class NotchWindow
     }
 
     async Task ReceiveIntoDownloadsAsync(SecureChannel channel, CancellationTokenSource cts, string? knownSender = null,
-                                          bool nearbyUnauthenticated = false)
+                                          bool nearbyUnauthenticated = false, bool autoAccept = false)
     {
         string sender = "";
         IReadOnlyList<string>? saved;
@@ -869,6 +877,12 @@ public sealed partial class NotchWindow
                 {
                     if (knownSender != null) offer = offer with { Sender = knownSender };
                     sender = offer.Sender;
+                    if (autoAccept)
+                    {
+                        bool text = offer.IsText && _settings.BeamText;
+                        ShowTask("", ShareBlue, $"Receiving from {offer.Sender}", text ? "Copying it" : "Saving to Downloads", 0, null, ("Cancel", CancelTask));
+                        return Task.FromResult(true);
+                    }
                     return AskAsync(offer, decisionToken, nearbyUnauthenticated);
                 }),
                 offer => offer.IsText && _settings.BeamText ? TextInbox : _shell.DownloadsFolder(),

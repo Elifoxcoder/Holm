@@ -534,6 +534,8 @@ class NotchController extends ChangeNotifier {
       case 'dnd':
         dnd = e['on'] == true;
         _tellPcState();
+      case 'pcQuery':
+        _tellPcState(force: true);
     }
     switch (e['type']) {
       case 'settings':

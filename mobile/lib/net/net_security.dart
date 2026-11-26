@@ -88,11 +88,12 @@ String? normalizeHttpsServer(String? server) {
 /// Resolves once and connects to one of the checked public addresses. TLS still uses the original URI host name.
 Future<ConnectionTask<Socket>> connectPublic(Uri uri,
     {Future<List<InternetAddress>> Function(String host)? resolve}) async {
-  if (uri.scheme != 'https' || uri.userInfo.isNotEmpty || !isPublicHost(uri.host)) {
+  if ((uri.scheme != 'https' && uri.scheme != 'wss') || uri.userInfo.isNotEmpty || !isPublicHost(uri.host)) {
     throw const HttpException('The request destination is not a public HTTPS server.');
   }
   var host = uri.host;
   if (host.startsWith('[') && host.endsWith(']')) host = host.substring(1, host.length - 1);
+  final port = uri.hasPort && uri.port > 0 ? uri.port : 443;
   final literal = InternetAddress.tryParse(host);
   final addresses = literal != null
       ? [literal]
@@ -102,10 +103,18 @@ Future<ConnectionTask<Socket>> connectPublic(Uri uri,
   if (public.isEmpty) throw const HttpException('The request destination has no public address.');
   Object? last;
   for (final address in public) {
-    final attempt = await Socket.startConnect(address, uri.port);
+    final attempt = await Socket.startConnect(address, port);
     try {
       final socket = await attempt.socket.timeout(const Duration(seconds: 15));
-      return ConnectionTask.fromSocket(Future.value(socket), () => socket.destroy());
+      try {
+        // HttpClient does not wrap a custom connectionFactory's plain Socket in TLS; perform TLS here with the
+        // original host name so SNI and certificate validation work while staying pinned to the checked public IP.
+        final secure = await SecureSocket.secure(socket, host: host).timeout(const Duration(seconds: 15));
+        return ConnectionTask.fromSocket(Future.value(secure), () => secure.destroy());
+      } catch (_) {
+        socket.destroy();
+        rethrow;
+      }
     } catch (e) {
       attempt.cancel();
       last = e;
