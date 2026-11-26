@@ -505,7 +505,9 @@ class NotchController extends ChangeNotifier {
   /// Tells the account's PCs (through the app): a notification, a call, a song or a timer (Holm.Core PhoneStatus).
   void _tellPc(String kind, String? title,
       {String? detail, int since = 0, bool on = true, Map<String, Object?>? extra, String? key}) {
-    if (!settings.toPc || title == null || title.trim().isEmpty) return;
+    if (title == null || title.trim().isEmpty) return;
+    // Notifications also go with only "Codes to your PC" on: the app then sends just a login code found in them.
+    if (!settings.toPc && !(kind == 'notification' && settings.codesToPc)) return;
     action?.call('phoneStatus', {'kind': kind, 'title': title, 'detail': detail, 'since': since, 'on': on, 'extra': extra, 'key': key});
   }
 

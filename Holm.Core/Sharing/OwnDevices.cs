@@ -41,8 +41,11 @@ public sealed record PhoneStatus(string Kind, string Title, string? Detail, long
     public static string? CleanKey(string? key) => key is { Length: > 0 and <= MaxKey } && !key.Any(char.IsControl) ? key : null;
 
     public const string Notification = "notification", Call = "call", Music = "music", Timer = "timer", Battery = "battery",
-        Status = "status";
-    static readonly string[] Kinds = { Notification, Call, Music, Timer, Battery, Status };
+        Status = "status", Code = "code";
+    static readonly string[] Kinds = { Notification, Call, Music, Timer, Battery, Status, Code };
+
+    /// <summary>A login code as the phone found it (<see cref="Code"/>: Title who sent it, Detail the code): 3 to 10 digits only.</summary>
+    public static bool IsCode(string? code) => code is { Length: >= 3 and <= 10 } && code.All(char.IsAsciiDigit);
     const int MaxTitle = 80, MaxDetail = 160, MaxExtra = 400;
 
     /// <summary>A status as a note brings it, checked; null for a kind this version doesn't know or no title.</summary>
@@ -51,6 +54,7 @@ public sealed record PhoneStatus(string Kind, string Title, string? Detail, long
     {
         if (kind == null || Array.IndexOf(Kinds, kind) < 0) return null;
         if (Clean(title, MaxTitle) is not { } cleanTitle) return null;
+        if (kind == Code && !IsCode(detail)) return null;
         return new PhoneStatus(kind, cleanTitle, Clean(detail, MaxDetail), Math.Max(0, since ?? 0), on ?? true,
                                extra is { Length: > 0 and <= MaxExtra } ? extra : null);
     }

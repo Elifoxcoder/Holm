@@ -1,4 +1,5 @@
 using System;
+using Avalonia.Input.Platform;
 using WinNotch;
 using WinNotch.Sharing;
 using WinNotch.Notify;
@@ -10,11 +11,61 @@ namespace Holm.App;
 // went off, and when the phone is fully charged. The notes travel end-to-end encrypted through the account's own inbox (FriendNoteKind.Phone).
 public sealed partial class NotchWindow
 {
+    /// <summary>
+    /// A login or verification code from a notification on the phone: "Code 482913 · from Google" with Copy. Copied, it
+    /// stays out of the clipboard history and the other devices, and leaves the clipboard after a minute.
+    /// </summary>
+    void OfferPhoneCode(OwnDevice device, string from, string code)
+    {
+        if (_busy) { ShowPeek("", $"Code {code}", $"From {from} on {device.Name}", null, seconds: 8); ApplyState(animate: true); return; }
+        Diag.Log($"Phone: a login code from {from}");
+        string spaced = code.Length is 6 or 8 ? code[..(code.Length / 2)] + " " + code[(code.Length / 2)..] : code;
+        ShowTask("", ShareBlue, $"Code {spaced}", $"From {from} · {device.Name}", null,
+                 ("Copy", () => _ = CopyPhoneCodeAsync(code)), ("Dismiss", HideTask));
+        _taskHide.Stop();
+        _taskHide.Interval = TimeSpan.FromSeconds(30);
+        _taskHide.Start();
+        ApplyState(animate: true);
+    }
+
+    async System.Threading.Tasks.Task CopyPhoneCodeAsync(string code)
+    {
+        // Our own doing: the clipboard capture skips it (no history entry, not synced to the account's devices).
+        _restoringKey = ClipboardHistory.TextKey(code);
+        if (!await TrySetClipboardAsync(code))
+        {
+            _restoringKey = null;
+            ShowTask("", RedBrush, "Couldn't copy the code", "Another app holds the clipboard", null, null, ("OK", HideTask));
+            return;
+        }
+        _copiedCode = code;
+        ShowTask("", GreenBrush, "Code copied", "Paste it now · it leaves the clipboard in a minute", null, null, ("OK", HideTask));
+        _taskHide.Stop();
+        _taskHide.Interval = TimeSpan.FromSeconds(4);
+        _taskHide.Start();
+        Avalonia.Threading.DispatcherTimer.RunOnce(async () =>
+        {
+            if (_copiedCode != code || Clipboard is not { } clipboard) return;
+            _copiedCode = null;
+            try { if (await clipboard.TryGetTextAsync() == code) await clipboard.ClearAsync(); }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { Diag.Log("Clearing the copied code: " + ex.Message); }
+        }, TimeSpan.FromSeconds(60));
+    }
+
     /// <summary>The last song the phone told about: a pause and play of the same song doesn't pop out again.</summary>
     string? _phoneSong;
 
+    /// <summary>The login code on offer, cleared from the clipboard a minute after it was copied (if still there).</summary>
+    string? _copiedCode;
+
     void OnPhoneStatus(OwnDevice device, PhoneStatus status)
     {
+        if (status.Kind == PhoneStatus.Code)
+        {
+            // Never in the phone tool's list or any history: shown once, copied on request.
+            if (_settings.PhoneCodes && status.On && status.Detail is { } code) OfferPhoneCode(device, status.Title, code);
+            return;
+        }
         NotePhone(device, status); // the phone tool's page
         string phone = device.Name;
         switch (status.Kind)

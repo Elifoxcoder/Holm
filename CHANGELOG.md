@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.4.8 – 2026-11-26
+
+### Added
+
+- **Codes from your phone:** a login or verification code in a notification on your phone (SMS, mail, an app) pops out on your PC with *Copy*. Copied, it stays out of the clipboard history and your other devices, and leaves the clipboard after a minute. Only the code travels, end-to-end encrypted, also while the phone is locked. *Settings › Pop-outs › Codes from your phone* on the PC, *Notch › Notifications › Codes to your PC* on the phone (Android 1.4.6).
+- **What's new** on the download page (sites.elifox.ch/holynotch), always the latest versions from this changelog.
+
 ## 2.4.7 – 2026-11-26
 
 ### Fixed

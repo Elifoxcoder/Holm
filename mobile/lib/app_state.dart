@@ -12,6 +12,7 @@ import 'net/account.dart';
 import 'net/crypto.dart';
 import 'net/errors.dart';
 import 'net/friends.dart';
+import 'net/one_time_code.dart';
 import 'net/nearby.dart';
 import 'net/relay.dart';
 import 'net/secure_channel.dart';
@@ -354,8 +355,29 @@ class AppState extends ChangeNotifier {
 
   /// What happens on the phone, for the notch of the account's PCs: a note in our own inbox, live only (a PC that
   /// isn't running doesn't need yesterday's call). Holm.Core: FriendNoteKind.Phone.
+  String? _lastCodeSent;
+  DateTime _lastCodeAt = DateTime(0);
+
   void _phoneStatus(Map<String, Object?> status) {
-    if (account == null || !notch.toPc) return;
+    if (account == null) return;
+    // A login or verification code: the PCs offer to copy it. Only the code goes, never the message; while the phone is
+    // locked the service passes the notification only for this (lockedCodeOnly), and nothing else of it leaves.
+    if (notch.codesToPc && status['kind'] == 'notification' && status['on'] != false) {
+      final code = findOneTimeCode('${status['title'] ?? ''} ${status['detail'] ?? ''}');
+      final now = DateTime.now();
+      if (code != null && (code != _lastCodeSent || now.difference(_lastCodeAt) > const Duration(minutes: 2))) {
+        _lastCodeSent = code;
+        _lastCodeAt = now;
+        final from = '${status['title'] ?? ''}'.trim();
+        unawaited(Inbox.post(
+          _ownCard,
+          Notes.seal(me, _ownCard, 'phone', {'D': deviceId, 'Y': 'code', 'V': from.isEmpty ? 'Your phone' : from, 'W': code, 'Z': unixNow()},
+              from: deviceName),
+          keep: false,
+        ).catchError((_) {}));
+      }
+    }
+    if (status['lockedCodeOnly'] == true || !notch.toPc) return;
     final on = status['on'] != false;
     unawaited(Inbox.post(
       _ownCard,

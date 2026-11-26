@@ -112,6 +112,8 @@ internal sealed class AppSettings
     public bool AllNotifications { get; set; }
     /// <summary>With <see cref="AllNotifications"/>: Microsoft Teams' notifications pop out too. Off mutes Teams in the notch.</summary>
     public bool TeamsPopups { get; set; } = true;
+    /// <summary>A login code the phone found in a notification pops out with Copy (the phone app's "Codes to your PC").</summary>
+    public bool PhoneCodes { get; set; } = true;
     /// <summary>Holm takes the volume and media keys, so Windows' own pop-up stays away and only the notch shows them. Off by default.</summary>
     public bool NotchOnlyPopups { get; set; }
     /// <summary>Holm shows Handy's dictation in the notch and keeps Handy's own overlay out of sight. Off by default.</summary>

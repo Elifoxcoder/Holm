@@ -394,6 +394,17 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
                 value: n.toPc,
                 onChanged: (v) => _set(n.copyWith(toPc: v)),
               ),
+              SwitchListTile(
+                dense: true,
+                title: const Text('Codes to your PC', style: TextStyle(fontSize: 15)),
+                subtitle: const Text(
+                  'A login or verification code in a notification goes to your PCs, which offer to copy it. Only the code, '
+                  'end-to-end encrypted, also while the phone is locked',
+                  style: TextStyle(color: HolmColors.dim, fontSize: 12.5),
+                ),
+                value: n.codesToPc,
+                onChanged: (v) => _set(n.copyWith(codesToPc: v)),
+              ),
               Builder(builder: (context) {
                 final de = Localizations.localeOf(context).languageCode == 'de';
                 const colors = {

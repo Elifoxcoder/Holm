@@ -103,6 +103,10 @@ $latest = [ordered]@{
     exe = "$version/HolyNotch.exe"
     notes = $Notes
 } | ConvertTo-Json -Compress
+# The changelog for the download page's "What's new" (it reads it from here).
+scp -q -o BatchMode=yes (Join-Path $root "CHANGELOG.md") "${Server}:$Folder/changelog.md"
+if ($LASTEXITCODE -ne 0) { Write-Warning "Couldn't upload CHANGELOG.md: the download page keeps the old changelog." }
+
 $json = Join-Path $out "latest.json"
 [IO.File]::WriteAllText($json, $latest, [Text.UTF8Encoding]::new($false))
 scp -q -o BatchMode=yes $json "${Server}:$Folder/latest.json.new"

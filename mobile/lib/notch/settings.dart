@@ -133,6 +133,8 @@ class NotchSettings {
   final String budsColor;
   /// The edge drawn around the notch while it is black (closed always; open unless a design colours it).
   final NotchOutline outline;
+  /// A login or verification code in a notification goes to the account's PCs, which offer to copy it.
+  final bool codesToPc;
 
   const NotchSettings({
     this.maxActivities = 2,
@@ -154,6 +156,7 @@ class NotchSettings {
     this.compactBanners = false,
     this.budsColor = 'porcelain',
     this.outline = NotchOutline.none,
+    this.codesToPc = true,
   });
 
   bool shows(ActivityKind kind) => !off.contains(kind);
@@ -187,6 +190,7 @@ class NotchSettings {
     bool? compactBanners,
     String? budsColor,
     NotchOutline? outline,
+    bool? codesToPc,
   }) =>
       NotchSettings(
         maxActivities: maxActivities ?? this.maxActivities,
@@ -208,6 +212,7 @@ class NotchSettings {
         compactBanners: compactBanners ?? this.compactBanners,
         budsColor: budsColor ?? this.budsColor,
         outline: outline ?? this.outline,
+        codesToPc: codesToPc ?? this.codesToPc,
       );
 
   String toJsonString() => jsonEncode({
@@ -230,6 +235,7 @@ class NotchSettings {
         'compact': compactBanners,
         'budsColor': budsColor,
         'outline': outline.name,
+        'codes': codesToPc,
       });
 
   static NotchSettings fromJsonString(String? text) {
@@ -261,6 +267,7 @@ class NotchSettings {
         compactBanners: j['compact'] == true,
         budsColor: const {'porcelain', 'hazel', 'wintergreen', 'peony'}.contains(j['budsColor']) ? j['budsColor'] as String : 'porcelain',
         outline: NotchOutline.values.asNameMap()[j['outline']] ?? NotchOutline.none,
+        codesToPc: j['codes'] != false,
       );
     } catch (_) {
       return d;

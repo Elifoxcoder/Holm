@@ -10,6 +10,18 @@ public class OwnDevicesTests
     static readonly string Pc = OwnDevice.NewId(), Phone = OwnDevice.NewId();
 
     [Fact]
+    public void A_login_code_from_the_phone_is_digits_only()
+    {
+        var code = PhoneStatus.From(PhoneStatus.Code, "Google", "482913", 1, true);
+        Assert.NotNull(code);
+        Assert.Equal("482913", code!.Detail);
+        Assert.Null(PhoneStatus.From(PhoneStatus.Code, "Google", "48-29", 1, true));
+        Assert.Null(PhoneStatus.From(PhoneStatus.Code, "Google", "your code is 482913", 1, true));
+        Assert.Null(PhoneStatus.From(PhoneStatus.Code, "Google", null, 1, true));
+        Assert.True(new AppSettings().PhoneCodes);
+    }
+
+    [Fact]
     public void A_message_written_on_the_phone_shows_in_the_PCs_chat_as_ours()
     {
         FriendsService.ProtectKey = (data, _) => data.ToArray();

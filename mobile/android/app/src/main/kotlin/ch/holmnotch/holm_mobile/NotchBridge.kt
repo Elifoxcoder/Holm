@@ -114,6 +114,11 @@ object NotchBridge {
     fun safeLockedPhoneStatus(args: Any?): Map<String, Any?>? {
         val m = args as? Map<*, *> ?: return null
         val kind = m["kind"] as? String ?: return null
+        // A notification only so the app can find a login code in it and send just that code to the account's PCs
+        // (lib/net/one_time_code.dart); the app never forwards a locked phone's notification itself.
+        if (kind == "notification" && m["on"] != false) {
+            return mapOf("kind" to kind, "title" to m["title"], "detail" to m["detail"], "lockedCodeOnly" to true)
+        }
         if (kind != "status" && kind != "battery") return null
         val out = mutableMapOf<String, Any?>(
             "kind" to kind,
