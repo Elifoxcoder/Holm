@@ -931,7 +931,16 @@ internal sealed partial class FriendsService
     {
         var me = EnsureMe();
         var note = new FriendNote(FriendNoteKind.Files, me.Name, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), Secret: secret);
-        return FriendInbox.PostAsync(to, FriendNotes.Seal(me, to, note), ct);
+        return PostLoggedAsync("file offer", to, FriendNotes.Seal(me, to, note), ct);
+    }
+
+    /// <summary>Posts a note and says in diag.log where it went and whether the inbox took it.</summary>
+    static async Task PostLoggedAsync(string what, Friend to, string sealedNote, CancellationToken ct)
+    {
+        Diag.Log($"Friends: sending a {what} to {to.Name} ({to.Topic} on {to.Server ?? "the default server"})");
+        try { await FriendInbox.PostAsync(to, sealedNote, ct).ConfigureAwait(false); }
+        catch (Exception ex) { Diag.Log($"Friends: the {what} to {to.Name} failed: {ErrorCodes.Describe(ex)}"); throw; }
+        Diag.Log($"Friends: {to.Name}'s inbox took the {what}");
     }
 
     /// <summary>Leaves a note asking the friend's notch to watch our stream, meeting on the relay with <paramref name="secret"/>.</summary>
@@ -940,7 +949,7 @@ internal sealed partial class FriendsService
     {
         var me = EnsureMe();
         var note = new FriendNote(FriendNoteKind.Stream, me.Name, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), Secret: secret);
-        return FriendInbox.PostAsync(to, FriendNotes.Seal(me, to, note), ct);
+        return PostLoggedAsync("stream invitation", to, FriendNotes.Seal(me, to, note), ct);
     }
 
     /// <summary>Waves at a friend. False when it's too soon after the last wave (see <see cref="WaveLimit"/>).</summary>
@@ -1148,12 +1157,16 @@ internal sealed partial class FriendsService
         // whose clock is off by a minute still gets through. Replays stay caught by the seen ids above, and an old offer
         // only leads to a relay nobody waits on. Requests and invites keep the authenticated sender time alone.
         long liveAge = arrived > 0 ? Math.Min(age, Math.Max(0, now - arrived)) : age;
+        var friend = sender == me.PublicKey ? null : Find(sender);
+        // Every note, so a failed transfer can be followed in diag.log: what came, from whom, how old by both clocks.
+        if (note.Kind is not (FriendNoteKind.Ping or FriendNoteKind.Here) || Diag.Enabled)
+            Diag.Log($"Friends: {note.Kind} from {(sender == me.PublicKey ? "own device " + note.Device : friend?.Name ?? "someone not a friend")}, " +
+                     $"sent {age}s ago, at the server {(arrived > 0 ? Math.Max(0, now - arrived) + "s ago" : "?")}");
         if (sender == me.PublicKey)
         {
             HandleOwn(me, note, liveAge);
             return;
         }
-        var friend = Find(sender);
         switch (note.Kind)
         {
             case FriendNoteKind.Files when friend == null:

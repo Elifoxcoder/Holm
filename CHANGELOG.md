@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.4.7 – 2026-11-26
+
+### Fixed
+
+- **The stream window has its buttons:** *Full screen* and *Stop watching* (their symbols were empty, so the bar looked bare).
+- **No more invitations again and again:** after *Not now* or after closing a friend's stream, further invitations from them are declined quietly for a minute; several at once count as one.
+- **The streamer sees that the invitation arrived:** the watcher's HolyNotch meets them on the relay at once, so *Their notch is open · waiting for Watch* shows while they decide.
+
+### Changed
+
+- diag.log names every friend note (kind, from whom, age by both clocks), every offer and invitation sent, and each stream step.
+
 ## 2.4.6 – 2026-11-26
 
 ### Fixed

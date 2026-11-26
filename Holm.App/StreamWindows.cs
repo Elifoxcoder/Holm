@@ -62,8 +62,9 @@ internal sealed class StreamViewerWindow : Window
         bar.Children.Add(who);
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 6, 0) };
-        buttons.Children.Add(BarButton("", "Full screen (double-click)", ToggleFullScreen));
-        buttons.Children.Add(BarButton("", "Stop watching (Esc)", Close));
+        // The glyphs were empty (also in Holm), so the bar showed no buttons at all; the label says what each does.
+        buttons.Children.Add(BarButton("", "Full screen", "Full screen (double-click)", ToggleFullScreen));
+        buttons.Children.Add(BarButton("", "Stop watching", "Stop watching (Esc)", Close));
         Grid.SetColumn(buttons, 2);
         bar.Children.Add(buttons);
         // The bar moves the window, as a title bar does.
@@ -104,12 +105,15 @@ internal sealed class StreamViewerWindow : Window
         };
     }
 
-    static Border BarButton(string glyph, string tip, Action click)
+    static Border BarButton(string glyph, string label, string tip, Action click)
     {
+        var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center };
+        content.Children.Add(HubTheme.Glyph(glyph, 12));
+        content.Children.Add(new TextBlock { Text = label, FontSize = 12, VerticalAlignment = VerticalAlignment.Center });
         var button = new Border
         {
-            Width = 34, Height = 30, CornerRadius = new CornerRadius(6), Background = Brushes.Transparent, Cursor = new Cursor(StandardCursorType.Hand),
-            Child = HubTheme.Glyph(glyph, 12), Margin = new Thickness(2, 0, 0, 0),
+            Height = 30, Padding = new Thickness(10, 0, 10, 0), CornerRadius = new CornerRadius(6), Background = Brushes.Transparent, Cursor = new Cursor(StandardCursorType.Hand),
+            Child = content, Margin = new Thickness(2, 0, 0, 0),
         };
         ToolTip.SetTip(button, tip);
         button.PointerEntered += (_, _) => button.Background = HubTheme.Card;

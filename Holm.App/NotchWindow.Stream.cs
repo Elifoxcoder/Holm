@@ -32,8 +32,15 @@ public sealed partial class NotchWindow
     StreamBadge? _badge;
     DateTime _streamStarted;
     readonly HashSet<string> _streamInvites = new();
-    (Friend Friend, byte[] Secret)? _streamOffer;
+    /// <summary>The invitation waiting for Watch, and our side's connection to the relay, made at once (so the streamer sees that it arrived).</summary>
+    (Friend Friend, byte[] Secret, Task<Stream> Link)? _streamOffer;
     DispatcherTimer? _offerTimeout;
+    /// <summary>
+    /// After Not now, or after closing a friend's stream: their further invitations are declined quietly for a minute
+    /// (by friend key), so a stream that goes on doesn't keep asking again and again.
+    /// </summary>
+    readonly Dictionary<string, DateTime> _streamQuietUntil = new();
+    static readonly TimeSpan StreamQuiet = TimeSpan.FromSeconds(60);
     /// <summary>Where Holm's own windows are in the streamed area, in its pixels, where the system can't hide them; read by the capture thread.</summary>
     volatile PixelRect[] _streamMask = Array.Empty<PixelRect>();
     bool _hiddenFromCapture;
@@ -335,8 +342,22 @@ public sealed partial class NotchWindow
             _ = DeclineStreamAsync(secret);
             return;
         }
-        if (_streamOffer is { } earlier) _ = DeclineStreamAsync(earlier.Secret); // one at a time
-        _streamOffer = (friend, secret);
+        if (_streamQuietUntil.TryGetValue(friend.Key, out var quiet) && DateTime.UtcNow < quiet)
+        {
+            Diag.Log($"Stream: {friend.Name} invites again, declined quietly (you just said no or stopped watching)");
+            _ = DeclineStreamAsync(secret);
+            return;
+        }
+        if (_streamOffer is { } earlier)
+        {
+            _ = DeclineStreamAsync(earlier.Secret, earlier.Link); // one at a time
+            if (earlier.Friend.Key == friend.Key) Diag.Log($"Stream: {friend.Name} invites again while asked; the newest one counts");
+        }
+        // To the relay right away, as for files: the streamer then knows the invitation reached us while we decide.
+        var (relayHost, relayPort) = RelayEndpoint();
+        var link = RelayLink.ConnectWithRetryAsync(relayHost, relayPort, ShareCode.RelayToken(secret), TimeSpan.FromSeconds(55), CancellationToken.None);
+        Diag.Log($"Stream: {friend.Name} invites us to watch; meeting them on the relay");
+        _streamOffer = (friend, secret, link);
         ShowTask(FaceText(friend.Name), FaceBrush(friend.Name), $"{friend.Name} is streaming", "Watch their screen?", null,
                  ("Watch", () => AnswerStream(watch: true)), ("Not now", () => AnswerStream(watch: false)), textIcon: true);
         _taskHide.Stop(); // it waits for an answer
@@ -355,11 +376,16 @@ public sealed partial class NotchWindow
         if (_streamOffer is not { } offer) return;
         _streamOffer = null;
         HideTask();
-        if (watch) _ = WatchStreamAsync(offer.Friend, offer.Secret);
-        else _ = DeclineStreamAsync(offer.Secret);
+        Diag.Log(watch ? $"Stream: watching {offer.Friend.Name}" : $"Stream: not watching {offer.Friend.Name}");
+        if (watch) _ = WatchStreamAsync(offer.Friend, offer.Secret, offer.Link);
+        else
+        {
+            _streamQuietUntil[offer.Friend.Key] = DateTime.UtcNow + StreamQuiet;
+            _ = DeclineStreamAsync(offer.Secret, offer.Link);
+        }
     }
 
-    async Task WatchStreamAsync(Friend friend, byte[] secret)
+    async Task WatchStreamAsync(Friend friend, byte[] secret, Task<Stream> link)
     {
         var viewer = new StreamViewerWindow(friend.Name, (FaceText(friend.Name), FaceBrush(friend.Name)));
         viewer.Show();
@@ -367,10 +393,7 @@ public sealed partial class NotchWindow
         bool counted = false;
         try
         {
-            var (host, port) = RelayEndpoint();
-            using var link = CancellationTokenSource.CreateLinkedTokenSource(viewer.Stopped);
-            link.CancelAfter(TimeSpan.FromSeconds(30));
-            var stream = await RelayLink.ConnectWithRetryAsync(host, port, ShareCode.RelayToken(secret), TimeSpan.FromSeconds(30), link.Token);
+            var stream = await link.WaitAsync(viewer.Stopped);
             await using var channel = new SecureChannel(stream, ShareCode.Key(secret), initiator: false);
             bool ended = await StreamProtocol.WatchAsync(channel, frame =>
             {
@@ -388,15 +411,21 @@ public sealed partial class NotchWindow
             Diag.Log($"Watching a stream: {ErrorCodes.Of(ex).Code}: {ex}");
             if (!viewer.Stopped.IsCancellationRequested) viewer.Ended("The stream stopped · " + ErrorCodes.Describe(ex));
         }
+        finally
+        {
+            // Closed the window (or the stream ended): no new invitation from them for a minute.
+            if (viewer.Stopped.IsCancellationRequested) _streamQuietUntil[friend.Key] = DateTime.UtcNow + StreamQuiet;
+        }
     }
 
-    async Task DeclineStreamAsync(byte[] secret)
+    /// <summary>Says no on the relay: over <paramref name="link"/> when we went there already, else by meeting them now.</summary>
+    async Task DeclineStreamAsync(byte[] secret, Task<Stream>? link = null)
     {
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             var (host, port) = RelayEndpoint();
-            var stream = await RelayLink.ConnectAsync(host, port, ShareCode.RelayToken(secret), cts.Token);
+            var stream = link != null ? await link.WaitAsync(cts.Token) : await RelayLink.ConnectAsync(host, port, ShareCode.RelayToken(secret), cts.Token);
             await using var channel = new SecureChannel(stream, ShareCode.Key(secret), initiator: false);
             await StreamProtocol.DeclineAsync(channel, cts.Token);
         }
