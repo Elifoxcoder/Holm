@@ -253,9 +253,28 @@ class NotchListener : NotificationListenerService() {
         val importance = if (currentRanking?.getRanking(sbn.key, ranking) == true) ranking.importance else NotificationManager.IMPORTANCE_DEFAULT
         val isMedia = x.containsKey(Notification.EXTRA_MEDIA_SESSION) ||
             x.getString(Notification.EXTRA_TEMPLATE)?.contains("MediaStyle") == true
-        val callType = x.getInt(Notification.EXTRA_CALL_TYPE, 0)
+        val rawCallType = x.getInt(Notification.EXTRA_CALL_TYPE, 0)
+        val actionTitles = (n.actions ?: emptyArray()).map { (it.title?.toString() ?: "").lowercase() }
+        val hasAnswerAction = actionTitles.any { t ->
+            t.contains("answer") || t.contains("accept") || t.contains("annehmen") || t.contains("abnehmen") ||
+                t.contains("répondre") || t.contains("rispondi") || t.contains("contestar")
+        }
+        val hasDeclineAction = actionTitles.any { t ->
+            t.contains("decline") || t.contains("reject") || t.contains("ablehnen") || t.contains("abweisen") ||
+                t.contains("refuser") || t.contains("rifiuta") || t.contains("rechazar")
+        }
+        val isPhoneRinging = runCatching {
+            getSystemService(android.media.AudioManager::class.java)?.mode == android.media.AudioManager.MODE_RINGTONE
+        }.getOrDefault(false)
+        val isCallNotif = rawCallType != 0 || n.category == Notification.CATEGORY_CALL || (hasAnswerAction && hasDeclineAction)
+        val callType = when {
+            rawCallType != 0 -> rawCallType
+            isCallNotif && (hasAnswerAction || isPhoneRinging || !x.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER, false)) -> 1
+            isCallNotif -> 2
+            else -> 0
+        }
         // The turn arrow of a navigation, the caller's photo: the notification's own picture.
-        val picture = if (!locked && (pkg in PICTURE_APPS || callType != 0 || n.category == Notification.CATEGORY_NAVIGATION))
+        val picture = if (!locked && (pkg in PICTURE_APPS || callType != 0 || n.category == Notification.CATEGORY_CALL || n.category == Notification.CATEGORY_NAVIGATION))
             runCatching { n.getLargeIcon()?.loadDrawable(this)?.let { png(it, 96) } }.getOrNull() else null
         NotchBridge.toNotch(
             mapOf(

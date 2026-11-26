@@ -821,8 +821,9 @@ class NotchController extends ChangeNotifier {
       return;
     }
     final callType = (e['callType'] as int?) ?? 0;
-    if (callType != 0 || (category == 'call' && ongoing)) {
-      final ringing = callType == 1 || (callType == 0 && !ongoing);
+    if (callType != 0 || category == 'call') {
+      final hasChronometer = e['chronometer'] == true;
+      final ringing = callType == 1 || (callType == 0 && !hasChronometer);
       if (callType == 3) return; // the phone app screening a call by itself
       final a = persistent(ActivityKind.call, ringing ? 100 : 88)
         // Android 15 hands listeners a reduced call notification, titled with the phone app's name.
@@ -831,12 +832,12 @@ class NotchController extends ChangeNotifier {
         ..callType = ringing ? 1 : 2
         ..text = ringing ? 'Incoming call' : null
         ..actions = const [];
-      if (!ringing && e['chronometer'] == true) a.countUpStart = DateTime.fromMillisecondsSinceEpoch((e['when'] as int?) ?? 0);
-      if (ringing && !initial) {
+      if (!ringing && hasChronometer) a.countUpStart = DateTime.fromMillisecondsSinceEpoch((e['when'] as int?) ?? 0);
+      if (ringing) {
         _focus = a.id;
         _focusedId = a.id;
         expanded = false; // show as iPhone-style incoming call pill with Answer/Decline buttons
-        _tellPc('call', a.title);
+        if (!initial) _tellPc('call', a.title);
       }
       if (!ringing) callMuted = false;
       notifyListeners();
