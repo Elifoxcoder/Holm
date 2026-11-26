@@ -815,11 +815,6 @@ class NotchController extends ChangeNotifier {
       }
       return;
     }
-    if (e['promoted'] == true) {
-      persistent(ActivityKind.liveUpdate, 70).text = (e['shortText'] as String?) ?? text;
-      notifyListeners();
-      return;
-    }
     final callType = (e['callType'] as int?) ?? 0;
     if (callType != 0 || category == 'call') {
       final hasChronometer = e['chronometer'] == true;
@@ -847,6 +842,11 @@ class NotchController extends ChangeNotifier {
       persistent(ActivityKind.navigation, 72)
         ..picture = e['picture'] as Uint8List?
         ..sub = e['sub'] as String?;
+      notifyListeners();
+      return;
+    }
+    if (e['promoted'] == true) {
+      persistent(ActivityKind.liveUpdate, 70).text = (e['shortText'] as String?) ?? text;
       notifyListeners();
       return;
     }

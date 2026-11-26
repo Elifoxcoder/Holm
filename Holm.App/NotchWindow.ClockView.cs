@@ -153,15 +153,6 @@ public sealed partial class NotchWindow
         _clockMediaBar.Children.Add(bar);
         _clockFullView.Children.Add(_clockMediaBar);
         _expandedView.Children.Add(_clockFullView);
-
-        // The clock under the tool row (or beside it while music plays) opens the large one.
-        foreach (Panel opener in new Panel[] { clockHeader, _mediaClockHeader })
-        {
-            opener.Background ??= Brushes.Transparent;
-            opener.Cursor = new Cursor(StandardCursorType.Hand);
-            ToolTip.SetTip(opener, "Large clock");
-            opener.PointerReleased += (_, e) => { e.Handled = true; SetClockView(true); };
-        }
     }
 
     NotchButton Toggle(string label, Action flip)
@@ -182,6 +173,7 @@ public sealed partial class NotchWindow
 
     void SetClockView(bool open, bool animate = true)
     {
+        if (open) return; // Large clock view removed: always keep the normal start page.
         if (_clockViewOpen == open) return;
         _clockViewOpen = open;
         if (!open)

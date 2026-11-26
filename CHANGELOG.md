@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.5.4 – 2026-11-26
+
+### Fixed
+
+- **Android 1.4.12:** incoming call pill & Google Maps navigation now take priority over Android 16 promoted Live Updates so incoming calls on Pixel always show the iPhone-style call pill with Decline/Accept buttons.
+- **Desktop Beam:** unified devices discovered via both Account and local Wi-Fi into a single entry (no duplicate `Elias' Pixel` / own device chips).
+- **Desktop Start Page:** removed the Large Clock view so clicking the clock or Home always stays on / returns to the normal notch start page.
+
 ## 2.5.3 – 2026-11-26
 
 ### Added

@@ -369,6 +369,10 @@ public sealed partial class NotchWindow
         // The account's other devices (the phone app, other PCs), wherever they are. A nearby peer can claim any
         // display name, so it must never hide or replace one of these authenticated entries.
         var devices = beam ? _friends.OwnDevicesNow : Array.Empty<OwnDevice>();
+        var knownNames = new HashSet<string>(
+            friends.Select(f => f.Name.Trim()).Concat(devices.Select(d => d.Name.Trim())),
+            StringComparer.OrdinalIgnoreCase);
+        peers = peers.Where(p => !knownNames.Contains(p.Name.Trim())).ToList();
         int online = friends.Count(_friends.IsOnline);
         _shareHint.Text = _pickFiles != null ? (beam ? "Click where it should go." : "Click Shelf to keep it here.")
             : !beam ? "Drop it on Shelf to keep it here and drag it out later."
