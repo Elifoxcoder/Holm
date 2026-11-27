@@ -566,6 +566,7 @@ function poll(res, url, topic) {
 }
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 });
+const transitWss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 });
 function rejectUpgrade(socket, status, error) {
   const body = JSON.stringify({ code: status, error });
   socket.end(`HTTP/1.1 ${status} ${http.STATUS_CODES[status]}\r\nConnection: close\r\nContent-Type: application/json\r\n` +
@@ -816,7 +817,7 @@ function transitWs(req, rawSocket, head, url, token, ip) {
   const side = url.searchParams.get("side") ?? "";
   if (!/^[0-9a-f]{1,32}$/.test(side)) return rejectUpgrade(rawSocket, 400, "bad side");
   if (!transitIpLimit(ip)) return rejectUpgrade(rawSocket, 429, "too many connections");
-  wss.handleUpgrade(req, rawSocket, head, (ws) => {
+  transitWss.handleUpgrade(req, rawSocket, head, (ws) => {
     const stream = createWebSocketStream(ws);
     let paired = false;
     const giveUp = setTimeout(() => { try { stream.end("error no partner\n"); } catch {} }, TRANSIT_WAIT);
