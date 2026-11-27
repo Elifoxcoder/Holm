@@ -280,6 +280,14 @@ internal sealed class AppSettings
     public bool SettingsLockEnabled { get; set; } = false;
     public string? SettingsLockHash { get; set; }
 
+    // ───────────── Experimental: Holm Bridge (separate identity on relay.holmnotch.ch, off by default) ─────────────
+    public bool HolmBridgeEnabled { get; set; } = false;
+    public string? HolmBridgeTopic { get; set; }
+    public string? HolmBridgePrivateKey { get; set; }
+    public List<Friend> HolmBridgeFriends { get; set; } = new();
+    public Dictionary<string, List<HolmBridgeMessage>> HolmBridgeChats { get; set; } = new();
+    public long HolmBridgeSince { get; set; }
+
     static string FilePath => Path.Combine(Diag.Folder, "settings.json");
     static readonly object SaveGate = new();
 

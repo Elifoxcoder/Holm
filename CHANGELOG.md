@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.12 – 2026-11-27
+
+### Added
+
+- **Experimental › Holm Bridge (Desktop, off by default):** connect and chat end-to-end encrypted with upstream Holm users on `relay.holmnotch.ch` using an isolated Holm identity (`HOLM-XXXXX-XXXXX` invite codes & native Holm chat protocol).
+
 ## 2.5.11 / Android 1.4.18 – 2026-11-27
 
 ### Added

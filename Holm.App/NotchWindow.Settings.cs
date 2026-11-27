@@ -152,6 +152,7 @@ public sealed partial class NotchWindow
             {
                 new HubPage("totp", TotpGlyph, "Authenticator", "TOTP 2FA codes, screen QR scanner, and phone sync", BuildTotpSettingsPage),
                 new HubPage("extranet", ExtranetGlyph, "Extranet", "Arbeitszeit-Übersicht (extranet.bbcag.ch) und Ausbadge-Benachrichtigung", BuildExtranetSettingsPage),
+                new HubPage("experimental", "\uE9D9", "Experimental", "Holm Bridge: mit originalen Holm-Nutzern chatten", BuildExperimentalPage),
                 new HubPage("network", "\uE701", "Wi-Fi", "Speed test and connection details", () => new NetworkPage(CurrentLink, TrySetClipboardAsync)),
             },
             BuildAccountPage,
