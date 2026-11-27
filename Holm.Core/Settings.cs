@@ -276,6 +276,10 @@ internal sealed class AppSettings
     /// <summary>Local yyyy-MM-dd date on which the "can badge out" notification was already shown.</summary>
     public string? ExtranetNotifiedDate { get; set; }
 
+    // ───────────── Settings password lock (per-device only, off by default) ─────────────
+    public bool SettingsLockEnabled { get; set; } = false;
+    public string? SettingsLockHash { get; set; }
+
     static string FilePath => Path.Combine(Diag.Folder, "settings.json");
     static readonly object SaveGate = new();
 

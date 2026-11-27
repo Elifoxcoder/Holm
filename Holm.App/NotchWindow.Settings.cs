@@ -2,7 +2,9 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
 using WinNotch;
@@ -144,6 +146,7 @@ public sealed partial class NotchWindow
             new[] { new HubPage(StartPage.Key, "\uE8A9", "Start page", "What the open notch shows, and where", BuildStartPage),
                 new HubPage("phone", CellPhoneGlyph, "Phone", "Your linked phone and devices", BuildPhoneSettingsPage),
                 new HubPage("design", "\uE790", "Design", "How HolyNotch looks: the design, its accent colour, your own designs", DesignPage),
+                new HubPage("lock", LockGlyph, "Settings lock", "Protect HolyNotch Settings with a password", BuildSettingsLockPage),
                 new HubPage("updates", "\uE896", "Updates", "New versions of HolyNotch", UpdatesPage) },
             new[]
             {
@@ -151,7 +154,10 @@ public sealed partial class NotchWindow
                 new HubPage("extranet", ExtranetGlyph, "Extranet", "Arbeitszeit-Übersicht (extranet.bbcag.ch) und Ausbadge-Benachrichtigung", BuildExtranetSettingsPage),
                 new HubPage("network", "\uE701", "Wi-Fi", "Speed test and connection details", () => new NetworkPage(CurrentLink, TrySetClipboardAsync)),
             },
-            BuildAccountPage);
+            BuildAccountPage,
+            _settings.SettingsLockEnabled && !string.IsNullOrEmpty(_settings.SettingsLockHash)
+                ? pw => SettingsLock.Verify(_settings.SettingsLockHash, pw)
+                : null);
         if ((Screens.Primary ?? (Screens.All.Count > 0 ? Screens.All[0] : null)) is { } screen)
             _settingsWindow.Height = Math.Min(740, screen.WorkingArea.Height / screen.Scaling - 24);
         _settingsWindow.Closed += (_, _) => { _settingsWindow = null; GifCache.ReleaseDecoded(); UpdateStreamMask(); HandMemoryBackSoon(); };
@@ -268,5 +274,130 @@ public sealed partial class NotchWindow
             };
             menu.Items.Add(item);
         }
+    }
+
+    HubView BuildSettingsLockPage() => new SettingsLockPage(
+        () => _settings.SettingsLockEnabled && !string.IsNullOrEmpty(_settings.SettingsLockHash),
+        pw => SettingsLock.Verify(_settings.SettingsLockHash, pw),
+        newPw =>
+        {
+            _settings.SettingsLockHash = SettingsLock.Hash(newPw);
+            _settings.SettingsLockEnabled = true;
+            _settings.Save();
+        },
+        () =>
+        {
+            _settings.SettingsLockEnabled = false;
+            _settings.SettingsLockHash = null;
+            _settings.Save();
+        });
+
+    sealed class SettingsLockPage : HubView
+    {
+        readonly Func<bool> _isEnabled;
+        readonly Func<string, bool> _verify;
+        readonly Action<string> _setPassword;
+        readonly Action _disable;
+        readonly StackPanel _body = new() { Spacing = 14 };
+
+        public SettingsLockPage(Func<bool> isEnabled, Func<string, bool> verify, Action<string> setPassword, Action disable)
+        {
+            _isEnabled = isEnabled;
+            _verify = verify;
+            _setPassword = setPassword;
+            _disable = disable;
+            Child = new ScrollViewer { Content = _body, Padding = new Thickness(0, 0, 12, 16) };
+            Refresh();
+        }
+
+        void Refresh(string? notice = null)
+        {
+            _body.Children.Clear();
+            bool enabled = _isEnabled();
+
+            _body.Children.Add(new TextBlock
+            {
+                Text = "Settings lock",
+                FontSize = 20, FontWeight = FontWeight.SemiBold, Foreground = Look.Ink,
+            });
+            _body.Children.Add(new TextBlock
+            {
+                Text = "Require a password each time HolyNotch Settings is opened on this computer (off by default).",
+                FontSize = 13, Foreground = HubTheme.Dim, TextWrapping = TextWrapping.Wrap,
+            });
+
+            if (!string.IsNullOrEmpty(notice))
+                _body.Children.Add(new TextBlock { Text = notice, FontSize = 13, Foreground = HubTheme.Green });
+
+            if (!enabled)
+            {
+                var stack = new StackPanel { Spacing = 10 };
+                stack.Children.Add(new TextBlock { Text = "Status: Off", FontSize = 14, FontWeight = FontWeight.SemiBold, Foreground = HubTheme.Dim });
+                var pw1 = HubTheme.Field("New password"); pw1.PasswordChar = '•';
+                var pw2 = HubTheme.Field("Confirm password"); pw2.PasswordChar = '•';
+                var err = new TextBlock { FontSize = 12, Foreground = HubTheme.Red, IsVisible = false };
+                var enableBtn = HubTheme.Action("Enable password lock", primary: true);
+                enableBtn.HorizontalAlignment = HorizontalAlignment.Left;
+                enableBtn.Click += (_, _) =>
+                {
+                    string a = pw1.Text ?? "", b = pw2.Text ?? "";
+                    if (a.Length < 4) { err.Text = "Use at least 4 characters."; err.IsVisible = true; return; }
+                    if (a != b) { err.Text = "Passwords do not match."; err.IsVisible = true; return; }
+                    _setPassword(a);
+                    Refresh("Settings lock enabled. It will ask for your password next time you open Settings.");
+                };
+                stack.Children.Add(pw1);
+                stack.Children.Add(pw2);
+                stack.Children.Add(err);
+                stack.Children.Add(enableBtn);
+                _body.Children.Add(CardBox(stack));
+            }
+            else
+            {
+                // Change password card
+                var changeStack = new StackPanel { Spacing = 10 };
+                changeStack.Children.Add(new TextBlock { Text = "Status: Locked with password", FontSize = 14, FontWeight = FontWeight.SemiBold, Foreground = HubTheme.Green });
+                var curPw = HubTheme.Field("Current password"); curPw.PasswordChar = '•';
+                var newPw1 = HubTheme.Field("New password"); newPw1.PasswordChar = '•';
+                var newPw2 = HubTheme.Field("Confirm new password"); newPw2.PasswordChar = '•';
+                var err = new TextBlock { FontSize = 12, Foreground = HubTheme.Red, IsVisible = false };
+                var btns = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                var updateBtn = HubTheme.Action("Change password", primary: true);
+                updateBtn.Click += (_, _) =>
+                {
+                    if (!_verify(curPw.Text ?? "")) { err.Text = "Current password is incorrect."; err.IsVisible = true; return; }
+                    string a = newPw1.Text ?? "", b = newPw2.Text ?? "";
+                    if (a.Length < 4) { err.Text = "Use at least 4 characters."; err.IsVisible = true; return; }
+                    if (a != b) { err.Text = "New passwords do not match."; err.IsVisible = true; return; }
+                    _setPassword(a);
+                    Refresh("Password updated.");
+                };
+                var disableBtn = HubTheme.Action("Disable lock", primary: false);
+                disableBtn.Click += (_, _) =>
+                {
+                    if (!_verify(curPw.Text ?? "")) { err.Text = "Enter your current password to disable the lock."; err.IsVisible = true; return; }
+                    _disable();
+                    Refresh("Settings lock disabled.");
+                };
+                btns.Children.Add(updateBtn);
+                btns.Children.Add(disableBtn);
+                changeStack.Children.Add(curPw);
+                changeStack.Children.Add(newPw1);
+                changeStack.Children.Add(newPw2);
+                changeStack.Children.Add(err);
+                changeStack.Children.Add(btns);
+                _body.Children.Add(CardBox(changeStack));
+            }
+        }
+
+        static Border CardBox(Control child) => new()
+        {
+            Background = HubTheme.Card,
+            BorderBrush = HubTheme.Edge,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(14),
+            Child = child,
+        };
     }
 }

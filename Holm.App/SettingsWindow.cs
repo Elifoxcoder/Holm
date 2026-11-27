@@ -85,7 +85,8 @@ sealed partial class SettingsWindow : Window
 
     public SettingsWindow(INotchWindowPlatform platform, IReadOnlyList<SettingsGroup> groups, string versionLabel, Func<bool> animations,
                           IReadOnlyList<HubPage>? social = null, string? start = null, ProfileEditor? profile = null, Func<Control>? me = null,
-                          IReadOnlyList<HubPage>? extra = null, IReadOnlyList<HubPage>? tools = null, Func<HubView>? belowProfile = null)
+                          IReadOnlyList<HubPage>? extra = null, IReadOnlyList<HubPage>? tools = null, Func<HubView>? belowProfile = null,
+                          Func<string, bool>? verifyPassword = null)
     {
         _tools = tools ?? Array.Empty<HubPage>();
         _extra = extra ?? Array.Empty<HubPage>();
@@ -300,6 +301,99 @@ sealed partial class SettingsWindow : Window
         var layers = new Grid();
         layers.Children.Add(_surface);
         layers.Children.Add(_dialog);
+        Border? lockOverlay = null;
+        if (verifyPassword != null)
+        {
+            var pwBox = HubTheme.Field("Password");
+            pwBox.PasswordChar = '•';
+            pwBox.Width = 280;
+            var pwError = new TextBlock { FontSize = 12, Foreground = HubTheme.Red, HorizontalAlignment = HorizontalAlignment.Center, IsVisible = false };
+            void TryUnlock()
+            {
+                if (verifyPassword(pwBox.Text ?? ""))
+                {
+                    lockOverlay!.IsVisible = false;
+                    pwBox.Text = "";
+                    pwError.IsVisible = false;
+                }
+                else
+                {
+                    pwError.Text = "Incorrect password.";
+                    pwError.IsVisible = true;
+                    pwBox.SelectAll();
+                    pwBox.Focus();
+                }
+            }
+            pwBox.KeyDown += (_, e) => { if (e.Key == Key.Enter) { e.Handled = true; TryUnlock(); } };
+            var unlockBtn = Action("Unlock", primary: true);
+            unlockBtn.Padding = new Thickness(24, 7, 24, 7);
+            unlockBtn.Click += (_, _) => TryUnlock();
+            var cancelBtn = Action("Close");
+            cancelBtn.Click += (_, _) => Close();
+            var btnRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, HorizontalAlignment = HorizontalAlignment.Center };
+            btnRow.Children.Add(cancelBtn);
+            btnRow.Children.Add(unlockBtn);
+
+            var lockCard = new Border
+            {
+                Background = Card,
+                BorderBrush = Edge,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(HubTheme.Round(16)),
+                Padding = new Thickness(28, 26),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = new StackPanel
+                {
+                    Spacing = 12,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    Children =
+                    {
+                        new Border
+                        {
+                            Width = 48, Height = 48, CornerRadius = new CornerRadius(24),
+                            Background = HubTheme.ActionSurface, BorderBrush = Edge, BorderThickness = new Thickness(1),
+                            HorizontalAlignment = HorizontalAlignment.Center,
+                            Child = Glyph("\uE72E", 20, Look.Accent),
+                        },
+                        new TextBlock { Text = "Settings locked", FontSize = 20, FontWeight = FontWeight.SemiBold, HorizontalAlignment = HorizontalAlignment.Center },
+                        new TextBlock { Text = "Enter your password to open HolyNotch Settings.", FontSize = 13, Foreground = Dim, HorizontalAlignment = HorizontalAlignment.Center },
+                        pwBox,
+                        pwError,
+                        btnRow,
+                    },
+                },
+            };
+
+            var lockClose = new Border
+            {
+                Width = 30, Height = 30, CornerRadius = new CornerRadius(HubTheme.Round(8)), Background = Card,
+                HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top,
+                Margin = new Thickness(0, 18, 22, 0), Cursor = new Cursor(StandardCursorType.Hand),
+                Child = Glyph("\uE711", 11),
+            };
+            lockClose.PointerEntered += (_, _) => lockClose.Background = Edge;
+            lockClose.PointerExited += (_, _) => lockClose.Background = Card;
+            lockClose.PointerPressed += (_, e) => e.Handled = true;
+            lockClose.PointerReleased += (_, _) => Close();
+
+            var lockGrid = new Grid { Background = Brushes.Transparent };
+            lockGrid.Children.Add(lockCard);
+            lockGrid.Children.Add(lockClose);
+            lockGrid.PointerPressed += (_, e) => { if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed && ReferenceEquals(e.Source, lockGrid)) BeginMoveDrag(e); };
+
+            lockOverlay = new Border
+            {
+                Background = Look.Aero ? Panel : opaquePanel,
+                BorderBrush = Edge,
+                BorderThickness = new Thickness(design.Edge != 0 ? design.EdgeWidth : 1),
+                CornerRadius = new CornerRadius(corner),
+                ClipToBounds = true,
+                Child = lockGrid,
+            };
+            layers.Children.Add(lockOverlay);
+            Opened += (_, _) => Dispatcher.UIThread.Post(() => pwBox.Focus(), DispatcherPriority.Background);
+        }
         AddResizeGrips(layers);
         Content = layers;
 
@@ -309,10 +403,16 @@ sealed partial class SettingsWindow : Window
         AddHandler(KeyDownEvent, RevealSecret, RoutingStrategies.Tunnel);
         AddHandler(PointerPressedEvent, (_, e) =>
         {
+            if (lockOverlay?.IsVisible == true) return;
             if (e.GetCurrentPoint(this).Properties.IsXButton1Pressed) { e.Handled = true; GoBack(); }
         }, RoutingStrategies.Tunnel);
         KeyDown += (_, e) =>
         {
+            if (lockOverlay?.IsVisible == true)
+            {
+                if (e.Key == Key.Escape) { e.Handled = true; Close(); }
+                return;
+            }
             if (e.Key == Key.Left && e.KeyModifiers.HasFlag(KeyModifiers.Alt))
             {
                 e.Handled = true;

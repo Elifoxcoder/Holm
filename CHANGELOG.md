@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.10 – 2026-11-27
+
+### Added
+
+- **Desktop Settings password lock (off by default):** protect HolyNotch Settings with a per-device password (salted PBKDF2-SHA256 hash) under *Settings › Settings lock*.
+
 ## 2.5.9 / Android 1.4.17 – 2026-11-27
 
 ### Added
