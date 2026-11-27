@@ -288,6 +288,17 @@ internal sealed class AppSettings
     public Dictionary<string, List<HolmBridgeMessage>> HolmBridgeChats { get; set; } = new();
     public long HolmBridgeSince { get; set; }
 
+    // ───────────── Ämtli / Dienstplan (Fenster öffnen & Essraum putzen, per-device, off by default) ─────────────
+    public bool DutiesEnabled { get; set; } = false;
+    public string? DutiesPersonName { get; set; }
+    public string DutiesMorningOpen { get; set; } = "09:28";
+    public string DutiesMorningClose { get; set; } = "09:45";
+    public string DutiesNoonOpen { get; set; } = "11:28";
+    public string DutiesNoonClose { get; set; } = "12:00";
+    public string DutiesAfternoonOpen { get; set; } = "14:58";
+    public string DutiesAfternoonClose { get; set; } = "15:15";
+    public List<string> DutiesNotifiedKeys { get; set; } = new();
+
     static string FilePath => Path.Combine(Diag.Folder, "settings.json");
     static readonly object SaveGate = new();
 

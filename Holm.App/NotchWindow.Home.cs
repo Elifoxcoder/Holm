@@ -118,8 +118,8 @@ public sealed partial class NotchWindow
         bool home = _tool == Tool.None;
         _toolRow.IsVisible = home ? !_home.IsHidden(HomeLayout.Tools) : true;
         _mainSection.IsVisible = home;
-        // The cards belong to the clock: while music plays they make way, except Extranet overview stays visible on Start page.
-        _todaySection.IsVisible = home && (_clockPanel.IsVisible || _settings.ExtranetEnabled) && !_home.IsHidden(HomeLayout.Today);
+        // The cards belong to the clock: while music plays they make way, except Extranet/Ämtli overview stays visible on Start page.
+        _todaySection.IsVisible = home && (_clockPanel.IsVisible || _settings.ExtranetEnabled || _settings.DutiesEnabled) && !_home.IsHidden(HomeLayout.Today);
         _liveSection.IsVisible = home;
         _shelfSection.IsVisible = home;
         _statusSection.IsVisible = !_home.IsHidden(HomeLayout.Status);

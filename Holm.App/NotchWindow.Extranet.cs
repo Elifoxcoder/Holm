@@ -33,19 +33,20 @@ public sealed partial class NotchWindow
 
     void BuildExtranet()
     {
+        var row = EnsureWorkDutiesRow();
         _todayExtranet = Card(ExtranetGlyph, Look.Pick(Dim, GreenBrush), _extranetTitle, _extranetMore);
-        _todayExtranet.Margin = new Thickness(0, 8, 0, 0);
         _todayExtranet.IsVisible = false;
         _todayExtranet.Click += () =>
         {
             if (string.IsNullOrEmpty(_settings.ExtranetRefreshToken)) ShowHub("extranet");
             else OpenExtranetInBrowser();
         };
-        _todaySection.Children.Add(_todayExtranet);
+        row.Children.Add(_todayExtranet);
 
         _extranetPoll.Tick += (_, _) => _ = RefreshExtranetAsync();
         _extranetTick.Tick += (_, _) => UpdateExtranetUi(notifyIfReady: true);
         if (_settings.ExtranetEnabled) StartExtranet();
+        else UpdateWorkDutiesLayout();
     }
 
     void StartExtranet()
@@ -62,6 +63,7 @@ public sealed partial class NotchWindow
         _extranetPoll.Stop();
         _extranetTick.Stop();
         _todayExtranet.IsVisible = false;
+        UpdateWorkDutiesLayout();
         ShowHomeSections();
     }
 
@@ -120,6 +122,7 @@ public sealed partial class NotchWindow
         if (_todayExtranet == null) return;
         bool on = _settings.ExtranetEnabled;
         _todayExtranet.IsVisible = on;
+        UpdateWorkDutiesLayout();
         if (!on) return;
 
         var now = DateTime.Now;

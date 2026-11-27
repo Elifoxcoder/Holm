@@ -139,6 +139,7 @@ public sealed partial class NotchWindow : Window
         InitDictation(platform);
         InitPhone();
         BuildToday();
+        BuildDuties();
         // The rows of home in the WPF app's order (MainWindow.xaml), each in its section; the sections go where you put
         // them (Settings › Start page), in that order unless you moved them.
         _liveSection.Children.AddRange(new Control[] { _quietNote, _clearNotificationsBtn, _messageRows, _downloadRow, _laterRows, _usbRows, _callRow, _privacyRows, _timerRow });
@@ -241,6 +242,7 @@ public sealed partial class NotchWindow : Window
         StopPhone();
         StopAiUsage();
         StopAccount();
+        StopDuties();
         ForgetClipFiles();
         base.OnClosed(e);
     }

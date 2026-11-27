@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.13 – 2026-11-27
+
+### Added
+
+- **Ämtli / Dienstplan (Desktop, off by default):** shows your next window-opening ("Fenster öffnen") and dining-room cleaning ("Essraum putzen") duties directly beside the Extranet work-time card on the Start page, with a searchable name dropdown (auto-suggesting matching names at the top) under *Settings › Ämtli*, configurable break times, and Notch notifications shortly before/after breaks and before Friday 12:45 cleaning.
+
 ## 2.5.12 – 2026-11-27
 
 ### Added
