@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.6 – 2026-11-27
+
+### Fixed
+
+- **Desktop Home button:** replaced the custom vector path with the native Fluent Home icon glyph (`\uE80F`) in `IconFont` so its brightness, rounding, stroke weight, and size match all other toolbar buttons identically.
+
 ## 2.5.5 / Android 1.4.15 – 2026-11-26
 
 ### Fixed
