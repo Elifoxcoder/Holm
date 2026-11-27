@@ -31,17 +31,23 @@ public static class RelayLink
     public static async Task<Stream> ConnectAsync(string host, int port, byte[] token, CancellationToken ct)
     {
         if (token.Length != 32) throw new ArgumentException("Tokens are 32 bytes.", nameof(token));
-        TcpClient? client = null;
-        try
+
+        // Prefer WSS over HTTPS port 443 for the HolyNotch VPS relay: works through campus/corporate
+        // Wi-Fi firewalls (same port as Chat) with zero TCP-4001 timeout delay, and pairs seamlessly
+        // with both WSS and legacy TCP 4001 peers on the server.
+        if (port == DefaultPort && !IsLoopbackHost(host))
         {
-            client = await ReachAsync(host, port, ct).ConfigureAwait(false);
+            try
+            {
+                return await ConnectWebSocketAsync(host, token, ct).ConfigureAwait(false);
+            }
+            catch (IOException ex) when (!ct.IsCancellationRequested)
+            {
+                Diag.Log($"WSS/443 relay {host} failed ({ex.Message}), trying TCP {port}");
+            }
         }
-        catch (IOException) when (port == DefaultPort && !IsLoopbackHost(host))
-        {
-            // Corporate/campus firewalls often block raw TCP 4001; fall back to WSS on HTTPS port 443.
-            Diag.Log($"TCP relay {host}:{port} unreachable, falling back to WSS/443");
-            return await ConnectWebSocketAsync(host, token, ct).ConfigureAwait(false);
-        }
+
+        TcpClient client = await ReachAsync(host, port, ct).ConfigureAwait(false);
         try
         {
             client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
@@ -130,9 +136,12 @@ public static class RelayLink
             if (buffer.Length == 0) return 0;
             try
             {
-                var res = await _ws.ReceiveAsync(buffer, ct).ConfigureAwait(false);
-                if (res.MessageType == WebSocketMessageType.Close) return 0;
-                return res.Count;
+                while (true)
+                {
+                    var res = await _ws.ReceiveAsync(buffer, ct).ConfigureAwait(false);
+                    if (res.MessageType == WebSocketMessageType.Close) return 0;
+                    if (res.Count > 0) return res.Count;
+                }
             }
             catch (WebSocketException ex)
             {

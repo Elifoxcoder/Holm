@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.5.14 / Android 1.4.19 – 2026-11-27
+
+### Fixed
+
+- **Campus / restricted Wi-Fi file sharing (HTTPS/WSS 443 primary):** both Desktop and Android now connect directly via `wss://<host>/transit/...` on HTTPS port `443` (the same port as Chat) first, eliminating the 5-second TCP `4001` timeout on firewalled networks while remaining 100% compatible with TCP `4001` peers.
+- **Automatic VPS fallback for blocked Nearby LAN:** when Wi-Fi AP isolation blocks direct device-to-device Nearby transfers, Desktop automatically falls back to sending via the VPS HTTPS/443 relay if the peer is in your Friends list.
+
 ## 2.5.13 – 2026-11-27
 
 ### Added

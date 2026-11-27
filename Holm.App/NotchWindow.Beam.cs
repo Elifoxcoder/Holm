@@ -543,6 +543,13 @@ public sealed partial class NotchWindow
             catch (Exception ex) when (ex is IOException or SocketException || (ex is OperationCanceledException && !cts.IsCancellationRequested))
             {
                 Diag.Log($"Nearby availability check for {peer.Name} failed: {ex.Message}");
+                var friendFallback = _settings.Friends.FirstOrDefault(f => string.Equals(f.Name, peer.Name, StringComparison.OrdinalIgnoreCase));
+                if (friendFallback != null)
+                {
+                    _busy = false;
+                    await SendToFriendAsync(friendFallback, paths, text);
+                    return;
+                }
                 EndTask("", RedBrush, $"{peer.Name} isn't available", $"Offline, HolyNotch closed, or the offer didn't reach them · Error {ErrorCodes.PartnerNoShow}");
                 return;
             }

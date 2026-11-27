@@ -34,15 +34,15 @@ class RelayLink {
 
   static Future<SecureChannel> _connectOne(List<int> secret, bool initiator, String relayHost, int relayPort) async {
     final token = ShareSecret.relayToken(secret);
-    Socket? socket;
-    try {
-      socket = await _reach(relayHost, relayPort);
-    } catch (_) {
-      if (relayPort == port && relayHost != '127.0.0.1' && relayHost != 'localhost') {
-        return _connectWebSocket(secret, token, initiator, relayHost);
+    // Prefer WSS over HTTPS port 443 for the HolyNotch VPS relay (same port as Chat, zero TCP-4001 timeout on campus Wi-Fi).
+    if (relayPort == port && relayHost != '127.0.0.1' && relayHost != 'localhost') {
+      try {
+        return await _connectWebSocket(secret, token, initiator, relayHost);
+      } on IOException {
+        // Fall through to raw TCP 4001 if WSS couldn't be established.
       }
-      rethrow;
     }
+    final socket = await _reach(relayHost, relayPort);
     try {
       socket.setOption(SocketOption.tcpNoDelay, true);
       final side = toHex(randomBytes(8));
