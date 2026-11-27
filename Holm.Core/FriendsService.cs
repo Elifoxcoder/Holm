@@ -1233,6 +1233,16 @@ internal sealed partial class FriendsService
                 Diag.Log, cts.Token));
         SyncProfiles();
         if (_settings.FriendsServer != null) AnnounceDevice(query: true);
+        // Keep own account devices continuously fresh so they never silently vanish after idle periods.
+        _ = Task.Run(async () =>
+        {
+            while (!cts.Token.IsCancellationRequested)
+            {
+                try { await Task.Delay(TimeSpan.FromMinutes(4), cts.Token); }
+                catch (OperationCanceledException) { break; }
+                _ = _ui(() => { if (_follow == cts) AnnounceDevice(query: false); });
+            }
+        });
     }
 
     /// <summary>

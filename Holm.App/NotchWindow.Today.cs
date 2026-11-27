@@ -40,6 +40,7 @@ public sealed partial class NotchWindow
         _todayCards.Children.Add(_todayNote);
         // A section of their own, so they can move (Settings › Start page); they still show only with the clock.
         _todaySection.Children.Add(_todayCards);
+        BuildExtranet();
 
         _mediaClockHeader.Children.Add(_mediaClock);
         _mediaClockHeader.Children.Add(_mediaDate);

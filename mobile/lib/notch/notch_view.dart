@@ -35,7 +35,7 @@ double openHeight(NotchSettings s, NotchActivity a, NotchActivity? second, [Notc
     ActivityKind.volume => 5 * 32.0,
     ActivityKind.call => 112.0,
     ActivityKind.navigation => 96.0,
-    ActivityKind.home => 132.0,
+    ActivityKind.home => c.extranet != null ? 168.0 : 132.0,
     ActivityKind.buds => 136.0,
     ActivityKind.screenshot => 118.0,
     ActivityKind.clipboard => 26 + lines(a.text, 3) + 54,
@@ -1692,6 +1692,49 @@ class _Home extends StatelessWidget {
           ),
         ),
         const Spacer(),
+        if (c.extranet case final ex?) ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: ex.ready
+                  ? const Color(0x2830D158)
+                  : NotchPalette.of(context).ink.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  ex.ready ? Icons.check_circle_rounded : Icons.schedule_rounded,
+                  size: 15,
+                  color: ex.ready ? const Color(0xFF30D158) : NotchPalette.of(context).accent,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    ex.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: ex.ready ? const Color(0xFF30D158) : NotchPalette.of(context).ink,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                if (ex.detail.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    ex.detail,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: NotchPalette.of(context).dim, fontSize: 12),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
         Row(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [

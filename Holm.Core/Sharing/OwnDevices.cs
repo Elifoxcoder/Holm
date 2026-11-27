@@ -95,7 +95,7 @@ public sealed class OwnDevices
     /// How long a device counts as there after it last spoke. The phone app speaks when it is opened and answers while it
     /// is open; a PC answers whenever another device asks.
     /// </summary>
-    public static readonly TimeSpan Fresh = TimeSpan.FromMinutes(10);
+    public static readonly TimeSpan Fresh = TimeSpan.FromMinutes(30);
 
     readonly Dictionary<string, OwnDevice> _seen = new(StringComparer.Ordinal);
 

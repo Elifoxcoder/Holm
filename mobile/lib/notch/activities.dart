@@ -145,6 +145,8 @@ class NotchController extends ChangeNotifier {
   bool typing = false;
   /// Holm's devices that are there now (from the app), for the overview.
   List<String> devices = const [];
+  /// Per-device Extranet work-time summary shown in the overview when enabled.
+  ({String title, String detail, bool ready})? extranet;
   /// The last level of each pair of headphones (name → %).
   final Map<String, int> headphones = {};
   /// The open volume notch: each stream's level (media, ring, notification, alarm, call), 0..1.
@@ -587,6 +589,22 @@ class NotchController extends ChangeNotifier {
       case 'bgBlack':
         bgBlack = e['black'] == true;
         notifyListeners();
+      case 'extranet':
+        if (e['enabled'] == true) {
+          extranet = (
+            title: (e['title'] as String?) ?? 'Extranet',
+            detail: (e['detail'] as String?) ?? '',
+            ready: e['ready'] == true,
+          );
+        } else {
+          extranet = null;
+        }
+        notifyListeners();
+      case 'holm.extranet':
+        _alert(NotchActivity('extranet-ready', ActivityKind.reminder, show: const Duration(seconds: 10))
+          ..title = (e['title'] as String?) ?? 'Ausbadgen möglich!'
+          ..text = (e['text'] as String?) ?? 'Tagessoll erreicht'
+          ..label = 'Extranet');
       case 'hotspot':
         final on = e['on'] == true;
         if (on) {

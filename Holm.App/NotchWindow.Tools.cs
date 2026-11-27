@@ -110,12 +110,32 @@ public sealed partial class NotchWindow
         return button;
     }
 
-    const string HomeGlyph = "\uE80F";
+    static Control HomeIcon(IBrush brush, double size) => new Viewbox
+    {
+        Width = size, Height = size,
+        HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+        Child = new Canvas
+        {
+            Width = 20, Height = 20,
+            Children =
+            {
+                new Avalonia.Controls.Shapes.Path
+                {
+                    // Rounded Fluent-style Home outline on a 20x20 grid (1.45/20*13 ≈ 0.94px stroke, matching HolmIcons.ttf).
+                    Data = Geometry.Parse(
+                        "M 3,9.6 L 9.1,3.7 Q 10,2.8 10.9,3.7 L 17,9.6 " +
+                        "M 5.2,8.4 V 15.6 Q 5.2,17 6.6,17 H 8.2 V 13.1 Q 8.2,12 9.3,12 H 10.7 Q 11.8,12 11.8,13.1 V 17 H 13.4 Q 14.8,17 14.8,15.6 V 8.4"),
+                    Stroke = brush, StrokeThickness = 1.45,
+                    StrokeLineCap = PenLineCap.Round, StrokeJoin = PenLineJoin.Round,
+                },
+            },
+        },
+    };
 
     /// <summary>The tool row at the top of the open notch.</summary>
     Control BuildToolRow()
     {
-        _homeToolBtn = ToolWord("Home", HomeGlyph);
+        _homeToolBtn = ToolWord("Home", HomeIcon(Look.Aero ? Look.Ink : Dim, 13));
         ToolTip.SetTip(_homeToolBtn, "Home (start page)");
         _homeToolBtn.Click += () => { SetClockView(false); ShowTool(Tool.None); };
         _toolBar.Children.Add(_homeToolBtn);

@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'net/account.dart';
 import 'net/crypto.dart';
 import 'net/errors.dart';
+import 'net/extranet.dart';
 import 'net/friends.dart';
 import 'net/one_time_code.dart';
 import 'net/nearby.dart';
@@ -186,6 +187,18 @@ class AppState extends ChangeNotifier {
   static const maxNote = 4000;
   /// TOTP authenticator entries (replaces Notes in mobile UI), synced E2E with Desktop.
   final Map<String, TotpEntry> _totp = {};
+
+  // Per-device Extranet (extranet.bbcag.ch) state — never synced via Account.
+  bool extranetEnabled = false;
+  int extranetTargetMinutes = 492; // 8h 12m default
+  String? extranetRefreshToken;
+  String? extranetUserName;
+  String? _extranetNotifiedDate;
+  String? _extranetAccessToken;
+  DateTime? _extranetTokenExpires;
+  ExtranetSnapshot? extranetSnapshot;
+  bool _extranetFetching = false;
+  Timer? _extranetPoll, _extranetTick;
   final List<ReceivedFile> received = [];
   /// Transport ids plus authenticated note ids (or sealed-text hashes for old notes), persisted and hard-bounded.
   final BoundedIds _seen = BoundedIds(limit: BoundedIds.defaultLimit);
@@ -260,6 +273,12 @@ class AppState extends ChangeNotifier {
       final e = TotpEntry.fromJson(raw);
       if (e != null) _totp[e.id] = e;
     }
+    extranetEnabled = j['extranetEnabled'] as bool? ?? false;
+    extranetTargetMinutes = ((j['extranetTargetMinutes'] as num?)?.toInt() ?? 492).clamp(60, 16 * 60);
+    extranetRefreshToken = j['extranetRefreshToken'] as String?;
+    extranetUserName = j['extranetUserName'] as String?;
+    _extranetNotifiedDate = j['extranetNotifiedDate'] as String?;
+    if (extranetEnabled) _startExtranet();
     for (final r in (j['received'] as List? ?? [])) {
       final file = ReceivedFile.fromJson(r as Map<String, dynamic>);
       if (File(file.path).existsSync()) received.add(file);
@@ -317,6 +336,11 @@ class AppState extends ChangeNotifier {
       'clipboard': [for (final c in clipboard) c.toJson()],
       'note': note,
       'totp': [for (final e in _totp.values) e.toJson()],
+      'extranetEnabled': extranetEnabled,
+      'extranetTargetMinutes': extranetTargetMinutes,
+      'extranetRefreshToken': extranetRefreshToken,
+      'extranetUserName': extranetUserName,
+      'extranetNotifiedDate': _extranetNotifiedDate,
       'received': [for (final r in received) r.toJson()],
       'seen': _seen.toJson(now: now),
       'seenTimes': _seen.timesToJson(now: now),
@@ -353,6 +377,181 @@ class AppState extends ChangeNotifier {
     notch = next;
     NotchLink.settings(next);
     _changed();
+  }
+
+  // ───────────── Extranet (extranet.bbcag.ch, per-device, read-only) ─────────────
+
+  void setExtranetEnabled(bool on) {
+    if (extranetEnabled == on) return;
+    extranetEnabled = on;
+    if (on) {
+      _startExtranet();
+    } else {
+      _stopExtranet();
+    }
+    _changed();
+  }
+
+  void setExtranetTargetMinutes(int minutes) {
+    extranetTargetMinutes = minutes.clamp(60, 16 * 60);
+    _pushExtranetToNotch(notifyIfReady: false);
+    _changed();
+  }
+
+  Future<void> signInExtranet(String email, String password) async {
+    final auth = await ExtranetClient.signIn(email, password);
+    _extranetAccessToken = auth.accessToken;
+    _extranetTokenExpires = DateTime.now().add(Duration(seconds: (auth.expiresInSeconds - 20).clamp(30, 3600)));
+    extranetRefreshToken = auth.refreshToken;
+    extranetUserName = auth.userName ?? email.trim();
+    extranetEnabled = true;
+    _startExtranet();
+    _changed();
+    await refreshExtranet();
+  }
+
+  void signOutExtranet() {
+    _extranetAccessToken = null;
+    _extranetTokenExpires = null;
+    extranetRefreshToken = null;
+    extranetUserName = null;
+    extranetSnapshot = null;
+    _pushExtranetToNotch(notifyIfReady: false);
+    _changed();
+  }
+
+  void _startExtranet() {
+    _extranetPoll?.cancel();
+    _extranetTick?.cancel();
+    _extranetPoll = Timer.periodic(const Duration(minutes: 3), (_) => unawaited(refreshExtranet()));
+    _extranetTick = Timer.periodic(const Duration(seconds: 20), (_) => _pushExtranetToNotch(notifyIfReady: true));
+    _pushExtranetToNotch(notifyIfReady: false);
+    if (extranetRefreshToken != null) unawaited(refreshExtranet());
+  }
+
+  void _stopExtranet() {
+    _extranetPoll?.cancel();
+    _extranetTick?.cancel();
+    _extranetPoll = null;
+    _extranetTick = null;
+    NotchLink.send({'type': 'extranet', 'enabled': false});
+  }
+
+  Future<void> refreshExtranet() async {
+    if (!extranetEnabled || _extranetFetching) return;
+    final refreshToken = extranetRefreshToken;
+    if (refreshToken == null || refreshToken.isEmpty) {
+      extranetSnapshot = ExtranetSnapshot(
+        fetchedAt: DateTime.now(),
+        intervals: const [],
+        targetMinutes: extranetTargetMinutes,
+        signedIn: false,
+      );
+      _pushExtranetToNotch(notifyIfReady: false);
+      notifyListeners();
+      return;
+    }
+    _extranetFetching = true;
+    try {
+      if (_extranetAccessToken == null || _extranetTokenExpires == null || DateTime.now().isAfter(_extranetTokenExpires!)) {
+        final auth = await ExtranetClient.refresh(refreshToken);
+        _extranetAccessToken = auth.accessToken;
+        _extranetTokenExpires = DateTime.now().add(Duration(seconds: (auth.expiresInSeconds - 20).clamp(30, 3600)));
+        if (auth.refreshToken.isNotEmpty && auth.refreshToken != extranetRefreshToken) {
+          extranetRefreshToken = auth.refreshToken;
+          _changed();
+        }
+      }
+      final intervals = await ExtranetClient.fetchToday(_extranetAccessToken!);
+      extranetSnapshot = ExtranetSnapshot(
+        fetchedAt: DateTime.now(),
+        intervals: intervals,
+        targetMinutes: extranetTargetMinutes,
+        signedIn: true,
+      );
+    } catch (e) {
+      _extranetAccessToken = null;
+      extranetSnapshot = ExtranetSnapshot(
+        fetchedAt: DateTime.now(),
+        intervals: extranetSnapshot?.intervals ?? const [],
+        targetMinutes: extranetTargetMinutes,
+        signedIn: extranetRefreshToken != null,
+        error: e.toString().replaceFirst('Exception: ', ''),
+      );
+    } finally {
+      _extranetFetching = false;
+      _pushExtranetToNotch(notifyIfReady: true);
+      notifyListeners();
+    }
+  }
+
+  void _pushExtranetToNotch({required bool notifyIfReady}) {
+    if (!extranetEnabled) {
+      NotchLink.send({'type': 'extranet', 'enabled': false});
+      return;
+    }
+    final now = DateTime.now();
+    if (extranetRefreshToken == null || extranetRefreshToken!.isEmpty) {
+      NotchLink.send({'type': 'extranet', 'enabled': true, 'title': 'Extranet', 'detail': 'Nicht angemeldet', 'ready': false});
+      return;
+    }
+    final snap = extranetSnapshot;
+    if (snap == null) {
+      NotchLink.send({'type': 'extranet', 'enabled': true, 'title': 'Extranet', 'detail': 'Lade…', 'ready': false});
+      return;
+    }
+    if (snap.intervals.isEmpty) {
+      NotchLink.send({
+        'type': 'extranet',
+        'enabled': true,
+        'title': 'Extranet',
+        'detail': snap.error ?? 'Noch nicht gebadgt',
+        'ready': false,
+      });
+      return;
+    }
+    final live = ExtranetSnapshot(
+      fetchedAt: snap.fetchedAt,
+      intervals: snap.intervals,
+      targetMinutes: extranetTargetMinutes,
+      signedIn: true,
+    );
+    final rem = live.remainingAt(now);
+    final worked = live.workedAt(now);
+    if (rem <= Duration.zero) {
+      final over = live.overtimeAt(now);
+      final overStr = over.inMinutes >= 1 ? ' (+${ExtranetSnapshot.formatDuration(over)})' : '';
+      NotchLink.send({
+        'type': 'extranet',
+        'enabled': true,
+        'title': 'Ausbadgen möglich!$overStr',
+        'detail': '${ExtranetSnapshot.formatDuration(worked)} gearbeitet',
+        'ready': true,
+      });
+      if (notifyIfReady) {
+        final todayKey = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+        if (_extranetNotifiedDate != todayKey) {
+          _extranetNotifiedDate = todayKey;
+          _changed();
+          NotchLink.send({
+            'type': 'holm.extranet',
+            'title': 'Ausbadgen möglich!',
+            'text': 'Tagessoll (${ExtranetSnapshot.formatDuration(live.target)}) erreicht',
+          });
+        }
+      }
+    } else {
+      final fin = live.finishAt(now);
+      final until = fin != null ? 'bis ${ExtranetSnapshot.formatHm(fin)}' : '';
+      final stateStr = live.isClockedIn ? until : '$until (pausiert)';
+      NotchLink.send({
+        'type': 'extranet',
+        'enabled': true,
+        'title': 'Noch ${ExtranetSnapshot.formatDuration(rem)}',
+        'detail': stateStr,
+        'ready': false,
+      });
+    }
   }
 
   /// The app went to the background or came back: a running transfer moves to the notch, and back.
@@ -592,10 +791,19 @@ class AppState extends ChangeNotifier {
         // Anywhere: a note in our inbox for that device, then both meet on the relay (as Holm sends to friends).
         _status(TransferStatus('Asking $peerName…', 'Over the internet'));
         final secret = ShareSecret.create();
-        await Inbox.post(_ownCard,
-            Notes.seal(me, _ownCard, 'files', {'S': base64Encode(secret), 'D': deviceId, 'N': device.id}, from: deviceName));
+        final sealed = Notes.seal(me, _ownCard, 'files', {'S': base64Encode(secret), 'D': deviceId, 'N': device.id}, from: deviceName);
+        await Inbox.post(_ownCard, sealed);
         _status(waiting);
-        channel = await RelayLink.connectWithRetry(secret, initiator: true, patience: const Duration(seconds: 40));
+        // Re-post the same secret once after 10s if still waiting (covers a brief SSE reconnect on the receiver;
+        // both sides deduplicate by secret).
+        final retryTimer = Timer(const Duration(seconds: 10), () {
+          Inbox.post(_ownCard, sealed).catchError((_) {});
+        });
+        try {
+          channel = await RelayLink.connectWithRetry(secret, initiator: true, patience: const Duration(seconds: 45));
+        } finally {
+          retryTimer.cancel();
+        }
       } else {
         _status(waiting);
         channel = await NearbyService.connect(target.peer!);
@@ -614,7 +822,8 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       final device = target.device;
       if (device != null && e is TimeoutException) {
-        _devices.remove(device.id); // it's gone, whatever it said a minute ago
+        // Keep the device in the list and re-query instead of dropping it on a transient timeout.
+        announceDevice(force: true, query: true);
         _status(TransferStatus("$peerName isn't available", "HolyNotch isn't open there right now", failed: true, done: true));
       } else {
         _status(TransferStatus("Couldn't send", _why(e), failed: true, done: true));
@@ -816,10 +1025,10 @@ class AppState extends ChangeNotifier {
   /// Our own inbox as a card: notes to the account's other devices are sealed for it and posted to it.
   Friend get _ownCard => Friend(name: deviceName, topic: me.topic, key: me.publicKey, server: relayServer);
 
-  /// The account's other devices that spoke within ten minutes.
+  /// The account's other devices that spoke within thirty minutes.
   List<OwnDevice> get ownDevices {
     final now = DateTime.now();
-    return _devices.values.where((d) => now.difference(d.seen) < const Duration(minutes: 10)).toList()
+    return _devices.values.where((d) => now.difference(d.seen) < const Duration(minutes: 30)).toList()
       ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
   }
 
@@ -1415,11 +1624,13 @@ class AppState extends ChangeNotifier {
   // ───────────── our inbox ─────────────
 
   Timer? _accountCheck;
+  Timer? _deviceKeepAlive;
 
   void startInbox() {
     // The account's identity can change on a PC ("Which friend code?"): look again every ten minutes, also while
     // the app is in the background (the notch keeps it running).
     _accountCheck ??= Timer.periodic(const Duration(minutes: 10), (_) => refreshAccount());
+    _deviceKeepAlive ??= Timer.periodic(const Duration(minutes: 4), (_) => announceDevice(query: false));
     if (_following) return;
     _following = true;
     _connect(const Duration(seconds: 2));
@@ -1429,6 +1640,8 @@ class AppState extends ChangeNotifier {
     _following = false;
     _reconnect?.cancel();
     _poll?.cancel();
+    _deviceKeepAlive?.cancel();
+    _deviceKeepAlive = null;
     _ws?.close();
     _ws = null;
   }

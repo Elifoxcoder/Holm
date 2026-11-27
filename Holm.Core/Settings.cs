@@ -265,6 +265,15 @@ internal sealed class AppSettings
     /// <summary>The sign-in card on the profile page was closed with its cross: only a small "Sign in" row is left.</summary>
     public bool AccountHidden { get; set; }
 
+    // ───────────── Extranet (bbcag.ch, per-device only, never synced) ─────────────
+    public bool ExtranetEnabled { get; set; } = false;
+    /// <summary>Daily target work duration in minutes (default 8h 12m = 492).</summary>
+    public int ExtranetTargetMinutes { get; set; } = 492;
+    public string? ExtranetRefreshToken { get; set; }
+    public string? ExtranetUserName { get; set; }
+    /// <summary>Local yyyy-MM-dd date on which the "can badge out" notification was already shown.</summary>
+    public string? ExtranetNotifiedDate { get; set; }
+
     static string FilePath => Path.Combine(Diag.Folder, "settings.json");
     static readonly object SaveGate = new();
 

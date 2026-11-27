@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.5.8 – 2026-11-27
+
+### Fixed
+
+- **Desktop Home button:** rendered a rounded Fluent-proportioned Home outline icon (`13×13` in a `20×20` Viewbox, matching `HolmIcons.ttf`'s exact stroke weight, rounding, and `Dim` tint — since `\uE80F` is not included in the subset font `HolmIcons.ttf`).
+
+## 2.5.7 / Android 1.4.16 – 2026-11-27
+
+### Added
+
+- **Extranet (`extranet.bbcag.ch`, default OFF):** per-device OAuth 2.0 read-only login with configurable daily target (default `8h 12m`), live remaining time & finish time overview on the Desktop Start Page and Android empty-notch overview, and a once-per-day notification when you can badge out.
+
+### Fixed
+
+- **Account-based sharing reliability:** extended own-device freshness to 30 min with a 4-minute keep-alive heartbeat, re-posted the encrypted file invite once after 10 s while waiting on the relay (covering brief SSE reconnects), and stopped removing devices from the share list on transient timeouts.
+
 ## 2.5.6 – 2026-11-27
 
 ### Fixed

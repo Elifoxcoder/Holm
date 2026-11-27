@@ -601,7 +601,21 @@ public sealed partial class NotchWindow
             else await _friends.InviteAsync(friend, secret, cts.Token);
             ShowTask(FaceText(friend.Name), FaceBrush(friend.Name), $"Checking if {friend.Name} is available…", "Waiting for their notch to answer", null, null, ("Cancel", CancelTask), textIcon: true);
             var (host, port) = RelayEndpoint();
+            using var connectedCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+            if (device != null)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(10), connectedCts.Token);
+                        await _friends.InviteDeviceAsync(device, secret, connectedCts.Token);
+                    }
+                    catch { }
+                });
+            }
             await using var stream = await RelayLink.ConnectWithRetryAsync(host, port, ShareCode.RelayToken(secret), FriendsService.SendPatience, cts.Token);
+            connectedCts.Cancel();
             await using var channel = new SecureChannel(stream, ShareCode.Key(secret), initiator: true);
             ShowTask(FaceText(friend.Name), FaceBrush(friend.Name), $"{friend.Name}'s notch is open", "Waiting for them to accept…", null, null, ("Cancel", CancelTask), textIcon: true);
             bool accepted = await FileTransfer.SendAsync(channel, _friends.MyName, paths,
@@ -621,7 +635,7 @@ public sealed partial class NotchWindow
             }
             else if (device != null)
             {
-                _friends.ForgetDevice(device);
+                _friends.AskForDevices();
                 EndTask("", RedBrush, $"{friend.Name} isn't available", $"HolyNotch isn't open there right now · Error {ErrorCodes.PartnerNoShow}");
             }
             else if (_settings.SendLater)

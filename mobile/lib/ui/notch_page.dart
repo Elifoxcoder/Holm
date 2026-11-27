@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../app_state.dart';
+import '../net/extranet.dart';
 import '../notch/activities.dart';
 import '../notch/cover.dart';
 import '../notch/designs.dart';
@@ -686,9 +687,189 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
             off == 0 ? 'Everything shows' : '$off of ${ActivityKind.values.length} switched off', _activitiesPage),
         _group(Icons.notifications_none_rounded, 'Notifications', 'On your PC, compact, app colours, muted apps', _notificationsPage),
         _group(Icons.do_not_disturb_on_outlined, 'Quiet and gestures', 'When it keeps quiet; double tap and long press', _quietPage),
+        _group(
+          Icons.schedule_rounded,
+          'Extranet',
+          widget.state.extranetEnabled
+              ? (widget.state.extranetUserName != null ? 'Aktiv · ${widget.state.extranetUserName}' : 'Aktiv · Nicht angemeldet')
+              : 'Aus · Arbeitszeit-Übersicht (bbcag.ch)',
+          _extranetPage,
+        ),
       ],
     );
   }
+
+  List<Widget> _extranetPage() {
+    final s = widget.state;
+    final h = s.extranetTargetMinutes ~/ 60;
+    final m = s.extranetTargetMinutes % 60;
+    final snap = s.extranetSnapshot;
+    String? summary;
+    if (snap != null && snap.intervals.isNotEmpty) {
+      final now = DateTime.now();
+      final worked = snap.workedAt(now);
+      final rem = snap.remainingAt(now);
+      final fin = snap.finishAt(now);
+      summary = rem <= Duration.zero
+          ? 'Gearbeitet: ${ExtranetSnapshot.formatDuration(worked)} · Ausbadgen möglich!'
+          : 'Gearbeitet: ${ExtranetSnapshot.formatDuration(worked)} · Noch ${ExtranetSnapshot.formatDuration(rem)} (bis ${ExtranetSnapshot.formatHm(fin!)})';
+    }
+    return [
+      HolmCard(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: SwitchListTile(
+          title: const Text('Extranet-Übersicht aktivieren', style: TextStyle(fontSize: 15)),
+          subtitle: const Text('Zeigt verbleibende Arbeitszeit & Ausbadge-Zeit in der leeren Notch (nur dieses Gerät).',
+              style: TextStyle(color: HolmColors.dim, fontSize: 12.5)),
+          value: s.extranetEnabled,
+          onChanged: (on) {
+            s.setExtranetEnabled(on);
+            setState(() {});
+          },
+        ),
+      ),
+      const SectionLabel('Tagessoll'),
+      HolmCard(
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                '${h}h ${m.toString().padLeft(2, '0')}m',
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.remove_circle_outline_rounded),
+              onPressed: () {
+                s.setExtranetTargetMinutes(s.extranetTargetMinutes - 5);
+                setState(() {});
+              },
+            ),
+            IconButton(
+              icon: const Icon(Icons.add_circle_outline_rounded),
+              onPressed: () {
+                s.setExtranetTargetMinutes(s.extranetTargetMinutes + 5);
+                setState(() {});
+              },
+            ),
+            TextButton(
+              onPressed: () {
+                s.setExtranetTargetMinutes(492);
+                setState(() {});
+              },
+              child: const Text('8h 12m'),
+            ),
+          ],
+        ),
+      ),
+      const SectionLabel('Anmeldung (nur dieses Gerät)'),
+      HolmCard(
+        child: s.extranetRefreshToken != null
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Angemeldet als ${s.extranetUserName ?? 'Extranet-Benutzer'}',
+                      style: const TextStyle(fontWeight: FontWeight.w600, color: Color(0xFF30D158))),
+                  if (summary != null) ...[
+                    const SizedBox(height: 6),
+                    Text(summary, style: const TextStyle(color: HolmColors.dim, fontSize: 13)),
+                  ] else if (snap?.error != null) ...[
+                    const SizedBox(height: 6),
+                    Text(snap!.error!, style: const TextStyle(color: Color(0xFFFF453A), fontSize: 12.5)),
+                  ],
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      PillButton('Aktualisieren', icon: Icons.refresh_rounded, onPressed: () async {
+                        await s.refreshExtranet();
+                        if (mounted) setState(() {});
+                      }),
+                      const SizedBox(width: 8),
+                      PillButton('Abmelden', primary: false, onPressed: () {
+                        s.signOutExtranet();
+                        setState(() {});
+                      }),
+                    ],
+                  ),
+                ],
+              )
+            : _ExtranetSignInForm(
+                onSignedIn: () {
+                  if (mounted) setState(() {});
+                },
+                signIn: s.signInExtranet,
+              ),
+      ),
+    ];
+  }
+}
+
+class _ExtranetSignInForm extends StatefulWidget {
+  final Future<void> Function(String email, String password) signIn;
+  final VoidCallback onSignedIn;
+  const _ExtranetSignInForm({required this.signIn, required this.onSignedIn});
+
+  @override
+  State<_ExtranetSignInForm> createState() => _ExtranetSignInFormState();
+}
+
+class _ExtranetSignInFormState extends State<_ExtranetSignInForm> {
+  final _email = TextEditingController();
+  final _pass = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _email.dispose();
+    _pass.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await widget.signIn(_email.text, _pass.text);
+      widget.onSignedIn();
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.toString().replaceFirst('Exception: ', '');
+          _busy = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Extranet (extranet.bbcag.ch)', style: TextStyle(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _email,
+            keyboardType: TextInputType.emailAddress,
+            decoration: const InputDecoration(hintText: 'name@bbcag.ch'),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _pass,
+            obscureText: true,
+            decoration: const InputDecoration(hintText: 'Passwort'),
+            onSubmitted: (_) => _busy ? null : _submit(),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            Text(_error!, style: const TextStyle(color: Color(0xFFFF453A), fontSize: 12.5)),
+          ],
+          const SizedBox(height: 12),
+          PillButton(_busy ? 'Melde an…' : 'Anmelden', icon: Icons.login_rounded, onPressed: _busy ? null : _submit),
+        ],
+      );
 }
 
 /// The top of a phone at the real size (scaled to fit): a status bar, a camera where the closed notch sits, the notch.
