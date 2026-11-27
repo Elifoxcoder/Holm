@@ -645,15 +645,20 @@ const server = http.createServer(async (req, res) => {
 
     if (p === "/admin" || p === "/admin/") return send(res, 200, PAGE, { "content-type": "text/html; charset=utf-8" });
     if (p === "/admin/stats") {
-      if (!ADMIN_KEY) return send(res, 503, { error: "ADMIN_KEY isn't set on the server" });
+      const origin = req.headers.origin ?? "";
+      const cors = /^https:\/\/holynotch\.elifox\.ch$|^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)
+        ? { "access-control-allow-origin": origin, "access-control-allow-headers": "authorization, content-type", "access-control-allow-methods": "GET, OPTIONS", "vary": "Origin" }
+        : {};
+      if (req.method === "OPTIONS") return send(res, 204, "", cors);
+      if (!ADMIN_KEY) return send(res, 503, { error: "ADMIN_KEY isn't set on the server" }, cors);
       const ip = clientIp(req);
-      if (!adminLimit.check(ip)) return send(res, 429, { error: "too many attempts, wait ten minutes" }, { "retry-after": "600" });
+      if (!adminLimit.check(ip)) return send(res, 429, { error: "too many attempts, wait ten minutes" }, { "retry-after": "600", ...cors });
       if (!sameKey((req.headers.authorization ?? "").replace(/^Bearer /, ""), ADMIN_KEY)) {
         adminLimit.hit(ip);
-        return send(res, 401, { error: "wrong key" });
+        return send(res, 401, { error: "wrong key" }, cors);
       }
-      try { return send(res, 200, stats()); }
-      catch (e) { log("admin stats failed:", e?.message ?? e); return send(res, 500, { error: "internal error" }); }
+      try { return send(res, 200, stats(), cors); }
+      catch (e) { log("admin stats failed:", e?.message ?? e); return send(res, 500, { error: "internal error" }, cors); }
     }
 
     if (req.method === "POST" && p.startsWith("/v1/accounts:")) {
