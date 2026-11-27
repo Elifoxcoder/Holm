@@ -34,7 +34,15 @@ class RelayLink {
 
   static Future<SecureChannel> _connectOne(List<int> secret, bool initiator, String relayHost, int relayPort) async {
     final token = ShareSecret.relayToken(secret);
-    final socket = await _reach(relayHost, relayPort);
+    Socket? socket;
+    try {
+      socket = await _reach(relayHost, relayPort);
+    } catch (_) {
+      if (relayPort == port && relayHost != '127.0.0.1' && relayHost != 'localhost') {
+        return _connectWebSocket(secret, token, initiator, relayHost);
+      }
+      rethrow;
+    }
     try {
       socket.setOption(SocketOption.tcpNoDelay, true);
       final side = toHex(randomBytes(8));
@@ -47,6 +55,29 @@ class RelayLink {
       return SecureChannel.withKey(socket, reader, ShareSecret.key(secret), initiator: initiator);
     } catch (_) {
       socket.destroy();
+      rethrow;
+    }
+  }
+
+  /// HTTPS/WSS port 443 fallback transit relay when corporate/campus firewalls block raw TCP 4001.
+  static Future<SecureChannel> _connectWebSocket(List<int> secret, Uint8List token, bool initiator, String relayHost) async {
+    final side = toHex(randomBytes(8));
+    final uri = 'wss://$relayHost/transit/${toHex(token)}?side=$side';
+    final ws = await WebSocket.connect(uri).timeout(const Duration(seconds: 10));
+    ws.pingInterval = const Duration(seconds: 25);
+    try {
+      final bytesStream = ws.map<Uint8List>((msg) {
+        if (msg is Uint8List) return msg;
+        if (msg is List<int>) return Uint8List.fromList(msg);
+        if (msg is String) return Uint8List.fromList(utf8.encode(msg));
+        return Uint8List(0);
+      });
+      final reader = ByteReader(bytesStream);
+      final reply = await _readLine(reader);
+      if (reply != 'ok') throw SocketException('The WSS relay said: $reply');
+      return SecureChannel.withWebSocket(ws, reader, ShareSecret.key(secret), initiator: initiator, remoteAddr: relayHost);
+    } catch (_) {
+      unawaited(ws.close().catchError((_) {}));
       rethrow;
     }
   }

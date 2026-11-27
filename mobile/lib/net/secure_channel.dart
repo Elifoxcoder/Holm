@@ -43,18 +43,29 @@ class SecureChannel {
   static const maxPlaintext = 1 << 20;
   static const _tag = 16;
 
-  final Socket socket;
+  final Socket? socket;
+  final Future<void> Function(Uint8List frame) _writeFrame;
+  final void Function() _destroyTransport;
+  final String _remoteAddr;
   final ByteReader _reader;
   final Uint8List _key;
   final int _sendDirection, _receiveDirection;
   int _sent = 0, _received = 0;
   Future<void> _writes = Future.value();
 
-  SecureChannel._(this.socket, this._reader, this._key, bool initiator)
+  SecureChannel._(this.socket, this._reader, this._key, bool initiator,
+      {Future<void> Function(Uint8List)? writeFrame, void Function()? destroyTransport, String? remoteAddr})
       : _sendDirection = initiator ? 1 : 2,
-        _receiveDirection = initiator ? 2 : 1;
+        _receiveDirection = initiator ? 2 : 1,
+        _remoteAddr = remoteAddr ?? socket?.remoteAddress.address ?? 'relay',
+        _writeFrame = writeFrame ??
+            ((frame) async {
+              socket!.add(frame);
+              await socket.flush();
+            }),
+        _destroyTransport = destroyTransport ?? (() => socket?.destroy());
 
-  String get remoteAddress => socket.remoteAddress.address;
+  String get remoteAddress => _remoteAddr;
 
   /// Connects (the sender's side) and agrees on a key.
   static Future<SecureChannel> connect(InternetAddress address, int port) async {
@@ -72,6 +83,18 @@ class SecureChannel {
   /// [reader] may already have read the relay's answer.
   static SecureChannel withKey(Socket socket, ByteReader reader, Uint8List key, {required bool initiator}) =>
       SecureChannel._(socket, reader, key, initiator);
+
+  /// A channel over a WebSocket (WSS/443 fallback relay when TCP 4001 is firewalled).
+  static SecureChannel withWebSocket(WebSocket ws, ByteReader reader, Uint8List key, {required bool initiator, String remoteAddr = 'wss-relay'}) =>
+      SecureChannel._(
+        null,
+        reader,
+        key,
+        initiator,
+        remoteAddr: remoteAddr,
+        writeFrame: (frame) async => ws.add(frame),
+        destroyTransport: () => unawaited(ws.close().catchError((_) {})),
+      );
 
   /// Agrees on a key over an accepted or connected socket.
   static Future<SecureChannel> open(Socket socket, {required bool initiator}) async {
@@ -110,10 +133,7 @@ class SecureChannel {
     final frame = Uint8List(4 + sealed.length);
     ByteData.sublistView(frame).setInt32(0, sealed.length);
     frame.setRange(4, frame.length, sealed);
-    _writes = _writes.then((_) async {
-      socket.add(frame);
-      await socket.flush();
-    });
+    _writes = _writes.then((_) => _writeFrame(frame));
     return _writes;
   }
 
@@ -129,7 +149,7 @@ class SecureChannel {
     try {
       await _writes.timeout(const Duration(seconds: 2));
     } catch (_) {}
-    socket.destroy();
+    _destroyTransport();
     unawaited(_reader.cancel().catchError((_) {}));
   }
 }

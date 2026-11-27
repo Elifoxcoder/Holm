@@ -20,7 +20,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, createWebSocketStream } from "ws";
 
 const env = process.env;
 const HTTP_HOST = env.HTTP_HOST ?? "127.0.0.1";
@@ -699,6 +699,7 @@ server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url, "http://holynotch");
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length === 2 && parts[1] === "ws" && isTopic(parts[0])) return follow(req, socket, head, url, parts[0]);
+  if (parts.length === 2 && parts[0] === "transit" && /^[0-9a-f]{64}$/.test(parts[1])) return transitWs(req, socket, head, url, parts[1], ip);
   socket.destroy();
 });
 
@@ -795,7 +796,7 @@ function pair(a, aRest, b, bRest, aIp, bIp) {
   };
   const kill = () => { a.destroy(); b.destroy(); };
   for (const [s, other] of [[a, b], [b, a]]) {
-    s.setTimeout(TRANSIT_IDLE, kill);
+    if (typeof s.setTimeout === "function") s.setTimeout(TRANSIT_IDLE, kill);
     s.on("error", () => other.end());
     s.on("close", () => { other.end(); setTimeout(() => other.destroy(), 30_000).unref(); counted(); });
   }
@@ -805,6 +806,40 @@ function pair(a, aRest, b, bRest, aIp, bIp) {
   a.on("data", (d) => { bytes += d.length; });
   b.on("data", (d) => { bytes += d.length; });
   a.pipe(b); b.pipe(a);
+}
+
+/**
+ * WebSocket transit relay over HTTPS port 443 (/transit/<64-hex-token>?side=<16-hex-side>):
+ * pairs directly with both other WSS clients AND raw TCP 4001 clients on the same token.
+ */
+function transitWs(req, rawSocket, head, url, token, ip) {
+  const side = url.searchParams.get("side") ?? "";
+  if (!/^[0-9a-f]{1,32}$/.test(side)) return rejectUpgrade(rawSocket, 400, "bad side");
+  if (!transitIpLimit(ip)) return rejectUpgrade(rawSocket, 429, "too many connections");
+  wss.handleUpgrade(req, rawSocket, head, (ws) => {
+    const stream = createWebSocketStream(ws);
+    let paired = false;
+    const giveUp = setTimeout(() => { try { stream.end("error no partner\n"); } catch {} }, TRANSIT_WAIT);
+    stream.on("error", () => stream.destroy());
+    stream.on("close", () => {
+      clearTimeout(giveUp);
+      if (!paired && waiting.get(token)?.socket === stream) releaseWaiting(token);
+    });
+    const other = waiting.get(token);
+    if (!other || other.side === side) {
+      const globalAfter = waiting.size - (other ? 1 : 0);
+      const ipAfter = (waitingByIp.get(ip) ?? 0) - (other?.ip === ip ? 1 : 0);
+      if (globalAfter >= MAX_WAITING || ipAfter >= WAITING_PER_IP) { stream.end("error relay busy\n"); return; }
+      if (other) { releaseWaiting(token); other.socket.destroy(); }
+      reserveWaiting(token, { side, socket: stream, ip, rest: Buffer.alloc(0), paired: () => { paired = true; clearTimeout(giveUp); } });
+      return;
+    }
+    releaseWaiting(token);
+    paired = true;
+    clearTimeout(giveUp);
+    other.paired();
+    pair(other.socket, other.rest, stream, Buffer.alloc(0), other.ip, ip);
+  });
 }
 
 transit.listen(TRANSIT_PORT, "0.0.0.0", () => log(`Transit relay on tcp ${TRANSIT_PORT}`));

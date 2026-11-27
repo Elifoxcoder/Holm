@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.5.11 / Android 1.4.18 – 2026-11-27
+
+### Added
+
+- **Automatic HTTPS/WSS (port 443) fallback transit relay:** when corporate/campus firewalls block raw TCP port `4001`, both Desktop and Android now automatically fall back to `wss://<host>/transit/...` on port `443` (cross-pairs seamlessly with TCP `4001` peers on the server).
+
+### Fixed
+
+- **Nearby Holm LAN peers:** Desktop Beam share targets now only deduplicate your own account devices, keeping nearby LAN Holm users visible even if their name matches a friend in your list.
+
 ## 2.5.10 – 2026-11-27
 
 ### Added

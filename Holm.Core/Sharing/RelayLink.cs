@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -30,7 +31,17 @@ public static class RelayLink
     public static async Task<Stream> ConnectAsync(string host, int port, byte[] token, CancellationToken ct)
     {
         if (token.Length != 32) throw new ArgumentException("Tokens are 32 bytes.", nameof(token));
-        var client = await ReachAsync(host, port, ct).ConfigureAwait(false);
+        TcpClient? client = null;
+        try
+        {
+            client = await ReachAsync(host, port, ct).ConfigureAwait(false);
+        }
+        catch (IOException) when (port == DefaultPort && !IsLoopbackHost(host))
+        {
+            // Corporate/campus firewalls often block raw TCP 4001; fall back to WSS on HTTPS port 443.
+            Diag.Log($"TCP relay {host}:{port} unreachable, falling back to WSS/443");
+            return await ConnectWebSocketAsync(host, token, ct).ConfigureAwait(false);
+        }
         try
         {
             client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
@@ -49,6 +60,115 @@ public static class RelayLink
         {
             client.Dispose();
             throw;
+        }
+    }
+
+    static bool IsLoopbackHost(string host)
+        => host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+        || (IPAddress.TryParse(host, out var ip) && IPAddress.IsLoopback(ip));
+
+    static async Task<Stream> ConnectWebSocketAsync(string host, byte[] token, CancellationToken ct)
+    {
+        string side = Convert.ToHexString(RandomNumberGenerator.GetBytes(8)).ToLowerInvariant();
+        string tokenHex = Convert.ToHexString(token).ToLowerInvariant();
+        var uri = new Uri($"wss://{host}/transit/{tokenHex}?side={side}");
+        var ws = new ClientWebSocket();
+        ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(25);
+        try
+        {
+            using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            connectCts.CancelAfter(TimeSpan.FromSeconds(10));
+            await ws.ConnectAsync(uri, connectCts.Token).ConfigureAwait(false);
+            var stream = new WebSocketStream(ws);
+            string reply = await ReadLineAsync(stream, ct).ConfigureAwait(false);
+            if (reply != "ok") { stream.Dispose(); throw new IOException("The WSS relay said: " + reply); }
+            return stream;
+        }
+        catch (Exception ex) when (ex is not IOException and not OperationCanceledException)
+        {
+            ws.Dispose();
+            throw new IOException("The HTTPS fallback relay couldn't be reached.", ex);
+        }
+        catch
+        {
+            ws.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>Minimal binary Stream adapter over a ClientWebSocket for SecureChannel.</summary>
+    sealed class WebSocketStream : Stream
+    {
+        readonly ClientWebSocket _ws;
+        readonly SemaphoreSlim _writeLock = new(1, 1);
+        byte[] _pending = Array.Empty<byte>();
+        int _pendingOffset, _pendingCount;
+
+        public WebSocketStream(ClientWebSocket ws) => _ws = ws;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override Task FlushAsync(CancellationToken ct) => Task.CompletedTask;
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override int Read(byte[] buffer, int offset, int count) => ReadAsync(buffer, offset, count, CancellationToken.None).GetAwaiter().GetResult();
+        public override void Write(byte[] buffer, int offset, int count) => WriteAsync(buffer, offset, count, CancellationToken.None).GetAwaiter().GetResult();
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+        {
+            if (_pendingCount > 0)
+            {
+                int take = Math.Min(buffer.Length, _pendingCount);
+                _pending.AsMemory(_pendingOffset, take).CopyTo(buffer);
+                _pendingOffset += take;
+                _pendingCount -= take;
+                return take;
+            }
+            if (buffer.Length == 0) return 0;
+            try
+            {
+                var res = await _ws.ReceiveAsync(buffer, ct).ConfigureAwait(false);
+                if (res.MessageType == WebSocketMessageType.Close) return 0;
+                return res.Count;
+            }
+            catch (WebSocketException ex)
+            {
+                throw new IOException("WSS relay read failed.", ex);
+            }
+        }
+
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+            => await ReadAsync(buffer.AsMemory(offset, count), ct).ConfigureAwait(false);
+
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default)
+        {
+            await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await _ws.SendAsync(buffer, WebSocketMessageType.Binary, endOfMessage: true, ct).ConfigureAwait(false);
+            }
+            catch (WebSocketException ex)
+            {
+                throw new IOException("WSS relay write failed.", ex);
+            }
+            finally { _writeLock.Release(); }
+        }
+
+        public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+            => await WriteAsync(buffer.AsMemory(offset, count), ct).ConfigureAwait(false);
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                try { _ws.Abort(); } catch { }
+                _ws.Dispose();
+                _writeLock.Dispose();
+            }
+            base.Dispose(disposing);
         }
     }
 
