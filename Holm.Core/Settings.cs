@@ -299,6 +299,9 @@ internal sealed class AppSettings
     public string DutiesAfternoonClose { get; set; } = "15:15";
     public List<string> DutiesNotifiedKeys { get; set; } = new();
 
+    // ───────────── Optional Apple Music-style synced lyrics (off by default) ─────────────
+    public bool Lyrics { get; set; } = false;
+
     static string FilePath => Path.Combine(Diag.Folder, "settings.json");
     static readonly object SaveGate = new();
 

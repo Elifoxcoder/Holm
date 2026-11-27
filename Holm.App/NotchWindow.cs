@@ -243,6 +243,7 @@ public sealed partial class NotchWindow : Window
         StopAiUsage();
         StopAccount();
         StopDuties();
+        StopLyrics();
         ForgetClipFiles();
         base.OnClosed(e);
     }

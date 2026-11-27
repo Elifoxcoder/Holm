@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.15 – 2026-11-27
+
+### Added
+
+- **Apple Music-style Synced Lyrics (Desktop, off by default):** optional real time-synced lyrics (genuine LRC millisecond timestamps via LRCLIB, never duration-faked) inside the open music player with album-tinted frosted backdrop, word-by-word active-line highlight, and click-to-seek on any line (*Settings › General › Synced Lyrics*).
+
 ## 2.5.14 / Android 1.4.19 – 2026-11-27
 
 ### Fixed

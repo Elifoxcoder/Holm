@@ -67,6 +67,8 @@ public sealed partial class NotchWindow
                     s => s.VerityInClosedNotch, on => { _settings.VerityInClosedNotch = on; Save(); ApplyState(animate: true); }),
                 Switch("Equalizer follows the music", "", "The equalizer bars move with the music that plays. Only the loudness is read, nothing is recorded.",
                     s => s.ReactiveEqualizer, on => { _settings.ReactiveEqualizer = on; Save(); UpdateEqualizer(); }),
+                Switch("Synced Lyrics (Apple Music style)", "\uEC4F", "Shows real time-synced lyrics (LRC timestamps via LRCLIB) in the open music player when available. Off by default.",
+                    s => s.Lyrics, SetLyrics),
                 Switch("Drag notch position", "\uE7C2", "Drag the notch by its top edge to move it left or right. Its position is remembered, even with dragging off.",
                     s => s.Draggable, on => { FinishPositionDrag(); _settings.Draggable = on; Save(); }, "Reset Position", ResetNotchPosition),
                 Switch("Minimize when idle", "\uE921", "The notch shrinks to a small pill while nothing is going on.", s => s.MiniIdle,

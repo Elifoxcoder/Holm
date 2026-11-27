@@ -244,6 +244,7 @@ public sealed partial class NotchWindow
         _mediaPanel.Children.Add(head);
         _mediaPanel.Children.Add(_progressRow);
         _mediaPanel.Children.Add(controls);
+        BuildLyrics();
 
         // No music: time and date stay at the top of home.
         var clockHeader = _clockHeader = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto") };
@@ -349,7 +350,7 @@ public sealed partial class NotchWindow
         RefreshBigClockMedia();
         if (_clockViewOpen) RefreshBigClockStyle();
         RefreshMediaWeather();
-        if (info == null) { UpdateClock(); return; }
+        if (info == null) { RefreshLyricsForTrack(); UpdateClock(); return; }
 
         // Designs with the cover's colours take the cover's colour for the progress, the volume and the equalizer; the others their accent.
         var accent = Look.Current.Wash ? new SolidColorBrush(info.Accent).ToImmutable() : Look.Accent;
@@ -379,6 +380,7 @@ public sealed partial class NotchWindow
         _nextBtn.IsEnabled = info.CanNext;
         _progressRow.IsVisible = info.Duration > TimeSpan.FromSeconds(1);
         _progress.IsInteractive = info.CanSeek;
+        RefreshLyricsForTrack();
         UpdateLive();
     }
 
