@@ -77,7 +77,7 @@ public sealed partial class NotchWindow
         string? refreshToken = _settings.ExtranetRefreshToken;
         if (string.IsNullOrEmpty(refreshToken))
         {
-            _extranetSnapshot = new ExtranetSnapshot(DateTime.Now, Array.Empty<ExtranetInterval>(), _settings.ExtranetTargetMinutes, SignedIn: false);
+            _extranetSnapshot = new ExtranetSnapshot(DateTime.Now, Array.Empty<ExtranetInterval>(), _settings.ExtranetTargetMinutes, SignedIn: false, LunchMinutes: _settings.ExtranetLunchMinutes);
             Dispatcher.UIThread.Post(() => UpdateExtranetUi(notifyIfReady: false));
             return;
         }
@@ -96,13 +96,13 @@ public sealed partial class NotchWindow
                 }
             }
             var intervals = await ExtranetClient.FetchTodayAsync(_extranetAccessToken!, ct);
-            _extranetSnapshot = new ExtranetSnapshot(DateTime.Now, intervals, _settings.ExtranetTargetMinutes, SignedIn: true);
+            _extranetSnapshot = new ExtranetSnapshot(DateTime.Now, intervals, _settings.ExtranetTargetMinutes, SignedIn: true, LunchMinutes: _settings.ExtranetLunchMinutes);
         }
         catch (Exception ex)
         {
             Diag.Log("Extranet refresh: " + ex.Message);
             _extranetAccessToken = null;
-            _extranetSnapshot = new ExtranetSnapshot(DateTime.Now, _extranetSnapshot?.Intervals ?? Array.Empty<ExtranetInterval>(), _settings.ExtranetTargetMinutes, SignedIn: !string.IsNullOrEmpty(_settings.ExtranetRefreshToken), Error: ex.Message);
+            _extranetSnapshot = new ExtranetSnapshot(DateTime.Now, _extranetSnapshot?.Intervals ?? Array.Empty<ExtranetInterval>(), _settings.ExtranetTargetMinutes, SignedIn: !string.IsNullOrEmpty(_settings.ExtranetRefreshToken), Error: ex.Message, LunchMinutes: _settings.ExtranetLunchMinutes);
         }
         finally
         {
@@ -143,7 +143,7 @@ public sealed partial class NotchWindow
             _extranetMore.Text = snap.Error ?? $"Tagessoll {ExtranetSnapshot.FormatDuration(TimeSpan.FromMinutes(targetMin))}";
             return;
         }
-        var liveSnap = snap with { TargetMinutes = targetMin };
+        var liveSnap = snap with { TargetMinutes = targetMin, LunchMinutes = Math.Clamp(_settings.ExtranetLunchMinutes, ExtranetSnapshot.MinLunchMinutes, ExtranetSnapshot.MaxLunchMinutes) };
         var worked = liveSnap.WorkedAt(now);
         var remaining = liveSnap.RemainingAt(now);
         if (remaining <= TimeSpan.Zero)
@@ -169,7 +169,7 @@ public sealed partial class NotchWindow
         {
             var finish = liveSnap.FinishAt(now);
             string untilStr = finish.HasValue ? $"bis {finish.Value:HH:mm}" : "";
-            string stateStr = liveSnap.IsClockedIn ? untilStr : $"{untilStr} (pausiert)";
+            string stateStr = liveSnap.IsClockedIn ? untilStr : $"{untilStr} (Pause)";
             _extranetTitle.Text = $"Noch {ExtranetSnapshot.FormatDuration(remaining)} · {stateStr}";
             _extranetMore.Text = $"Gearbeitet {ExtranetSnapshot.FormatDuration(worked)} von {ExtranetSnapshot.FormatDuration(liveSnap.Target)}";
         }
@@ -190,6 +190,13 @@ public sealed partial class NotchWindow
             mins =>
             {
                 _settings.ExtranetTargetMinutes = Math.Clamp(mins, 60, 16 * 60);
+                _settings.Save();
+                UpdateExtranetUi(notifyIfReady: false);
+            },
+            () => _settings.ExtranetLunchMinutes,
+            mins =>
+            {
+                _settings.ExtranetLunchMinutes = Math.Clamp(mins, ExtranetSnapshot.MinLunchMinutes, ExtranetSnapshot.MaxLunchMinutes);
                 _settings.Save();
                 UpdateExtranetUi(notifyIfReady: false);
             },
@@ -228,6 +235,8 @@ public sealed partial class NotchWindow
         readonly Action<bool> _setEnabled;
         readonly Func<int> _getTarget;
         readonly Action<int> _setTarget;
+        readonly Func<int> _getLunch;
+        readonly Action<int> _setLunch;
         readonly Func<(bool SignedIn, string? User, ExtranetSnapshot? Snap)> _state;
         readonly Func<string, string, Task> _signIn;
         readonly Action _signOut;
@@ -238,6 +247,7 @@ public sealed partial class NotchWindow
         public ExtranetSettingsPage(
             Func<bool> getEnabled, Action<bool> setEnabled,
             Func<int> getTarget, Action<int> setTarget,
+            Func<int> getLunch, Action<int> setLunch,
             Func<(bool SignedIn, string? User, ExtranetSnapshot? Snap)> state,
             Func<string, string, Task> signIn, Action signOut,
             Func<Task> refreshNow, Action openBrowser)
@@ -246,6 +256,8 @@ public sealed partial class NotchWindow
             _setEnabled = setEnabled;
             _getTarget = getTarget;
             _setTarget = setTarget;
+            _getLunch = getLunch;
+            _setLunch = setLunch;
             _state = state;
             _signIn = signIn;
             _signOut = signOut;
@@ -303,6 +315,37 @@ public sealed partial class NotchWindow
             targetRow.Children.Add(new TextBlock { Text = "min", Foreground = HubTheme.Dim, VerticalAlignment = VerticalAlignment.Center });
             targetRow.Children.Add(saveTarget);
             _body.Children.Add(CardBox(targetRow));
+
+            // Lunch break duration (30m – 1h 30m, starts 11:30 or actual badge-out)
+            int lunchMin = Math.Clamp(_getLunch(), ExtranetSnapshot.MinLunchMinutes, ExtranetSnapshot.MaxLunchMinutes);
+            var lunchStack = new StackPanel { Spacing = 8 };
+            var lunchRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+            lunchRow.Children.Add(new TextBlock
+            {
+                Text = $"Mittagspause: {ExtranetSnapshot.FormatDuration(TimeSpan.FromMinutes(lunchMin))}",
+                FontSize = 14, Foreground = Look.Ink, VerticalAlignment = VerticalAlignment.Center,
+            });
+            var minus5 = HubTheme.Action("-5m", primary: false);
+            minus5.IsEnabled = lunchMin > ExtranetSnapshot.MinLunchMinutes;
+            minus5.Click += (_, _) => { _setLunch(lunchMin - 5); Refresh(); };
+            var plus5 = HubTheme.Action("+5m", primary: false);
+            plus5.IsEnabled = lunchMin < ExtranetSnapshot.MaxLunchMinutes;
+            plus5.Click += (_, _) => { _setLunch(lunchMin + 5); Refresh(); };
+            lunchRow.Children.Add(minus5);
+            lunchRow.Children.Add(plus5);
+            foreach (int preset in new[] { 30, 45, 60, 90 })
+            {
+                var pBtn = HubTheme.Action(ExtranetSnapshot.FormatDuration(TimeSpan.FromMinutes(preset)), primary: lunchMin == preset);
+                pBtn.Click += (_, _) => { _setLunch(preset); Refresh(); };
+                lunchRow.Children.Add(pBtn);
+            }
+            lunchStack.Children.Add(lunchRow);
+            lunchStack.Children.Add(new TextBlock
+            {
+                Text = "Start fix 11:30 oder ab tatsächlicher Ausbadge-Zeit (min. 30 min, max. 1h 30m).",
+                FontSize = 12, Foreground = HubTheme.Dim, TextWrapping = TextWrapping.Wrap,
+            });
+            _body.Children.Add(CardBox(lunchStack));
 
             // Account / Login card
             var authStack = new StackPanel { Spacing = 10 };

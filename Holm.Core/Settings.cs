@@ -269,6 +269,8 @@ internal sealed class AppSettings
     public bool ExtranetEnabled { get; set; } = false;
     /// <summary>Daily target work duration in minutes (default 8h 12m = 492).</summary>
     public int ExtranetTargetMinutes { get; set; } = 492;
+    /// <summary>Planned lunch break duration in minutes (min 30, max 90 = 1h 30m, starts 11:30 or actual clock-out).</summary>
+    public int ExtranetLunchMinutes { get; set; } = 30;
     public string? ExtranetRefreshToken { get; set; }
     public string? ExtranetUserName { get; set; }
     /// <summary>Local yyyy-MM-dd date on which the "can badge out" notification was already shown.</summary>

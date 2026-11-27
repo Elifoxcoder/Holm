@@ -191,6 +191,7 @@ class AppState extends ChangeNotifier {
   // Per-device Extranet (extranet.bbcag.ch) state — never synced via Account.
   bool extranetEnabled = false;
   int extranetTargetMinutes = 492; // 8h 12m default
+  int extranetLunchMinutes = 30; // 30m – 90m (1h 30m)
   String? extranetRefreshToken;
   String? extranetUserName;
   String? _extranetNotifiedDate;
@@ -275,6 +276,7 @@ class AppState extends ChangeNotifier {
     }
     extranetEnabled = j['extranetEnabled'] as bool? ?? false;
     extranetTargetMinutes = ((j['extranetTargetMinutes'] as num?)?.toInt() ?? 492).clamp(60, 16 * 60);
+    extranetLunchMinutes = ((j['extranetLunchMinutes'] as num?)?.toInt() ?? 30).clamp(ExtranetSnapshot.minLunchMinutes, ExtranetSnapshot.maxLunchMinutes);
     extranetRefreshToken = j['extranetRefreshToken'] as String?;
     extranetUserName = j['extranetUserName'] as String?;
     _extranetNotifiedDate = j['extranetNotifiedDate'] as String?;
@@ -338,6 +340,7 @@ class AppState extends ChangeNotifier {
       'totp': [for (final e in _totp.values) e.toJson()],
       'extranetEnabled': extranetEnabled,
       'extranetTargetMinutes': extranetTargetMinutes,
+      'extranetLunchMinutes': extranetLunchMinutes,
       'extranetRefreshToken': extranetRefreshToken,
       'extranetUserName': extranetUserName,
       'extranetNotifiedDate': _extranetNotifiedDate,
@@ -394,6 +397,12 @@ class AppState extends ChangeNotifier {
 
   void setExtranetTargetMinutes(int minutes) {
     extranetTargetMinutes = minutes.clamp(60, 16 * 60);
+    _pushExtranetToNotch(notifyIfReady: false);
+    _changed();
+  }
+
+  void setExtranetLunchMinutes(int minutes) {
+    extranetLunchMinutes = minutes.clamp(ExtranetSnapshot.minLunchMinutes, ExtranetSnapshot.maxLunchMinutes);
     _pushExtranetToNotch(notifyIfReady: false);
     _changed();
   }
@@ -514,6 +523,7 @@ class AppState extends ChangeNotifier {
       fetchedAt: snap.fetchedAt,
       intervals: snap.intervals,
       targetMinutes: extranetTargetMinutes,
+      lunchMinutes: extranetLunchMinutes,
       signedIn: true,
     );
     final rem = live.remainingAt(now);
@@ -543,7 +553,7 @@ class AppState extends ChangeNotifier {
     } else {
       final fin = live.finishAt(now);
       final until = fin != null ? 'bis ${ExtranetSnapshot.formatHm(fin)}' : '';
-      final stateStr = live.isClockedIn ? until : '$until (pausiert)';
+      final stateStr = live.isClockedIn ? until : '$until (Pause)';
       NotchLink.send({
         'type': 'extranet',
         'enabled': true,

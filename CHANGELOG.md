@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.9 / Android 1.4.17 – 2026-11-27
+
+### Added
+
+- **Extranet Mittagspause (30 min – 1h 30m):** configurable lunch break duration on Desktop and Android (fixed planned start 11:30 or actual badge-out time, automatically deducted once a real ≥ 30 min break is taken).
+
 ## 2.5.8 – 2026-11-27
 
 ### Fixed

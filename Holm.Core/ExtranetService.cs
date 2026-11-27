@@ -15,14 +15,19 @@ namespace WinNotch;
 /// <summary>One work interval recorded on extranet.bbcag.ch for today.</summary>
 public sealed record ExtranetInterval(TimeSpan From, TimeSpan? To);
 
-/// <summary>Live calculation of today's work time, remaining duration, and target finish time.</summary>
+/// <summary>Live calculation of today's work time, remaining duration, lunch break, and target finish time.</summary>
 public sealed record ExtranetSnapshot(
     DateTime FetchedAt,
     IReadOnlyList<ExtranetInterval> Intervals,
     int TargetMinutes,
     bool SignedIn,
-    string? Error = null)
+    string? Error = null,
+    int LunchMinutes = 30)
 {
+    public const int MinLunchMinutes = 30;
+    public const int MaxLunchMinutes = 90;
+    static readonly TimeSpan FixedLunchStart = new(11, 30, 0);
+
     public bool IsClockedIn => Intervals.Count > 0 && Intervals[^1].To == null;
 
     /// <summary>Total worked duration today as of <paramref name="now"/>.</summary>
@@ -40,6 +45,46 @@ public sealed record ExtranetSnapshot(
     }
 
     public TimeSpan Target => TimeSpan.FromMinutes(Math.Clamp(TargetMinutes, 60, 16 * 60));
+    public TimeSpan Lunch => TimeSpan.FromMinutes(Math.Clamp(LunchMinutes, MinLunchMinutes, MaxLunchMinutes));
+
+    /// <summary>True once at least 30 min of break has already been recorded between two work intervals today.</summary>
+    public bool HasTakenLunch
+    {
+        get
+        {
+            var gapTotal = TimeSpan.Zero;
+            for (int i = 1; i < Intervals.Count; i++)
+            {
+                if (Intervals[i - 1].To is { } prevEnd)
+                {
+                    var gap = Intervals[i].From - prevEnd;
+                    if (gap > TimeSpan.Zero) gapTotal += gap;
+                }
+            }
+            return gapTotal >= TimeSpan.FromMinutes(MinLunchMinutes);
+        }
+    }
+
+    /// <summary>
+    /// Remaining lunch break to include in <see cref="FinishAt"/>:
+    /// - Already took >= 30m break between intervals: 0.
+    /// - Currently clocked out (e.g. badged out at 11:31): remaining part of configured lunch from actual clock-out.
+    /// - Still clocked in before lunch: full configured lunch if the workday extends past 11:30.
+    /// </summary>
+    public TimeSpan PendingLunchAt(DateTime now)
+    {
+        if (Intervals.Count == 0 || RemainingAt(now) <= TimeSpan.Zero || HasTakenLunch) return TimeSpan.Zero;
+        var lunch = Lunch;
+        if (!IsClockedIn && Intervals[^1].To is { } lastOut)
+        {
+            var elapsed = now.TimeOfDay - lastOut;
+            if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+            var remLunch = lunch - elapsed;
+            return remLunch > TimeSpan.Zero ? remLunch : TimeSpan.Zero;
+        }
+        var withoutLunchFinish = now + RemainingAt(now);
+        return withoutLunchFinish.TimeOfDay > FixedLunchStart ? lunch : TimeSpan.Zero;
+    }
 
     public TimeSpan RemainingAt(DateTime now)
     {
@@ -59,7 +104,7 @@ public sealed record ExtranetSnapshot(
     {
         var rem = RemainingAt(now);
         if (rem <= TimeSpan.Zero) return null;
-        return now + rem;
+        return now + rem + PendingLunchAt(now);
     }
 
     public static string FormatDuration(TimeSpan d)

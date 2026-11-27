@@ -11,11 +11,16 @@ class ExtranetInterval {
   const ExtranetInterval(this.fromMinutes, this.toMinutes);
 }
 
-/// Live calculation of today's worked duration, remaining time, and target finish time.
+/// Live calculation of today's worked duration, remaining time, lunch break, and target finish time.
 class ExtranetSnapshot {
+  static const minLunchMinutes = 30;
+  static const maxLunchMinutes = 90;
+  static const _fixedLunchStartMinutes = 11 * 60 + 30; // 11:30
+
   final DateTime fetchedAt;
   final List<ExtranetInterval> intervals;
   final int targetMinutes;
+  final int lunchMinutes;
   final bool signedIn;
   final String? error;
 
@@ -25,11 +30,40 @@ class ExtranetSnapshot {
     required this.targetMinutes,
     required this.signedIn,
     this.error,
+    this.lunchMinutes = 30,
   });
 
   bool get isClockedIn => intervals.isNotEmpty && intervals.last.toMinutes == null;
 
   Duration get target => Duration(minutes: targetMinutes.clamp(60, 16 * 60));
+  Duration get lunch => Duration(minutes: lunchMinutes.clamp(minLunchMinutes, maxLunchMinutes));
+
+  bool get hasTakenLunch {
+    int gapMins = 0;
+    for (var i = 1; i < intervals.length; i++) {
+      final prevEnd = intervals[i - 1].toMinutes;
+      if (prevEnd != null) {
+        final gap = intervals[i].fromMinutes - prevEnd;
+        if (gap > 0) gapMins += gap;
+      }
+    }
+    return gapMins >= minLunchMinutes;
+  }
+
+  Duration pendingLunchAt(DateTime now) {
+    if (intervals.isEmpty || remainingAt(now) <= Duration.zero || hasTakenLunch) return Duration.zero;
+    final l = lunch;
+    if (!isClockedIn && intervals.last.toMinutes != null) {
+      final nowSecs = now.hour * 3600 + now.minute * 60 + now.second;
+      final outSecs = intervals.last.toMinutes! * 60;
+      final elapsed = Duration(seconds: (nowSecs - outSecs).clamp(0, 24 * 3600));
+      final remLunch = l - elapsed;
+      return remLunch.isNegative ? Duration.zero : remLunch;
+    }
+    final withoutLunch = now.add(remainingAt(now));
+    final finishMins = withoutLunch.hour * 60 + withoutLunch.minute;
+    return finishMins > _fixedLunchStartMinutes ? l : Duration.zero;
+  }
 
   Duration workedAt(DateTime now) {
     final nowMins = now.hour * 60 + now.minute + (now.second / 60.0);
@@ -56,7 +90,7 @@ class ExtranetSnapshot {
 
   DateTime? finishAt(DateTime now) {
     final rem = remainingAt(now);
-    return rem <= Duration.zero ? null : now.add(rem);
+    return rem <= Duration.zero ? null : now.add(rem + pendingLunchAt(now));
   }
 
   static String formatDuration(Duration d) {

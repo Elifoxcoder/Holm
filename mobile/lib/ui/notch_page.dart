@@ -707,9 +707,16 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
     String? summary;
     if (snap != null && snap.intervals.isNotEmpty) {
       final now = DateTime.now();
-      final worked = snap.workedAt(now);
-      final rem = snap.remainingAt(now);
-      final fin = snap.finishAt(now);
+      final live = ExtranetSnapshot(
+        fetchedAt: snap.fetchedAt,
+        intervals: snap.intervals,
+        targetMinutes: s.extranetTargetMinutes,
+        lunchMinutes: s.extranetLunchMinutes,
+        signedIn: true,
+      );
+      final worked = live.workedAt(now);
+      final rem = live.remainingAt(now);
+      final fin = live.finishAt(now);
       summary = rem <= Duration.zero
           ? 'Gearbeitet: ${ExtranetSnapshot.formatDuration(worked)} · Ausbadgen möglich!'
           : 'Gearbeitet: ${ExtranetSnapshot.formatDuration(worked)} · Noch ${ExtranetSnapshot.formatDuration(rem)} (bis ${ExtranetSnapshot.formatHm(fin!)})';
@@ -758,6 +765,62 @@ class _NotchPageState extends State<NotchPage> with WidgetsBindingObserver {
                 setState(() {});
               },
               child: const Text('8h 12m'),
+            ),
+          ],
+        ),
+      ),
+      const SectionLabel('Mittagspause (30m – 1h 30m)'),
+      HolmCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    ExtranetSnapshot.formatDuration(Duration(minutes: s.extranetLunchMinutes)),
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.remove_circle_outline_rounded),
+                  onPressed: s.extranetLunchMinutes <= ExtranetSnapshot.minLunchMinutes
+                      ? null
+                      : () {
+                          s.setExtranetLunchMinutes(s.extranetLunchMinutes - 5);
+                          setState(() {});
+                        },
+                ),
+                IconButton(
+                  icon: const Icon(Icons.add_circle_outline_rounded),
+                  onPressed: s.extranetLunchMinutes >= ExtranetSnapshot.maxLunchMinutes
+                      ? null
+                      : () {
+                          s.setExtranetLunchMinutes(s.extranetLunchMinutes + 5);
+                          setState(() {});
+                        },
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              children: [
+                for (final preset in const [30, 45, 60, 90])
+                  ChoiceChip(
+                    label: Text(ExtranetSnapshot.formatDuration(Duration(minutes: preset))),
+                    selected: s.extranetLunchMinutes == preset,
+                    onSelected: (_) {
+                      s.setExtranetLunchMinutes(preset);
+                      setState(() {});
+                    },
+                  ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Start fix 11:30 oder ab tatsächlicher Ausbadge-Zeit.',
+              style: TextStyle(color: HolmColors.dim, fontSize: 12),
             ),
           ],
         ),
